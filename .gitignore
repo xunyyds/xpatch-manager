@@ -1,0 +1,29 @@
+# 构建产物
+build/
+*.apk
+*.idsig
+*.log
+__pycache__/
+*.pyc
+
+# 本地环境
+local.properties
+.idea/
+.vscode/
+manager/.gradle/
+manager/app/build/
+manager/local.properties
+
+# 二进制产物默认不入库
+*.dex
+*.so
+
+# 框架内置运行时资产属于发布产物，管理器打包强依赖，必须入库
+!manager/app/src/main/assets/xp/*.dex
+!manager/app/src/main/assets/xp/*.so
+
+# 签名材料
+*.jks
+*.p12
+*.keystore
+!manager/app/src/main/assets/xp/key.p12

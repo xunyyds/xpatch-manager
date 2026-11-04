@@ -1,0 +1,8 @@
+-keep class com.android.apksig.** { *; }
+-keep class io.xpatch.data.SignatureStore$Profile { *; }
+-keep class io.xpatch.model.** { *; }
+-keep class io.xpatch.data.HookCore { *; }
+-keep class top.yukonga.miuix.kmp.** { *; }
+-keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
+-dontwarn org.bouncycastle.**
+-dontwarn kotlinx.coroutines.**

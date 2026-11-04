@@ -1,0 +1,625 @@
+package io.xpatch.ui.screens
+
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import io.xpatch.data.RuntimeLogStore
+import io.xpatch.ui.components.DialogAction
+import io.xpatch.ui.components.SegmentedControl
+import io.xpatch.ui.components.XPatchDialog
+import io.xpatch.ui.theme.LocalMiuix
+
+@Composable
+internal fun SortPanel(
+    view: LogViewMode,
+    groupOrder: GroupOrder,
+    timeOrder: TimeOrder,
+    onViewChange: (LogViewMode) -> Unit,
+    onGroupOrderChange: (GroupOrder) -> Unit,
+    onTimeOrderChange: (TimeOrder) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    BackHandler(enabled = true) { onDismiss() }
+    android.util.Log.i("LogsDbg", "SortPanel compose")
+    val progress = remember { Animatable(0f) }
+    var dismissable by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        progress.animateTo(1f, spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow))
+    }
+    LaunchedEffect(Unit) {
+        kotlinx.coroutines.delay(320)
+        dismissable = true
+    }
+    Box(
+        Modifier
+            .fillMaxSize()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+            ) {
+                android.util.Log.i("LogsDbg", "overlay dismiss, dismissable=$dismissable")
+                if (dismissable) onDismiss()
+            }
+            .background(Color.Black.copy(alpha = 0.22f * progress.value)),
+    ) {        Card(
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 24.dp)
+                .width(300.dp)
+                .graphicsLayer {
+                    val value = progress.value
+                    alpha = value
+                    scaleX = 0.92f + 0.08f * value
+                    scaleY = 0.92f + 0.08f * value
+                    transformOrigin = TransformOrigin(1f, 1f)
+                    translationY = (1f - value) * 22.dp.toPx()
+                }
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                ) { }
+                .pointerInput(Unit) {
+                    awaitPointerEventScope {
+                        while (true) {
+                            awaitPointerEvent()
+                        }
+                    }
+                },
+            shape = RoundedCornerShape(26.dp),
+            colors = CardDefaults.cardColors(
+                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
+            ),
+            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+        ) {
+            Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
+                Text("排序与视图", style = MaterialTheme.typography.titleSmall)
+                Spacer(Modifier.height(14.dp))
+                SectionLabel("视图")
+                Spacer(Modifier.height(6.dp))
+                SegmentedControl(
+                    options = LogViewMode.entries.map { it.label },
+                    selectedIndex = LogViewMode.entries.indexOf(view),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> onViewChange(LogViewMode.entries[index]) }
+                Spacer(Modifier.height(14.dp))
+                SectionLabel("组内时间排序")
+                Spacer(Modifier.height(6.dp))
+                SegmentedControl(
+                    options = TimeOrder.entries.map { it.label },
+                    selectedIndex = TimeOrder.entries.indexOf(timeOrder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> onTimeOrderChange(TimeOrder.entries[index]) }
+                Spacer(Modifier.height(14.dp))
+                SectionLabel("模块先后")
+                Spacer(Modifier.height(6.dp))
+                SegmentedControl(
+                    options = GroupOrder.entries.map { it.label },
+                    selectedIndex = GroupOrder.entries.indexOf(groupOrder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> onGroupOrderChange(GroupOrder.entries[index]) }
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    if (view == LogViewMode.Timeline) {
+                        "时间线视图把所有模块的事件按日志时间排列，模块先后不参与。"
+                    } else {
+                        "「模块先后」只决定卡片顺序；组内时间排序单独决定每条日志的顺序。"
+                    },
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SectionLabel(text: String) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+internal fun AppFilterDialog(
+    apps: List<LogAppFilter>,
+    selected: Set<String>,
+    onConfirm: (Set<String>) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var draft by remember { mutableStateOf(selected) }
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = "按应用筛选",
+        actions = listOf(
+            DialogAction("取消", onClick = onDismiss),
+            DialogAction("应用", onClick = { onConfirm(draft) }),
+        ),
+    ) {
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            TextButton(onClick = { draft = emptySet() }) { Text("全部应用") }
+            TextButton(
+                onClick = { draft = apps.map { it.target }.toSet() },
+                enabled = apps.isNotEmpty(),
+            ) { Text("全选") }
+            Spacer(Modifier.weight(1f))
+        }
+        Text(
+            "只显示选中应用的日志，与层级筛选叠加生效。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 6.dp),
+        )
+        apps.forEach { app ->
+            val checked = draft.isEmpty() || app.target in draft
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .toggleable(
+                        value = checked,
+                        onValueChange = {
+                            val base = if (draft.isEmpty()) apps.map { it.target }.toSet() else draft
+                            draft = if (checked) base - app.target else base + app.target
+                        },
+                    )
+                    .padding(vertical = 10.dp, horizontal = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(20.dp)
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(
+                            if (checked) MaterialTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.surfaceContainerHighest,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (checked) {
+                        Icon(
+                            Icons.Rounded.Check,
+                            contentDescription = null,
+                            modifier = Modifier.size(14.dp),
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                        )
+                    }
+                }
+                Spacer(Modifier.width(10.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        app.label,
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        app.target,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    app.count.toString(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        if (apps.isEmpty()) {
+            Text(
+                "还没有加载到任何应用日志。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+@Composable
+internal fun ClearConfirmDialog(
+    tab: LogsTab,
+    scope: ClearScope,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = if (tab == LogsTab.Runtime) "清空运行日志？" else "清空操作日志？",
+        actions = listOf(
+            DialogAction("取消", onClick = onDismiss),
+            DialogAction("确认清空", destructive = true, onClick = onConfirm),
+        ),
+    ) {
+        scope.lines.forEach { line ->
+            Text(
+                "· " + line,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(bottom = 8.dp),
+            )
+        }
+    }
+}
+
+@Composable
+internal fun ClearResultDialog(result: ClearOutcome, onDismiss: () -> Unit) {
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = result.title,
+        actions = listOf(DialogAction("知道了", onClick = onDismiss)),
+    ) {
+        Text(
+            result.message,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (result.ok) MaterialTheme.colorScheme.onSurface
+            else MaterialTheme.colorScheme.error,
+        )
+    }
+}
+
+@Composable
+internal fun EntryDetailDialog(
+    entry: RuntimeLogStore.Entry,
+    ordered: List<RuntimeLogStore.Entry>,
+    labelOf: (String) -> String,
+    onNavigate: (RuntimeLogStore.Entry) -> Unit,
+    onCopy: (RuntimeLogStore.Entry) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val index = remember(entry, ordered) { ordered.indexOfFirst { it.id == entry.id } }
+    val previous = if (index > 0) ordered.getOrNull(index - 1) else null
+    val next = if (index >= 0) ordered.getOrNull(index + 1) else null
+    val miuix = LocalMiuix.current
+    val secondary = if (miuix) {
+        top.yukonga.miuix.kmp.theme.MiuixTheme.colorScheme.onSurfaceVariantSummary
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    if (miuix) {
+        top.yukonga.miuix.kmp.window.WindowDialog(
+            show = true,
+            onDismissRequest = onDismiss,
+            title = "日志详情",
+        ) {
+            Column(Modifier.heightIn(max = 420.dp).verticalScroll(rememberScrollState())) {
+                DetailBody(entry, labelOf, secondary, onCopy)
+                DetailNavigation(previous, next, labelOf, onNavigate, onDismiss, secondary)
+            }
+        }
+        return
+    }
+    androidx.compose.ui.window.Dialog(onDismissRequest = onDismiss) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(26.dp))
+                .background(MaterialTheme.colorScheme.surface)
+                .padding(horizontal = 20.dp, vertical = 18.dp),
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    "日志详情",
+                    style = MaterialTheme.typography.titleSmall,
+                    modifier = Modifier.weight(1f),
+                )
+                Box(
+                    Modifier
+                        .size(32.dp)
+                        .clip(RoundedCornerShape(16.dp))
+                        .clickable { onDismiss() },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        Icons.Rounded.Close,
+                        contentDescription = "关闭详情",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+            Column(Modifier.heightIn(max = 380.dp).verticalScroll(rememberScrollState())) {
+                DetailBody(entry, labelOf, secondary, onCopy)
+                DetailNavigation(previous, next, labelOf, onNavigate, onDismiss, secondary)
+            }
+        }
+    }
+}
+
+@Composable
+private fun DetailBody(
+    entry: RuntimeLogStore.Entry,
+    labelOf: (String) -> String,
+    secondary: Color,
+    onCopy: (RuntimeLogStore.Entry) -> Unit,
+) {
+    androidx.compose.foundation.text.selection.SelectionContainer {
+        Column {
+            Text(
+                "时间  " + entry.day + " " + entry.timeText,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "模块  " + entry.module + if (entry.framework) "（框架层）" else "",
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "应用  " + labelOf(entry.target) + " · " + entry.target,
+                style = MaterialTheme.typography.bodySmall,
+            )
+            Text(
+                "来源  " + entry.sourcePath.substringAfterLast("Android/") + " : " + entry.lineNumber,
+                style = MaterialTheme.typography.labelSmall,
+                color = secondary,
+            )
+            if (entry.incomplete) {
+                Text(
+                    "该条内容可能被截断",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary,
+                )
+            }
+            Spacer(Modifier.height(10.dp))
+            Text(entry.message, style = MaterialTheme.typography.bodyMedium)
+            if (entry.hasDetail) {
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    entry.detail,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = secondary,
+                )
+            }
+        }
+    }
+    Spacer(Modifier.height(12.dp))
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Text(
+            "复制完整事件",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(MaterialTheme.colorScheme.primaryContainer)
+                .combinedClickable(onClick = { onCopy(entry) }, onLongClick = null)
+                .padding(horizontal = 14.dp, vertical = 9.dp),
+        )
+    }
+}
+
+@Composable
+private fun DetailNavigation(
+    previous: RuntimeLogStore.Entry?,
+    next: RuntimeLogStore.Entry?,
+    labelOf: (String) -> String,
+    onNavigate: (RuntimeLogStore.Entry) -> Unit,
+    onDismiss: () -> Unit,
+    secondary: Color,
+) {
+    Spacer(Modifier.height(12.dp))
+    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "相邻事件（按当前排序）",
+        style = MaterialTheme.typography.labelSmall,
+        color = secondary,
+    )
+    NavigatorRow("较早", previous, labelOf, secondary) { entry ->
+        onNavigate(entry)
+    }
+    NavigatorRow("较晚", next, labelOf, secondary) { entry ->
+        onNavigate(entry)
+    }
+    Spacer(Modifier.height(4.dp))
+    Text(
+        "关闭后返回搜索结果",
+        style = MaterialTheme.typography.labelSmall,
+        color = secondary,
+        modifier = Modifier
+            .clip(RoundedCornerShape(10.dp))
+            .combinedClickable(onClick = onDismiss, onLongClick = null)
+            .padding(vertical = 6.dp),
+    )
+}
+
+@Composable
+private fun NavigatorRow(
+    direction: String,
+    entry: RuntimeLogStore.Entry?,
+    labelOf: (String) -> String,
+    secondary: Color,
+    onClick: (RuntimeLogStore.Entry) -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .combinedClickable(
+                onClick = { entry?.let { onClick(it) } },
+                onLongClick = null,
+            )
+            .padding(vertical = 7.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            direction,
+            style = MaterialTheme.typography.labelSmall,
+            color = secondary,
+            modifier = Modifier.width(34.dp),
+        )
+        if (entry == null) {
+            Text(
+                "没有更多",
+                style = MaterialTheme.typography.labelSmall,
+                color = secondary,
+            )
+        } else {
+            Text(
+                entry.timeText + "  " + entry.module + " → " + labelOf(entry.target),
+                style = MaterialTheme.typography.labelSmall,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
+    }
+}
+
+internal fun buildExportOptions(
+    tab: LogsTab,
+    matched: Int,
+    ordered: List<RuntimeLogStore.Entry>,
+    totalLoaded: Int,
+    loadedEntries: List<RuntimeLogStore.Entry>,
+    filteredOperations: List<String>,
+    allOperations: List<String>,
+    store: RuntimeLogStore,
+): List<LogExportOption> {
+    val stamp = System.currentTimeMillis()
+    return if (tab == LogsTab.Runtime) {
+        listOf(
+            LogExportOption(
+                label = "导出当前筛选结果",
+                description = "共 " + matched + " 条，按当前排序，含包名与毫秒",
+                fileName = "xpatch-runtime-filtered-$stamp.txt",
+                build = { store.export(ordered) },
+                hasContent = matched > 0,
+            ),
+            LogExportOption(
+                label = "导出全部已加载日志",
+                description = "共 " + totalLoaded + " 条，忽略筛选；仅本次加载范围，不是磁盘全部",
+                fileName = "xpatch-runtime-loaded-$stamp.txt",
+                build = { store.export(loadedEntries) },
+                hasContent = totalLoaded > 0,
+            ),
+        )
+    } else {
+        listOf(
+            LogExportOption(
+                label = "导出当前筛选结果",
+                description = "共 " + filteredOperations.size + " 条，按当前筛选",
+                fileName = "xpatch-operations-filtered-$stamp.txt",
+                build = { filteredOperations.joinToString("\n") },
+                hasContent = filteredOperations.isNotEmpty(),
+            ),
+            LogExportOption(
+                label = "导出全部已加载操作日志",
+                description = "共 " + allOperations.size + " 条，忽略筛选",
+                fileName = "xpatch-operations-loaded-$stamp.txt",
+                build = { allOperations.joinToString("\n") },
+                hasContent = allOperations.isNotEmpty(),
+            ),
+        )
+    }
+}
+
+internal data class ClearScope(
+    val lines: List<String>,
+)
+
+internal fun clearScope(
+    tab: LogsTab,
+    runtime: RuntimeLogsState,
+    operations: List<String>,
+    base: LogsBase?,
+    labelOf: (String) -> String,
+): ClearScope {
+    if (tab == LogsTab.Operations) {
+        return ClearScope(
+            listOf(
+                "只清除 XPatch 保存在本机的操作记录，共 " + operations.size + " 条。",
+                "不会删除磁盘上的运行日志文件，也不影响其它应用。",
+                "清空后不可恢复。",
+            ),
+        )
+    }
+    val apps = runtime.entries.map { it.target }.distinct()
+    val modules = runtime.entries.map { it.module }.distinct()
+    val files = runtime.snapshot?.entries?.map { it.sourcePath }?.distinct()?.size ?: 0
+    return ClearScope(
+        buildList {
+            add("会删除磁盘上的日志文件，不只是当前页面显示的内容。")
+            add("范围：所有应用在 Android/data 与 Android/media 下的 .logs 目录，含全部模块与框架层日志。")
+            add(
+                "已加载部分涉及 " + apps.size + " 个应用、" + modules.size + " 个模块、" +
+                    files + " 个文件；未加载的文件同样会被删除。",
+            )
+            if (base?.filtered == true) {
+                add("当前处于筛选状态，但清空不受筛选影响，仍会删除全部日志。")
+            }
+            add("删除后不可恢复。")
+        },
+    )
+}
+
+internal fun describeClear(result: RuntimeLogStore.ClearResult): String {
+    if (result.ok) {
+        return "已删除 " + result.deletedFiles + " 个文件，涉及 " + result.affectedApps + " 个应用。"
+    }
+    return buildString {
+        append("已删除 ")
+        append(result.deletedFiles)
+        append(" 个文件，")
+        append(result.failed.size)
+        append(" 处删除失败，列表可能仍显示未删掉的日志。")
+        result.failed.firstOrNull()?.let { failure ->
+            append("\n首个失败：")
+            append(failure.path)
+            append("（")
+            append(failure.reason)
+            append("）")
+        }
+    }
+}

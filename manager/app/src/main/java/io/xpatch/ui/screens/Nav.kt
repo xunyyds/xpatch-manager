@@ -1,0 +1,96 @@
+package io.xpatch.ui.screens
+
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Apps
+import androidx.compose.material.icons.rounded.BugReport
+import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.graphics.vector.ImageVector
+import io.xpatch.data.RepoStore
+import io.xpatch.model.AppInfo
+import io.xpatch.model.ModuleInfo
+import java.io.File
+
+internal sealed interface PatchTarget {
+    data class Installed(val app: AppInfo) : PatchTarget
+    data class FromFile(val file: File, val label: String) : PatchTarget
+}
+
+internal data class InstallBlock(val packageName: String, val fromRepo: Boolean)
+
+internal sealed interface Page {
+    data object Home : Page
+    data object Picker : Page
+    data object Signatures : Page
+    data class Config(val target: PatchTarget) : Page
+    data class ModuleScope(val module: ModuleInfo) : Page
+    data class AppScope(val app: AppInfo) : Page
+    data object Repo : Page
+    data class RepoDetail(val module: RepoStore.RepoModule) : Page
+}
+
+internal enum class Tab(val label: String, val icon: ImageVector) {
+    Home("首页", Icons.Rounded.Apps),
+    Modules("模块", Icons.Rounded.Extension),
+    Logs("日志", Icons.Rounded.BugReport),
+    Settings("设置", Icons.Rounded.Settings),
+}
+
+internal class Navigator {
+    var page by mutableStateOf<Page>(Page.Home)
+        private set
+
+    var tab by mutableStateOf(Tab.Home)
+        private set
+
+    private val stack = mutableStateListOf<Page>()
+
+    val canBack: Boolean
+        get() = stack.isNotEmpty() || page !is Page.Home || tab != Tab.Home
+
+    fun navigate(target: Page) {
+        if (target == page) return
+        if (target is Page.Home) stack.clear() else stack.add(page)
+        page = target
+    }
+
+    fun select(target: Tab) {
+        if (page !is Page.Home) {
+            stack.clear()
+            page = Page.Home
+        }
+        tab = target
+    }
+
+    fun openLogs() {
+        stack.clear()
+        page = Page.Home
+        tab = Tab.Logs
+    }
+
+    fun back(): Boolean {
+        if (stack.isNotEmpty()) {
+            page = stack.removeAt(stack.lastIndex)
+            return true
+        }
+        if (page !is Page.Home) {
+            page = Page.Home
+            return true
+        }
+        if (tab != Tab.Home) {
+            tab = Tab.Home
+            return true
+        }
+        return false
+    }
+}
+
+@Composable
+internal fun rememberNavigator(): Navigator = remember { Navigator() }
+
