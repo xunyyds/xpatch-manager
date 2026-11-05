@@ -2,8 +2,8 @@ package io.xpatch.ui.screens
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,12 +25,9 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -40,12 +38,12 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -55,27 +53,22 @@ import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
-internal fun SortPanel(
-    view: LogViewMode,
-    groupOrder: GroupOrder,
-    timeOrder: TimeOrder,
-    onViewChange: (LogViewMode) -> Unit,
-    onGroupOrderChange: (GroupOrder) -> Unit,
-    onTimeOrderChange: (TimeOrder) -> Unit,
+internal fun FilterPanel(
+    state: LogsState,
+    apps: List<LogAppFilter>,
     onDismiss: () -> Unit,
+    onReset: () -> Unit,
 ) {
     BackHandler(enabled = true) { onDismiss() }
-    android.util.Log.i("LogsDbg", "SortPanel compose")
+    val miuix = LocalMiuix.current
+    val scope = rememberCoroutineScope()
     val progress = remember { Animatable(0f) }
-    var dismissable by remember { mutableStateOf(false) }
+    var appPickerOpen by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
-        progress.animateTo(1f, spring(dampingRatio = 0.78f, stiffness = Spring.StiffnessMediumLow))
-    }
-    LaunchedEffect(Unit) {
-        kotlinx.coroutines.delay(320)
-        dismissable = true
+        progress.animateTo(1f, tween(durationMillis = 220, easing = FastOutSlowInEasing))
     }
     Box(
         Modifier
@@ -83,79 +76,133 @@ internal fun SortPanel(
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
-            ) {
-                android.util.Log.i("LogsDbg", "overlay dismiss, dismissable=$dismissable")
-                if (dismissable) onDismiss()
-            }
-            .background(Color.Black.copy(alpha = 0.22f * progress.value)),
-    ) {        Card(
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 24.dp)
-                .width(300.dp)
-                .graphicsLayer {
-                    val value = progress.value
-                    alpha = value
-                    scaleX = 0.92f + 0.08f * value
-                    scaleY = 0.92f + 0.08f * value
-                    transformOrigin = TransformOrigin(1f, 1f)
-                    translationY = (1f - value) * 22.dp.toPx()
-                }
+                onClick = onDismiss,
+            )
+            .background(Color.Black.copy(alpha = 0.28f * progress.value)),
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .align(Alignment.BottomCenter)
+                .graphicsLayer { translationY = (1f - progress.value) * 320.dp.toPx() }
+                .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                .background(
+                    if (miuix) MiuixTheme.colorScheme.surface
+                    else MaterialTheme.colorScheme.surface,
+                )
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
                 ) { }
-                .pointerInput(Unit) {
-                    awaitPointerEventScope {
-                        while (true) {
-                            awaitPointerEvent()
-                        }
-                    }
-                },
-            shape = RoundedCornerShape(26.dp),
-            colors = CardDefaults.cardColors(
-                containerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
-            ),
-            elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+                .navigationBarsPadding()
+                .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 12.dp),
         ) {
-            Column(Modifier.padding(horizontal = 14.dp, vertical = 14.dp)) {
-                Text("排序与视图", style = MaterialTheme.typography.titleSmall)
-                Spacer(Modifier.height(14.dp))
-                SectionLabel("视图")
-                Spacer(Modifier.height(6.dp))
-                SegmentedControl(
-                    options = LogViewMode.entries.map { it.label },
-                    selectedIndex = LogViewMode.entries.indexOf(view),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> onViewChange(LogViewMode.entries[index]) }
-                Spacer(Modifier.height(14.dp))
-                SectionLabel("组内时间排序")
-                Spacer(Modifier.height(6.dp))
-                SegmentedControl(
-                    options = TimeOrder.entries.map { it.label },
-                    selectedIndex = TimeOrder.entries.indexOf(timeOrder),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> onTimeOrderChange(TimeOrder.entries[index]) }
-                Spacer(Modifier.height(14.dp))
-                SectionLabel("模块先后")
-                Spacer(Modifier.height(6.dp))
-                SegmentedControl(
-                    options = GroupOrder.entries.map { it.label },
-                    selectedIndex = GroupOrder.entries.indexOf(groupOrder),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> onGroupOrderChange(GroupOrder.entries[index]) }
-                Spacer(Modifier.height(12.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    if (view == LogViewMode.Timeline) {
-                        "时间线视图把所有模块的事件按日志时间排列，模块先后不参与。"
-                    } else {
-                        "「模块先后」只决定卡片顺序；组内时间排序单独决定每条日志的顺序。"
-                    },
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    "筛选与排序",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.weight(1f),
+                )
+                Text(
+                    "重置",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .combinedClickable(
+                            onClick = {
+                                onReset()
+                                onDismiss()
+                            },
+                            onLongClick = null,
+                        )
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
                 )
             }
+            Spacer(Modifier.height(12.dp))
+            PanelRow("层级") {
+                SegmentedControl(
+                    options = LogLayer.entries.map { it.label },
+                    selectedIndex = LogLayer.entries.indexOf(state.layer),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> state.layer = LogLayer.entries[index] }
+            }
+            PanelRow("视图") {
+                SegmentedControl(
+                    options = LogViewMode.entries.map { it.label },
+                    selectedIndex = LogViewMode.entries.indexOf(state.view),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> state.view = LogViewMode.entries[index] }
+            }
+            PanelRow("模块先后") {
+                SegmentedControl(
+                    options = GroupOrder.entries.map { it.short },
+                    selectedIndex = GroupOrder.entries.indexOf(state.groupOrder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> state.groupOrder = GroupOrder.entries[index] }
+            }
+            PanelRow("时间顺序") {
+                SegmentedControl(
+                    options = TimeOrder.entries.map { it.label },
+                    selectedIndex = TimeOrder.entries.indexOf(state.timeOrder),
+                    modifier = Modifier.fillMaxWidth(),
+                ) { index -> state.timeOrder = TimeOrder.entries[index] }
+            }
+            PanelRow("应用") {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        appChipText(state.apps, apps),
+                        style = MaterialTheme.typography.bodyMedium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Text(
+                        "选择",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .combinedClickable(
+                                onClick = { appPickerOpen = true },
+                                onLongClick = null,
+                            )
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
+                }
+            }
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "筛选只影响显示，导出与清空的范围以对话框说明为准。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
+    }
+    if (appPickerOpen) {
+        AppFilterDialog(
+            apps = apps,
+            selected = state.apps,
+            onConfirm = {
+                state.apps = it
+                appPickerOpen = false
+            },
+            onDismiss = { appPickerOpen = false },
+        )
+    }
+}
+
+@Composable
+private fun PanelRow(label: String, content: @Composable () -> Unit) {
+    Column(Modifier.padding(vertical = 5.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 5.dp),
+        )
+        content()
     }
 }
 
@@ -622,4 +669,14 @@ internal fun describeClear(result: RuntimeLogStore.ClearResult): String {
             append("）")
         }
     }
+}
+
+internal fun appChipText(selected: Set<String>, apps: List<LogAppFilter>): String = when {
+    selected.isEmpty() -> "全部应用"
+    selected.size == 1 -> {
+        val target = selected.first()
+        apps.firstOrNull { it.target == target }?.label ?: target
+    }
+
+    else -> selected.size.toString() + " 个应用"
 }
