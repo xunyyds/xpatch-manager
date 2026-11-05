@@ -3,6 +3,9 @@
 -keep class io.xpatch.model.** { *; }
 -keep class io.xpatch.data.HookCore { *; }
 -keep class top.yukonga.miuix.kmp.** { *; }
+-keep class io.xpatch.patch.XPatchUserService { *; }
+-keep interface io.xpatch.IXPatchService { *; }
+-keep class io.xpatch.IXPatchService$Stub { *; }
 -keepattributes Signature,InnerClasses,EnclosingMethod,*Annotation*
 -dontwarn org.bouncycastle.**
 -dontwarn kotlinx.coroutines.**
