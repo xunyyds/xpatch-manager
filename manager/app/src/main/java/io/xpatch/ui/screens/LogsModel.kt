@@ -88,10 +88,20 @@ internal class LogsState {
     val runtimeList = LazyListState()
     val operationsList = LazyListState()
 
+    val filterActive: Boolean
+        get() = layer != LogLayer.All ||
+            apps.isNotEmpty() ||
+            view != LogViewMode.Module ||
+            groupOrder != GroupOrder.LayerFirst ||
+            timeOrder != TimeOrder.NewestFirst
+
     fun resetFilters() {
         query = ""
         layer = LogLayer.All
         apps = emptySet()
+        view = LogViewMode.Module
+        groupOrder = GroupOrder.LayerFirst
+        timeOrder = TimeOrder.NewestFirst
     }
 
     fun isOpen(group: LogGroup): Boolean = expanded[group.key] ?: defaultExpanded
