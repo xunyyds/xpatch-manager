@@ -74,6 +74,10 @@ class ManagerRepository(private val context: Context) {
             .toList()
     }
 
+    suspend fun patchedPackageNames(): List<String> = withContext(Dispatchers.IO) {
+        snapshot().patched.toList()
+    }
+
     suspend fun loadPatchableApps(includeSystem: Boolean = false): List<AppInfo> = withContext(Dispatchers.IO) {
         val current = snapshot()
         current.apps.asSequence()
