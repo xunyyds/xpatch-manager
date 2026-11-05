@@ -40,7 +40,6 @@ import io.xpatch.data.ManagerSettings
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.UiStyle
 import io.xpatch.model.ModuleInfo
-import io.xpatch.ui.components.SettingAside
 import io.xpatch.ui.components.SettingChoiceRow
 import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.SettingItem
@@ -111,7 +110,6 @@ internal fun SettingsScreen(
                         settings.showSystemApps,
                         onShowSystemChange,
                     )
-                    SettingAside("打包所用的 Hook 核心、签名绕过与动态模式等，在「Patch 配置」页按应用单独选择。")
                 }
             }
             item {
@@ -124,18 +122,15 @@ internal fun SettingsScreen(
                     }
                     SettingItem(
                         "导出目录",
-                        "打包产物的默认保存位置",
+                        if (exportLabel.isBlank()) {
+                            "打包产物的默认保存位置"
+                        } else {
+                            "打包产物的默认保存位置 长按可清除"
+                        },
                         if (exportLabel.isBlank()) "未设置" else exportLabel,
                         arrow = true,
                         onClick = onPickExportDir,
                         onLongClick = if (exportLabel.isNotBlank()) onClearExportDir else null,
-                    )
-                    SettingAside(
-                        if (exportLabel.isBlank()) {
-                            "选一个文件夹作为导出位置，之后会记住它，可随时更改。"
-                        } else {
-                            "当前导出目录：" + exportLabel + "，长按可清除。"
-                        },
                     )
                 }
             }
@@ -186,26 +181,20 @@ internal fun SettingsScreen(
                 }
             }
             item {
-                SettingAside("打包所用的 Hook 核心、签名绕过与动态模式等，在「Patch 配置」页按应用单独选择。")
-            }
-            item {
                 SettingGroup("备份与恢复") {
                     SettingItem("导出配置", "作用域、签名与设置保存为 JSON", onClick = onExportConfig)
                     SettingItem("导入配置", "从 JSON 恢复全部配置", onClick = onImportConfig)
                     SettingItem(
                         "导出目录",
-                        "打包产物的默认保存位置",
+                        if (exportLabel.isBlank()) {
+                            "打包产物的默认保存位置"
+                        } else {
+                            "打包产物的默认保存位置 长按可清除"
+                        },
                         if (exportLabel.isBlank()) "未设置" else exportLabel,
                         arrow = true,
                         onClick = onPickExportDir,
                         onLongClick = if (exportLabel.isNotBlank()) onClearExportDir else null,
-                    )
-                    SettingAside(
-                        if (exportLabel.isBlank()) {
-                            "选一个文件夹作为导出位置，之后会记住它，可随时更改。"
-                        } else {
-                            "当前导出目录：" + exportLabel + "，长按可清除。"
-                        },
                     )
                 }
             }
