@@ -24,47 +24,67 @@ class LocalStoreModuleProvider implements IModuleProvider {
 
     @Override
     public List<RemoteModule> getModules() {
-        try {
-            return RemoteModuleProvider.parseModules(FileUtils.readString(getScopeFilePath()));
-        } catch (Exception unused) {
-            return Collections.emptyList();
+        for (String str : getScopeFilePaths()) {
+            if (!new File(str).isFile()) {
+                continue;
+            }
+            try {
+                return RemoteModuleProvider.parseModules(FileUtils.readString(str));
+            } catch (Exception e) {
+                XpHook.log0(TAG, "read scope file failed " + str + " " + e);
+            }
         }
+        return Collections.emptyList();
     }
 
     public void refreshScopeModulePaths() {
-        boolean zRefreshScopeArray;
-        String string;
         if (this.context == null) {
             return;
         }
-        String scopeFilePath = getScopeFilePath();
+        String scopeFile = findScopeFile();
         try {
-            String string2 = FileUtils.readString(scopeFilePath);
-            if (TextUtils.isEmpty(string2)) {
-                return;
-            }
-            String strTrim = string2.trim();
-            if (TextUtils.isEmpty(strTrim)) {
-                return;
-            }
-            if (strTrim.startsWith("[")) {
-                JSONArray jSONArray = new JSONArray(strTrim);
-                zRefreshScopeArray = refreshScopeArray(jSONArray, true);
-                string = jSONArray.toString();
-            } else {
-                JSONObject jSONObject = new JSONObject(strTrim);
-                JSONArray jSONArrayOptJSONArray = jSONObject.optJSONArray("scopes");
-                if (jSONArrayOptJSONArray == null) {
-                    return;
-                }
-                zRefreshScopeArray = refreshScopeArray(jSONArrayOptJSONArray, false);
-                string = jSONObject.toString();
-            }
-            if (zRefreshScopeArray) {
-                FileUtils.write(scopeFilePath, string);
-            }
+            refreshScopeFile(scopeFile);
         } catch (Exception e) {
-            XpHook.log0(TAG, "refresh scope module paths failed " + e);
+            XpHook.log0(TAG, "refresh scope module paths failed " + scopeFile + " " + e);
+        }
+    }
+
+    private String findScopeFile() {
+        String[] scopeFilePaths = getScopeFilePaths();
+        for (String str : scopeFilePaths) {
+            if (new File(str).isFile()) {
+                return str;
+            }
+        }
+        return scopeFilePaths[0];
+    }
+
+    private void refreshScopeFile(String str) throws Exception {
+        boolean zRefreshScopeArray;
+        String string;
+        String string2 = FileUtils.readString(str);
+        if (TextUtils.isEmpty(string2)) {
+            return;
+        }
+        String strTrim = string2.trim();
+        if (TextUtils.isEmpty(strTrim)) {
+            return;
+        }
+        if (strTrim.startsWith("[")) {
+            JSONArray jSONArray = new JSONArray(strTrim);
+            zRefreshScopeArray = refreshScopeArray(jSONArray, true);
+            string = jSONArray.toString();
+        } else {
+            JSONObject jSONObject = new JSONObject(strTrim);
+            JSONArray jSONArrayOptJSONArray = jSONObject.optJSONArray("scopes");
+            if (jSONArrayOptJSONArray == null) {
+                return;
+            }
+            zRefreshScopeArray = refreshScopeArray(jSONArrayOptJSONArray, false);
+            string = jSONObject.toString();
+        }
+        if (zRefreshScopeArray) {
+            FileUtils.write(str, string);
         }
     }
 
@@ -117,11 +137,15 @@ class LocalStoreModuleProvider implements IModuleProvider {
         return null;
     }
 
-    private String getScopeFilePath() {
+    private String[] getScopeFilePaths() {
         String strSha1 = DataUtils.getStrSha1(AppEnv.packageName + ".scope");
         if (strSha1 == null || strSha1.isEmpty()) {
             strSha1 = String.valueOf((AppEnv.packageName + ".scope").hashCode());
         }
-        return new File(new File(Environment.getExternalStorageDirectory(), "Android/data/" + AppEnv.packageName), strSha1).getAbsolutePath();
+        File externalStorageDirectory = Environment.getExternalStorageDirectory();
+        return new String[]{
+            new File(new File(externalStorageDirectory, "Android/media/" + AppEnv.packageName), strSha1).getAbsolutePath(),
+            new File(new File(externalStorageDirectory, "Android/data/" + AppEnv.packageName), strSha1).getAbsolutePath()
+        };
     }
 }
