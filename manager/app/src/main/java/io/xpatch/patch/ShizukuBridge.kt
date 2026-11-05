@@ -103,6 +103,39 @@ object ShizukuBridge {
         runCatching { context.startActivity(intent) }
     }
 
+    /** 通过 Shizuku 以 shell 身份执行命令，返回标准输出（失败返回 null）。 */
+    fun exec(command: String): String? = runCatching {
+        if (!hasPermission()) return null
+        val method = Shizuku::class.java.getDeclaredMethod(
+            "newProcess",
+            Array<String>::class.java,
+            Array<String>::class.java,
+            String::class.java,
+        )
+        method.isAccessible = true
+        val process = method.invoke(
+            null,
+            arrayOf("sh", "-c", command),
+            null,
+            null,
+        ) as? Process ?: return null
+        val out = process.inputStream.bufferedReader().use { it.readText() }
+        process.waitFor()
+        out
+    }.getOrNull()
+
+    /** 通过 Shizuku 读取文件内容，失败返回 null。 */
+    fun readFile(path: String): String? = exec("cat " + shellQuote(path))
+
+    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
+
+    /** 通过 Shizuku 列出目录，失败返回 null。 */
+    fun listDirs(path: String): List<String>? = exec("ls " + shellQuote(path))
+        ?.lineSequence()
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.toList()
+
     /** 通过 Shizuku 触发 Dexopt 优化。 */
     fun dexopt(packageName: String): Boolean = runCatching {
         if (!hasPermission()) return false
