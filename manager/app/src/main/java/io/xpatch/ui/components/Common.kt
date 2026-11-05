@@ -15,6 +15,7 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,10 +27,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -41,6 +44,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -57,8 +61,6 @@ import java.util.WeakHashMap
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
-import top.yukonga.miuix.kmp.basic.TextField as MiuixTextField
-import top.yukonga.miuix.kmp.basic.TextFieldDefaults
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 private val iconCache = Collections.synchronizedMap(WeakHashMap<Drawable, MutableMap<Int, ImageBitmap>>())
@@ -185,49 +187,73 @@ fun EntryRow(
 }
 
 @Composable
-fun SearchField(value: String, onValueChange: (String) -> Unit, placeholder: String) {
-    if (LocalMiuix.current) {
-        MiuixTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 6.dp),
-            singleLine = true,
-            label = placeholder,
-            useLabelAsPlaceholder = true,
-            colors = TextFieldDefaults.textFieldColors(
-                backgroundColor = MiuixTheme.colorScheme.surfaceContainerHighest,
-                labelColor = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                borderColor = MiuixTheme.colorScheme.surfaceContainerHighest,
-            ),
-        )
-        return
-    }
-    OutlinedTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = Modifier
+fun SearchField(
+    value: String,
+    onValueChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier = Modifier,
+) {
+    val miuix = LocalMiuix.current
+    val container = if (miuix) MiuixTheme.colorScheme.surfaceContainerHighest
+    else MaterialTheme.colorScheme.surfaceContainerHighest
+    val hint = if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    val accent = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
+    val textColor = if (miuix) MiuixTheme.colorScheme.onSurface
+    else MaterialTheme.colorScheme.onSurface
+    Row(
+        modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 4.dp),
-        shape = RoundedCornerShape(28.dp),
-        singleLine = true,
-        placeholder = {
-            Text(
-                placeholder,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            .padding(horizontal = 16.dp, vertical = 4.dp)
+            .height(42.dp)
+            .clip(RoundedCornerShape(if (miuix) 14.dp else 21.dp))
+            .background(container)
+            .padding(start = 12.dp, end = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(
+            Icons.Rounded.Search,
+            contentDescription = null,
+            modifier = Modifier.size(18.dp),
+            tint = hint,
+        )
+        Spacer(Modifier.width(8.dp))
+        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
+            if (value.isEmpty()) {
+                Text(
+                    placeholder,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = hint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            BasicTextField(
+                value = value,
+                onValueChange = onValueChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                textStyle = MaterialTheme.typography.bodyMedium.copy(color = textColor),
+                cursorBrush = SolidColor(accent),
             )
-        },
-        colors = OutlinedTextFieldDefaults.colors(
-            unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            unfocusedBorderColor = MaterialTheme.colorScheme.surfaceContainerHighest,
-            focusedBorderColor = MaterialTheme.colorScheme.primary,
-            unfocusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
-            focusedPlaceholderColor = MaterialTheme.colorScheme.onSurfaceVariant,
-        ),
-    )
+        }
+        if (value.isNotEmpty()) {
+            Box(
+                Modifier
+                    .size(34.dp)
+                    .clip(RoundedCornerShape(17.dp))
+                    .clickable { onValueChange("") },
+                contentAlignment = Alignment.Center,
+            ) {
+                Icon(
+                    Icons.Rounded.Close,
+                    contentDescription = "清除搜索内容",
+                    modifier = Modifier.size(16.dp),
+                    tint = hint,
+                )
+            }
+        }
+    }
 }
 
 @Composable
