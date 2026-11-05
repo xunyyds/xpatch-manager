@@ -15,6 +15,14 @@ internal fun PullRefreshBox(
         isRefreshing = refreshing,
         onRefresh = onRefresh,
         modifier = modifier,
+        refreshTexts = PULL_REFRESH_TEXTS,
         content = content,
     )
 }
+
+private val PULL_REFRESH_TEXTS = listOf(
+    "下拉刷新",
+    "松开刷新",
+    "正在刷新…",
+    "刷新完成",
+)
