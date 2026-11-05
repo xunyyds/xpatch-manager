@@ -49,8 +49,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.RuntimeLogStore
+import io.xpatch.ui.components.BottomSheet
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SegmentedControl
+import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -63,117 +65,71 @@ internal fun FilterPanel(
     onReset: () -> Unit,
 ) {
     BackHandler(enabled = true) { onDismiss() }
-    val miuix = LocalMiuix.current
     var appPickerOpen by remember { mutableStateOf(false) }
-    Box(
-        Modifier
-            .fillMaxSize()
-            .clickable(
-                interactionSource = remember { MutableInteractionSource() },
-                indication = null,
-                onClick = onDismiss,
-            )
-            .background(Color.Black.copy(alpha = 0.28f)),
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .align(Alignment.BottomCenter)
-                .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
-                .background(
-                    if (miuix) MiuixTheme.colorScheme.surface
-                    else MaterialTheme.colorScheme.surface,
-                )
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                ) { }
-                .navigationBarsPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 12.dp),
-        ) {
+    BottomSheet(onDismiss = onDismiss) {
+        SheetHeader(
+            title = "筛选与排序",
+            onReset = onReset,
+            onDismiss = onDismiss,
+        )
+        Spacer(Modifier.height(12.dp))
+        PanelRow("层级") {
+            SegmentedControl(
+                options = LogLayer.entries.map { it.label },
+                selectedIndex = LogLayer.entries.indexOf(state.layer),
+                modifier = Modifier.fillMaxWidth(),
+            ) { index -> state.layer = LogLayer.entries[index] }
+        }
+        PanelRow("视图") {
+            SegmentedControl(
+                options = LogViewMode.entries.map { it.label },
+                selectedIndex = LogViewMode.entries.indexOf(state.view),
+                modifier = Modifier.fillMaxWidth(),
+            ) { index -> state.view = LogViewMode.entries[index] }
+        }
+        PanelRow("模块先后") {
+            SegmentedControl(
+                options = GroupOrder.entries.map { it.short },
+                selectedIndex = GroupOrder.entries.indexOf(state.groupOrder),
+                modifier = Modifier.fillMaxWidth(),
+            ) { index -> state.groupOrder = GroupOrder.entries[index] }
+        }
+        PanelRow("时间顺序") {
+            SegmentedControl(
+                options = TimeOrder.entries.map { it.label },
+                selectedIndex = TimeOrder.entries.indexOf(state.timeOrder),
+                modifier = Modifier.fillMaxWidth(),
+            ) { index -> state.timeOrder = TimeOrder.entries[index] }
+        }
+        PanelRow("应用") {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    "筛选与排序",
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.SemiBold,
+                    appChipText(state.apps, apps),
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f),
                 )
                 Text(
-                    "重置",
+                    "选择",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
                         .clip(RoundedCornerShape(8.dp))
                         .combinedClickable(
-                            onClick = {
-                                onReset()
-                                onDismiss()
-                            },
+                            onClick = { appPickerOpen = true },
                             onLongClick = null,
                         )
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                 )
             }
-            Spacer(Modifier.height(12.dp))
-            PanelRow("层级") {
-                SegmentedControl(
-                    options = LogLayer.entries.map { it.label },
-                    selectedIndex = LogLayer.entries.indexOf(state.layer),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> state.layer = LogLayer.entries[index] }
-            }
-            PanelRow("视图") {
-                SegmentedControl(
-                    options = LogViewMode.entries.map { it.label },
-                    selectedIndex = LogViewMode.entries.indexOf(state.view),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> state.view = LogViewMode.entries[index] }
-            }
-            PanelRow("模块先后") {
-                SegmentedControl(
-                    options = GroupOrder.entries.map { it.short },
-                    selectedIndex = GroupOrder.entries.indexOf(state.groupOrder),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> state.groupOrder = GroupOrder.entries[index] }
-            }
-            PanelRow("时间顺序") {
-                SegmentedControl(
-                    options = TimeOrder.entries.map { it.label },
-                    selectedIndex = TimeOrder.entries.indexOf(state.timeOrder),
-                    modifier = Modifier.fillMaxWidth(),
-                ) { index -> state.timeOrder = TimeOrder.entries[index] }
-            }
-            PanelRow("应用") {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        appChipText(state.apps, apps),
-                        style = MaterialTheme.typography.bodyMedium,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "选择",
-                        style = MaterialTheme.typography.labelLarge,
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .combinedClickable(
-                                onClick = { appPickerOpen = true },
-                                onLongClick = null,
-                            )
-                            .padding(horizontal = 8.dp, vertical = 6.dp),
-                    )
-                }
-            }
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "筛选只影响显示，导出与清空的范围以对话框说明为准。",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
+        Spacer(Modifier.height(4.dp))
+        Text(
+            "筛选只影响显示，导出与清空的范围以对话框说明为准。",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
     if (appPickerOpen) {
         AppFilterDialog(

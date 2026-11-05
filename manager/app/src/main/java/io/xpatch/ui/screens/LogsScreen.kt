@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,13 +24,10 @@ import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ExpandLess
-import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.rounded.UnfoldLess
-import androidx.compose.material.icons.rounded.UnfoldMore
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -82,6 +80,7 @@ internal fun LogsScreen(
     onClearRuntime: suspend () -> RuntimeLogStore.ClearResult,
     onClearOperations: () -> Boolean,
     onExport: (String, String) -> Unit,
+    onOpenModule: (LogGroup) -> Unit,
 ) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -89,13 +88,12 @@ internal fun LogsScreen(
 
     var queryText by remember { mutableStateOf(state.query) }
     var opQueryText by remember { mutableStateOf(state.opQuery) }
-    var copyText by mutableStateOf("")
-    var copyTick by mutableIntStateOf(0)
-    var menuOpen by mutableStateOf(false)
-    var filterOpen by mutableStateOf(false)
-    var clearTarget by mutableStateOf<LogsTab?>(null)
-    var outcome by mutableStateOf<ClearOutcome?>(null)
-    var detailOf by mutableStateOf<RuntimeLogStore.Entry?>(null)
+    var copyText by remember { mutableStateOf("") }
+    var copyTick by remember { mutableIntStateOf(0) }
+    var menuOpen by remember { mutableStateOf(false) }
+    var filterOpen by remember { mutableStateOf(false) }
+    var clearTarget by remember { mutableStateOf<LogsTab?>(null) }
+    var outcome by remember { mutableStateOf<ClearOutcome?>(null) }
     val expandedEntries = remember { mutableStateMapOf<String, Boolean>() }
 
     LaunchedEffect(state.tab) {
@@ -158,20 +156,16 @@ internal fun LogsScreen(
     }
 
     val lastGood = remember { arrayOfNulls<LogsBase>(1) }
-    val ready = computed ?: lastGood[0]
-    if (computed != null) lastGood[0] = computed
+    state.cachedBase?.let { if (lastGood[0] == null) lastGood[0] = it }
+    val ready = computed ?: state.cachedBase ?: lastGood[0]
+    if (computed != null) {
+        lastGood[0] = computed
+        if (state.cachedBase !== computed) state.cachedBase = computed
+    }
     val computing = computed == null && ready != null
 
     val rows by remember(ready, state.view) {
         derivedStateOf { ready?.let { buildRows(it, state.view, state) }.orEmpty() }
-    }
-
-    LaunchedEffect(ready, state.expansionReady) {
-        val current = ready ?: return@LaunchedEffect
-        if (!state.expansionReady && runtime.snapshot != null) {
-            state.defaultExpanded = current.groups.size in 1..LOGS_EXPAND_ALL_THRESHOLD
-            state.expansionReady = true
-        }
     }
 
     val needle = state.opQuery.trim()
@@ -229,8 +223,6 @@ internal fun LogsScreen(
                 loadedCount = totalLoaded,
                 operationsCount = operations.size,
                 filterActive = state.filterActive,
-                canToggleAll = state.view == LogViewMode.Module && ready?.groups?.isNotEmpty() == true,
-                allOpen = ready?.let { state.allOpen(it.groups) } == true,
                 menuOpen = menuOpen,
                 onMenuOpenChange = { menuOpen = it },
                 exportOptions = exportOptions,
@@ -238,9 +230,6 @@ internal fun LogsScreen(
                 else operations.isNotEmpty(),
                 onTabChange = { state.tab = it },
                 onOpenFilter = { filterOpen = true },
-                onToggleAll = {
-                    ready?.let { state.setAll(it.groups, !state.allOpen(it.groups)) }
-                },
                 onExport = { option ->
                     menuOpen = false
                     onExport(option.fileName, option.build())
@@ -267,10 +256,12 @@ internal fun LogsScreen(
 
             if (state.tab == LogsTab.Runtime) {
                 val snapshot = runtime.snapshot
-                val showStatus = ready?.filtered == true ||
-                    snapshot?.truncatedByLimit == true ||
-                    snapshot?.headTruncated == true ||
-                    snapshot?.failures?.isNotEmpty() == true
+                val showStatus = ready != null && (
+                    ready.filtered ||
+                        snapshot?.truncatedByLimit == true ||
+                        snapshot?.headTruncated == true ||
+                        snapshot?.failures?.isNotEmpty() == true
+                    )
                 if (showStatus) {
                     SlimStatusLine(
                         matched = matched,
@@ -293,9 +284,10 @@ internal fun LogsScreen(
                     listState = listState,
                     hasNew = hasNew,
                     expandedEntries = expandedEntries,
+                    labelOf = labelOf,
                     modifier = Modifier.weight(1f),
                     onToggleEntry = { id -> expandedEntries[id] = !(expandedEntries[id] ?: false) },
-                    onOpenDetail = { detailOf = it },
+                    onOpenModule = onOpenModule,
                     onCopy = { entry ->
                         clipboard.setText(AnnotatedString(entry.fullText))
                         copyText = "已复制 " + entry.timeText
@@ -303,9 +295,6 @@ internal fun LogsScreen(
                     },
                     onRefresh = onRefreshRuntime,
                     onRequestStorage = onRequestStorage,
-                    onToggleGroup = { group ->
-                        state.expanded[group.key] = !state.isOpen(group)
-                    },
                     onJumpLatest = {
                         val target = if (state.timeOrder == TimeOrder.NewestFirst) 0 else rows.lastIndex
                         if (target >= 0) scope.launch { listState.animateScrollToItem(target) }
@@ -379,7 +368,6 @@ internal fun LogsScreen(
                 },
             )
         }
-
         clearTarget?.let { tab ->
             ClearConfirmDialog(
                 tab = tab,
@@ -412,21 +400,6 @@ internal fun LogsScreen(
         outcome?.let { result ->
             ClearResultDialog(result = result, onDismiss = { outcome = null })
         }
-
-        detailOf?.let { entry ->
-            EntryDetailDialog(
-                entry = entry,
-                ordered = ready?.ordered.orEmpty(),
-                labelOf = labelOf,
-                onNavigate = { detailOf = it },
-                onCopy = { copied ->
-                    clipboard.setText(AnnotatedString(copied.fullText))
-                    copyText = "已复制 " + copied.timeText
-                    copyTick++
-                },
-                onDismiss = { detailOf = null },
-            )
-        }
     }
 }
 
@@ -436,15 +409,12 @@ private fun LogsTopBar(
     loadedCount: Int,
     operationsCount: Int,
     filterActive: Boolean,
-    canToggleAll: Boolean,
-    allOpen: Boolean,
     menuOpen: Boolean,
     onMenuOpenChange: (Boolean) -> Unit,
     exportOptions: List<LogExportOption>,
     canClear: Boolean,
     onTabChange: (LogsTab) -> Unit,
     onOpenFilter: () -> Unit,
-    onToggleAll: () -> Unit,
     onExport: (LogExportOption) -> Unit,
     onClear: () -> Unit,
 ) {
@@ -466,13 +436,6 @@ private fun LogsTopBar(
             onClick = { onTabChange(LogsTab.Operations) },
         )
         Spacer(Modifier.weight(1f))
-        if (tab == LogsTab.Runtime && canToggleAll) {
-            TopBarIcon(
-                icon = if (allOpen) Icons.Rounded.UnfoldLess else Icons.Rounded.UnfoldMore,
-                description = if (allOpen) "全部收起" else "全部展开",
-                onClick = onToggleAll,
-            )
-        }
         TopBarIcon(
             icon = Icons.Rounded.Tune,
             description = "筛选与排序",
@@ -544,7 +507,7 @@ private fun TopBarIcon(
         Modifier
             .size(44.dp)
             .clip(RoundedCornerShape(12.dp))
-            .combinedClickable(onClick = onClick, onLongClick = null),
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
         Icon(
@@ -686,13 +649,13 @@ private fun RuntimeLogList(
     listState: LazyListState,
     hasNew: Boolean,
     expandedEntries: Map<String, Boolean>,
+    labelOf: (String) -> String,
     modifier: Modifier = Modifier,
     onToggleEntry: (String) -> Unit,
-    onOpenDetail: (RuntimeLogStore.Entry) -> Unit,
+    onOpenModule: (LogGroup) -> Unit,
     onCopy: (RuntimeLogStore.Entry) -> Unit,
     onRefresh: () -> Unit,
     onRequestStorage: () -> Unit,
-    onToggleGroup: (LogGroup) -> Unit,
     onJumpLatest: () -> Unit,
     onReset: () -> Unit,
 ) {
@@ -754,9 +717,9 @@ private fun RuntimeLogList(
                         when (val row = rows[index]) {
                             is LogRow.Header -> ModuleHeaderRow(
                                 group = row.group,
-                                open = row.open,
                                 showTarget = base?.multiApp == true,
-                                onToggle = { onToggleGroup(row.group) },
+                                labelOf = labelOf,
+                                onOpen = { onOpenModule(row.group) },
                             )
 
                             is LogRow.Day -> DayRow(row.day)
@@ -770,7 +733,6 @@ private fun RuntimeLogList(
                                 last = row.last,
                                 onToggle = { onToggleEntry(row.entry.id) },
                                 onCopy = { onCopy(row.entry) },
-                                onDetail = { onOpenDetail(row.entry) },
                             )
                         }
                     }
@@ -946,23 +908,26 @@ private fun EmptyResultCard(query: String, onReset: () -> Unit) {
 @Composable
 private fun ModuleHeaderRow(
     group: LogGroup,
-    open: Boolean,
     showTarget: Boolean,
-    onToggle: () -> Unit,
+    labelOf: (String) -> String,
+    onOpen: () -> Unit,
 ) {
-    val shape = if (open) RoundedCornerShape(topStart = 18.dp, topEnd = 18.dp)
-    else RoundedCornerShape(18.dp)
+    val title = if (group.framework) {
+        LogLayer.Framework.label
+    } else {
+        labelOf(group.module)
+    }
     Column(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(shape)
+            .clip(RoundedCornerShape(18.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Row(
             Modifier
                 .fillMaxWidth()
-                .combinedClickable(onClick = onToggle, onLongClick = null)
+                .clickable(onClick = onOpen)
                 .background(MaterialTheme.colorScheme.surfaceContainer)
                 .padding(horizontal = 16.dp, vertical = 11.dp),
             verticalAlignment = Alignment.CenterVertically,
@@ -983,7 +948,7 @@ private fun ModuleHeaderRow(
             Spacer(Modifier.size(8.dp))
             Column(Modifier.weight(1f)) {
                 Text(
-                    group.module,
+                    title,
                     style = MaterialTheme.typography.bodyLarge,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
@@ -991,6 +956,8 @@ private fun ModuleHeaderRow(
                 )
                 Text(
                     buildString {
+                        append(group.module)
+                        append(" · ")
                         if (showTarget) {
                             append(group.targets.joinToString("、"))
                             append(" · ")
@@ -1005,8 +972,8 @@ private fun ModuleHeaderRow(
                 )
             }
             Icon(
-                if (open) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
-                contentDescription = if (open) "收起该模块日志" else "展开该模块日志",
+                Icons.Rounded.ChevronRight,
+                contentDescription = "查看该模块日志",
                 modifier = Modifier.size(20.dp),
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -1015,7 +982,7 @@ private fun ModuleHeaderRow(
 }
 
 @Composable
-private fun DayRow(day: String) {
+internal fun DayRow(day: String) {
     Text(
         day,
         style = MaterialTheme.typography.labelSmall,
@@ -1027,7 +994,7 @@ private fun DayRow(day: String) {
 }
 
 @Composable
-private fun LogEntryItem(
+internal fun LogEntryItem(
     entry: RuntimeLogStore.Entry,
     query: String,
     expanded: Boolean,
@@ -1036,14 +1003,7 @@ private fun LogEntryItem(
     last: Boolean,
     onToggle: () -> Unit,
     onCopy: () -> Unit,
-    onDetail: () -> Unit,
 ) {
-    val shape = RoundedCornerShape(
-        topStart = 0.dp,
-        topEnd = 0.dp,
-        bottomStart = if (last) 18.dp else 0.dp,
-        bottomEnd = if (last) 18.dp else 0.dp,
-    )
     Column(
         Modifier
             .fillMaxWidth()
@@ -1051,11 +1011,6 @@ private fun LogEntryItem(
                 start = if (modal) 12.dp else 0.dp,
                 end = if (modal) 12.dp else 0.dp,
                 bottom = if (last) 5.dp else 0.dp,
-            )
-            .clip(shape)
-            .background(
-                if (modal) MaterialTheme.colorScheme.surfaceContainerLow
-                else MaterialTheme.colorScheme.background,
             )
             .combinedClickable(onClick = onToggle, onLongClick = onCopy)
             .semantics {
@@ -1136,7 +1091,6 @@ private fun LogEntryItem(
         if (summaryTruncated(entry)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 TinyTextButton(if (expanded) "收起" else "查看全文", onToggle)
-                TinyTextButton("详情", onDetail)
             }
         }
     }

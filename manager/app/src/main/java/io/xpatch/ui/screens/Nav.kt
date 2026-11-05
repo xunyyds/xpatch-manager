@@ -33,6 +33,12 @@ internal sealed interface Page {
     data class AppScope(val app: AppInfo) : Page
     data object Repo : Page
     data class RepoDetail(val module: RepoStore.RepoModule) : Page
+    data class LogModule(
+        val groupKey: String,
+        val module: String,
+        val framework: Boolean,
+        val targets: List<String>,
+    ) : Page
 }
 
 internal enum class Tab(val label: String, val icon: ImageVector) {

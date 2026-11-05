@@ -50,7 +50,7 @@ internal fun StandardBottomBar(current: Tab, onSelect: (Tab) -> Unit) {
         }
         return
     }
-    NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+    NavigationBar(containerColor = Color.Transparent) {
         Tab.entries.forEach { entry ->
             NavigationBarItem(
                 selected = current == entry,

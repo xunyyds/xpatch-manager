@@ -54,6 +54,10 @@ internal fun SettingsScreen(
     settings: ManagerSettings,
     defaultSignatureName: String,
     exportLabel: String,
+    shizukuReady: Boolean,
+    shizukuAvailable: Boolean,
+    onRequestShizuku: () -> Unit,
+    onRecheckShizuku: () -> Unit,
     onOpenSignatures: () -> Unit,
     onThemeChange: (Int) -> Unit,
     onUiStyleChange: (UiStyle) -> Unit,
@@ -88,6 +92,16 @@ internal fun SettingsScreen(
                         listOf("标准", "液态"),
                         settings.bottomBarStyle,
                         onBottomBarChange,
+                    )
+                }
+            }
+            item {
+                SettingGroup("权限") {
+                    ShizukuSettingsRows(
+                        ready = shizukuReady,
+                        available = shizukuAvailable,
+                        onRequest = onRequestShizuku,
+                        onRecheck = onRecheckShizuku,
                     )
                 }
             }
@@ -156,6 +170,16 @@ internal fun SettingsScreen(
                         options = listOf("标准", "液态"),
                         selectedIndex = settings.bottomBarStyle,
                         onSelect = onBottomBarChange,
+                    )
+                }
+            }
+            item {
+                SettingGroup("权限") {
+                    ShizukuSettingsRows(
+                        ready = shizukuReady,
+                        available = shizukuAvailable,
+                        onRequest = onRequestShizuku,
+                        onRecheck = onRecheckShizuku,
                     )
                 }
             }

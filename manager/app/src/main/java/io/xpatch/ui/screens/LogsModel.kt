@@ -33,11 +33,17 @@ internal enum class LogViewMode(val label: String) {
 internal enum class GroupOrder(val label: String, val short: String) {
     LayerFirst("框架层在前", "框架优先"),
     ModuleFirst("模块层在前", "模块优先"),
-}
-
-internal enum class TimeOrder(val label: String, val short: String) {
+}internal enum class TimeOrder(val label: String, val short: String) {
     NewestFirst("最新在前", "时间 ↓"),
     OldestFirst("最早在前", "时间 ↑"),
+}
+
+internal enum class LogLevel(val label: String, val short: String) {
+    All("全部级别", "全部"),
+    Error("错误", "ERROR"),
+    Warn("警告", "WARN"),
+    Info("信息", "INFO"),
+    Debug("调试", "DEBUG"),
 }
 
 internal const val LOGS_EXPAND_ALL_THRESHOLD = 4
@@ -45,6 +51,58 @@ internal const val LOGS_HIGHLIGHT_LIMIT = 32
 internal const val LOGS_SEARCH_DEBOUNCE_MS = 220L
 internal const val LOGS_SUMMARY_MAX_LINES = 4
 internal const val LOGS_SUMMARY_MAX_CHARS = 260
+
+private val LEVEL_ERROR = Regex("\\[(ERROR|E|FATAL|SEVERE)\\]|\\b(ERROR|FATAL|SEVERE)\\b|Exception|Error:|错误|失败")
+private val LEVEL_WARN = Regex("\\[(WARN|WARNING|W)\\]|\\b(WARN|WARNING)\\b|警告")
+private val LEVEL_INFO = Regex("\\[(INFO|I)\\]|\\bINFO\\b")
+private val LEVEL_DEBUG = Regex("\\[(DEBUG|D|TRACE|V|VERBOSE)\\]|\\b(DEBUG|TRACE|VERBOSE)\\b")
+
+internal fun levelOf(entry: RuntimeLogStore.Entry): LogLevel {
+    val text = entry.message
+    return when {
+        LEVEL_ERROR.containsMatchIn(text) -> LogLevel.Error
+        LEVEL_WARN.containsMatchIn(text) -> LogLevel.Warn
+        LEVEL_DEBUG.containsMatchIn(text) -> LogLevel.Debug
+        LEVEL_INFO.containsMatchIn(text) -> LogLevel.Info
+        else -> LogLevel.Info
+    }
+}
+
+internal fun levelColors(level: LogLevel): Pair<androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> =
+    when (level) {
+        LogLevel.Error -> Color(0xFFB3261E) to Color(0xFFFFFFFF)
+        LogLevel.Warn -> Color(0xFFB26A00) to Color(0xFFFFFFFF)
+        LogLevel.Info -> Color(0xFF2F80ED) to Color(0xFFFFFFFF)
+        LogLevel.Debug -> Color(0xFF4F5B66) to Color(0xFFFFFFFF)
+        LogLevel.All -> Color(0xFF6B7280) to Color(0xFFFFFFFF)
+    }
+
+internal class LogDetailState {
+    var query by mutableStateOf("")
+    var level by mutableStateOf(LogLevel.All)
+    var timeOrder by mutableStateOf(TimeOrder.NewestFirst)
+    var dayFrom by mutableStateOf<String?>(null)
+    var dayTo by mutableStateOf<String?>(null)
+    val expanded = mutableStateMapOf<String, Boolean>()
+
+    val filterActive: Boolean
+        get() = level != LogLevel.All ||
+            dayFrom != null ||
+            dayTo != null ||
+            timeOrder != TimeOrder.NewestFirst
+
+    fun reset() {
+        query = ""
+        level = LogLevel.All
+        timeOrder = TimeOrder.NewestFirst
+        dayFrom = null
+        dayTo = null
+    }
+
+    fun toggleEntry(id: String) {
+        expanded[id] = !(expanded[id] ?: false)
+    }
+}
 
 internal data class RuntimeLogsState(
     val snapshot: RuntimeLogStore.Snapshot? = null,
@@ -80,13 +138,12 @@ internal class LogsState {
     var view by mutableStateOf(LogViewMode.Module)
     var groupOrder by mutableStateOf(GroupOrder.LayerFirst)
     var timeOrder by mutableStateOf(TimeOrder.NewestFirst)
-    var defaultExpanded by mutableStateOf(false)
-    var expansionReady by mutableStateOf(false)
     var seenNewest by mutableStateOf<String?>(null)
     var hasNew by mutableStateOf(false)
-    val expanded = mutableStateMapOf<String, Boolean>()
     val runtimeList = LazyListState()
     val operationsList = LazyListState()
+
+    var cachedBase by mutableStateOf<LogsBase?>(null)
 
     val filterActive: Boolean
         get() = layer != LogLayer.All ||
@@ -102,20 +159,6 @@ internal class LogsState {
         view = LogViewMode.Module
         groupOrder = GroupOrder.LayerFirst
         timeOrder = TimeOrder.NewestFirst
-    }
-
-    fun isOpen(group: LogGroup): Boolean = expanded[group.key] ?: defaultExpanded
-
-    fun allOpen(groups: List<LogGroup>): Boolean =
-        groups.isNotEmpty() && groups.all { isOpen(it) }
-
-    fun toggle(group: LogGroup) {
-        expanded[group.key] = !isOpen(group)
-    }
-
-    fun setAll(groups: List<LogGroup>, open: Boolean) {
-        groups.forEach { expanded[it.key] = open }
-        defaultExpanded = open
     }
 }
 
@@ -288,17 +331,22 @@ internal fun buildRows(
         }
         return rows
     }
+    val searching = base.query.isNotEmpty()
     base.groups.forEach { group ->
-        val open = state.isOpen(group)
-        rows += LogRow.Header(group, open)
-        if (!open) return@forEach
+        rows += LogRow.Header(group, searching)
+        if (!searching) return@forEach
         var previousDay: String? = null
         group.entries.forEachIndexed { index, entry ->
             if (entry.day != previousDay) {
                 rows += LogRow.Day(entry.day, group.key)
                 previousDay = entry.day
             }
-            rows += LogRow.EntryRow(entry, group.key, base.multiApp, index == group.entries.lastIndex)
+            rows += LogRow.EntryRow(
+                entry,
+                group.key,
+                base.multiApp,
+                index == group.entries.lastIndex,
+            )
         }
     }
     return rows
@@ -341,3 +389,43 @@ internal fun highlightMatches(text: String, needle: String): AnnotatedString {
 
 internal fun operationMatches(line: String, needle: String): Boolean =
     needle.isEmpty() || line.contains(needle, true)
+
+internal fun filterGroupEntries(
+    entries: List<RuntimeLogStore.Entry>,
+    query: String,
+    level: LogLevel,
+    dayFrom: String?,
+    dayTo: String?,
+    timeOrder: TimeOrder,
+): List<RuntimeLogStore.Entry> {
+    val needle = query.trim()
+    val low = dayFrom?.takeIf { it.isNotBlank() }
+    val high = dayTo?.takeIf { it.isNotBlank() }
+    val kept = entries.filter { entry ->
+        if (level != LogLevel.All && levelOf(entry) != level) return@filter false
+        if (low != null && entry.day < low) return@filter false
+        if (high != null && entry.day > high) return@filter false
+        if (needle.isNotEmpty() &&
+            !entry.message.contains(needle, true) &&
+            !entry.detail.contains(needle, true)
+        ) {
+            return@filter false
+        }
+        true
+    }
+    val comparator = entryComparator()
+    return if (timeOrder == TimeOrder.NewestFirst) kept.sortedWith(comparator.reversed())
+    else kept.sortedWith(comparator)
+}
+
+internal fun daysOf(entries: List<RuntimeLogStore.Entry>): List<String> =
+    entries.mapTo(LinkedHashSet()) { it.day }.sortedDescending()
+
+internal fun levelCounts(entries: List<RuntimeLogStore.Entry>): Map<LogLevel, Int> {
+    val counts = HashMap<LogLevel, Int>()
+    for (entry in entries) {
+        val level = levelOf(entry)
+        counts[level] = (counts[level] ?: 0) + 1
+    }
+    return counts
+}

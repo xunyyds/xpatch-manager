@@ -111,6 +111,10 @@ fun MainScaffold(
     val nav = rememberNavigator()
     val miuix = LocalMiuix.current
     val logsState = remember { LogsState() }
+    var logDetailState by remember { mutableStateOf(LogDetailState()) }
+    val logDetailList = androidx.compose.foundation.lazy.rememberLazyListState()
+    var logCopied by remember { mutableStateOf("") }
+    var logCopyTick by remember { mutableIntStateOf(0) }
     var logsRefreshing by remember { mutableStateOf(false) }
     var logsRuntime by remember {
         mutableStateOf(RuntimeLogsState(hasAccess = logStore.hasAccess()))
@@ -380,8 +384,11 @@ fun MainScaffold(
     }
 
     LaunchedEffect(nav.tab) {
-        if (nav.tab == Tab.Logs && logsRuntime.snapshot == null && !logsRefreshing) {
-            loadRuntimeLogs()
+        if (nav.tab == Tab.Logs) {
+            logsState.tab = LogsTab.Runtime
+            if (logsRuntime.snapshot == null && !logsRefreshing) {
+                loadRuntimeLogs()
+            }
         }
     }
 
@@ -401,6 +408,8 @@ fun MainScaffold(
         is Page.AppScope -> current.app.label
         is Page.Repo -> "模块仓库"
         is Page.RepoDetail -> current.module.name
+        is Page.LogModule -> if (current.framework) LogLayer.Framework.label
+        else labelOf(current.module)
     }
 
     val backdrop = rememberLayerBackdrop()
@@ -471,11 +480,13 @@ fun MainScaffold(
         },
         bottomBar = {
             if (nav.page is Page.Home) {
-                when {
-                    settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID ->
-                        LiquidBar(nav.tab, backdrop) { nav.select(it) }
+                Box(Modifier.background(androidx.compose.ui.graphics.Color.Transparent)) {
+                    when {
+                        settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID ->
+                            LiquidBar(nav.tab, backdrop) { nav.select(it) }
 
-                    else -> StandardBottomBar(nav.tab) { nav.select(it) }
+                        else -> StandardBottomBar(nav.tab) { nav.select(it) }
+                    }
                 }
             }
         },
@@ -484,7 +495,12 @@ fun MainScaffold(
             Modifier
                 .fillMaxSize()
                 .nestedScroll(scrollConnection)
-                .padding(innerPadding)
+                .padding(
+                    androidx.compose.foundation.layout.PaddingValues(
+                        top = innerPadding.calculateTopPadding(),
+                        bottom = 0.dp,
+                    ),
+                )
                 .background(
                     if (miuix) MiuixTheme.colorScheme.background
                     else MaterialTheme.colorScheme.background,
@@ -494,36 +510,6 @@ fun MainScaffold(
                 is Page.Home -> when (nav.tab) {
                     Tab.Home -> HomeScreen(
                         apps = patchedApps,
-                        shizukuReady = shizukuReady,
-                        shizukuAvailable = shizukuAvailable,
-                        onRequestShizuku = {
-                            shizukuAvailable = ShizukuBridge.isAvailable()
-                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
-                            if (shizukuReady) {
-                                eventLog.add("Shizuku 已授权")
-                                token++
-                            } else if (!shizukuAvailable) {
-                                failure = "未检测到 Shizuku。请先安装并启动 Shizuku，或使用「打开方式」自行选择安装器。"
-                            } else {
-                                ShizukuBridge.requestPermission { granted ->
-                                    shizukuReady = granted
-                                    eventLog.add(if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝")
-                                    token++
-                                }
-                            }
-                        },
-                        onRecheckShizuku = {
-                            shizukuAvailable = ShizukuBridge.isAvailable()
-                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
-                            eventLog.add(
-                                when {
-                                    shizukuReady -> "Shizuku 已授权"
-                                    shizukuAvailable -> "Shizuku 可用但未授权"
-                                    else -> "未检测到 Shizuku"
-                                },
-                            )
-                            token++
-                        },
                         refreshing = homeRefreshing,
                         onRefresh = {
                             scope.launch {
@@ -608,12 +594,58 @@ fun MainScaffold(
                             pendingLogText = text
                             logExportLauncher.launch(fileName)
                         },
+                        onOpenModule = { group ->
+                            logDetailState = LogDetailState()
+                            nav.navigate(
+                                Page.LogModule(
+                                    groupKey = group.key,
+                                    module = group.module,
+                                    framework = group.framework,
+                                    targets = group.targets,
+                                ),
+                            )
+                        },
                     )
 
                     Tab.Settings -> SettingsScreen(
                         settings = settings,
                         defaultSignatureName = signatures.firstOrNull { it.id == defaultSignatureId }?.name ?: "XPatch",
                         exportLabel = settings.exportTreeLabel,
+                        shizukuReady = shizukuReady,
+                        shizukuAvailable = shizukuAvailable,
+                        onRequestShizuku = {
+                            val wasReady = shizukuReady
+                            shizukuAvailable = ShizukuBridge.isAvailable()
+                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
+                            if (shizukuReady) {
+                                if (!wasReady) eventLog.add("Shizuku 已授权")
+                                token++
+                            } else if (!shizukuAvailable) {
+                                failure = "未检测到 Shizuku。请先安装并启动 Shizuku，或使用「打开方式」自行选择安装器。"
+                            } else {
+                                ShizukuBridge.requestPermission { granted ->
+                                    shizukuReady = granted
+                                    eventLog.add(if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝")
+                                    token++
+                                }
+                            }
+                        },
+                        onRecheckShizuku = {
+                            val wasReady = shizukuReady
+                            val wasAvailable = shizukuAvailable
+                            shizukuAvailable = ShizukuBridge.isAvailable()
+                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
+                            if (shizukuReady != wasReady || shizukuAvailable != wasAvailable) {
+                                eventLog.add(
+                                    when {
+                                        shizukuReady -> "Shizuku 已授权"
+                                        shizukuAvailable -> "Shizuku 可用但未授权"
+                                        else -> "未检测到 Shizuku"
+                                    },
+                                )
+                            }
+                            token++
+                        },
                         onOpenSignatures = { nav.navigate(Page.Signatures) },
                         onThemeChange = {
                             settingsStore.setThemeMode(it)
@@ -750,6 +782,25 @@ fun MainScaffold(
                     },
                     onOpenStore = { nav.navigate(Page.Repo) },
                 )
+
+                is Page.LogModule -> {
+                    val groupEntries = logsRuntime.entries.filter { entry ->
+                        if (current.framework) entry.framework else entry.module == current.module
+                    }
+                    LogModuleScreen(
+                        module = current.module,
+                        framework = current.framework,
+                        targets = current.targets,
+                        entries = groupEntries,
+                        labelOf = labelOf,
+                        state = logDetailState,
+                        listState = logDetailList,
+                        onCopy = { entry ->
+                            logCopied = "已复制 " + entry.timeText
+                            logCopyTick++
+                        },
+                    )
+                }
 
                 is Page.Picker -> PickerScreen(
                     apps = patchableApps,
