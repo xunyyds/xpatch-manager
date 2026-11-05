@@ -306,7 +306,11 @@ fun MainScaffold(
                         local
                     } else if (ShizukuBridge.hasPermission()) {
                         runCatching {
-                            logStore.loadViaShell({ command -> ShizukuBridge.exec(command) }, targets)
+                            logStore.loadViaShell(
+                                reader = { command -> ShizukuBridge.exec(command) },
+                                fileReader = { path, maxBytes -> ShizukuBridge.readText(path, maxBytes) },
+                                targets = targets,
+                            )
                         }.getOrNull() ?: local
                     } else {
                         local

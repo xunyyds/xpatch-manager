@@ -67,6 +67,10 @@ class RuntimeLogStore {
         fun read(command: String): String?
     }
 
+    fun interface FileReader {
+        fun read(path: String, maxBytes: Int): String?
+    }
+
     private data class FileTail(val entries: List<Entry>, val truncated: Boolean)
 
     fun hasAccess(): Boolean =
@@ -93,6 +97,7 @@ class RuntimeLogStore {
 
     suspend fun loadViaShell(
         reader: ShellReader,
+        fileReader: FileReader,
         targets: Collection<String>,
         limit: Int = MAX_ENTRIES,
     ): Snapshot? = withContext(Dispatchers.IO) {
@@ -114,8 +119,7 @@ class RuntimeLogStore {
         val entries = mutableListOf<Entry>()
         var headTruncated = false
         paths.forEach { (path, target, module) ->
-            val content = reader.read("tail -c $TAIL_BYTES_PER_FILE $path 2>/dev/null")
-                ?: return@forEach
+            val content = fileReader.read(path, TAIL_BYTES_PER_FILE) ?: return@forEach
             if (content.isEmpty()) return@forEach
             val parsed = parseTail(content.toByteArray(Charsets.UTF_8), path, target, module, 0L)
             entries += parsed.entries
