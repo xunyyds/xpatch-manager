@@ -1,21 +1,31 @@
 package io.xpatch.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.xpatch.model.AppInfo
 import io.xpatch.ui.components.EmptyState
@@ -34,13 +44,14 @@ internal fun HomeScreen(
     shizukuReady: Boolean,
     shizukuAvailable: Boolean,
     onRequestShizuku: () -> Unit,
+    onRecheckShizuku: () -> Unit,
     refreshing: Boolean,
     onRefresh: () -> Unit,
     onOpen: (AppInfo) -> Unit,
 ) {
     val miuix = LocalMiuix.current
     Column(Modifier.fillMaxSize()) {
-        ShizukuBanner(shizukuReady, shizukuAvailable, onRequestShizuku)
+        ShizukuBanner(shizukuReady, shizukuAvailable, onRequestShizuku, onRecheckShizuku)
         PullRefreshBox(
             refreshing = refreshing,
             onRefresh = onRefresh,
@@ -98,24 +109,94 @@ private fun AppEntry(app: AppInfo, onOpen: (AppInfo) -> Unit) {
 }
 
 @Composable
-internal fun ShizukuBanner(ready: Boolean, available: Boolean, onRequest: () -> Unit) {
-    val text = when {
-        ready -> "Shizuku 已授权"
-        available -> "需要 Shizuku 授权 · 点此授权"
-        else -> "未检测到 Shizuku · 使用系统安装器"
+internal fun ShizukuBanner(
+    ready: Boolean,
+    available: Boolean,
+    onRequest: () -> Unit,
+    onRecheck: () -> Unit,
+) {
+    val miuix = LocalMiuix.current
+    val container = when {
+        ready -> if (miuix) MiuixTheme.colorScheme.primaryContainer
+        else MaterialTheme.colorScheme.primaryContainer
+        else -> if (miuix) MiuixTheme.colorScheme.surfaceContainerHigh
+        else MaterialTheme.colorScheme.surfaceContainerHigh
     }
-    Row(
+    val title = when {
+        ready -> "Shizuku 已授权"
+        available -> "Shizuku 未授权"
+        else -> "未检测到 Shizuku"
+    }
+    val body = when {
+        ready -> "已打包应用的启动、强制停止、Dexopt 与运行日志读取可用。"
+        available -> "授权后才能重启应用、执行 Dexopt，并在无存储权限时读取运行日志。"
+        else -> "未安装或未启动 Shizuku，只能使用系统安装器安装打包结果。"
+    }
+    Column(
         Modifier
             .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 6.dp)
-            .let { if (!ready && available) it.clickable { onRequest() } else it }
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .padding(horizontal = 12.dp, vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(container)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+    ) {
+        Text(
+            title,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.Medium,
+            color = if (ready) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurface,
+        )
+        Spacer(Modifier.height(3.dp))
+        Text(
+            body,
+            style = MaterialTheme.typography.labelSmall,
+            color = if (ready) MaterialTheme.colorScheme.onPrimaryContainer
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (!ready) {
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                BannerButton(
+                    text = if (available) "去授权" else "重新检测",
+                    primary = true,
+                    onClick = onRequest,
+                )
+                if (available) {
+                    BannerButton(text = "重新检测", primary = false, onClick = onRecheck)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BannerButton(text: String, primary: Boolean, onClick: () -> Unit) {
+    val miuix = LocalMiuix.current
+    val container = when {
+        primary -> MaterialTheme.colorScheme.primary
+        miuix -> MiuixTheme.colorScheme.surface
+        else -> MaterialTheme.colorScheme.surface
+    }
+    val content = when {
+        primary -> MaterialTheme.colorScheme.onPrimary
+        miuix -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
+        Modifier
+            .heightIn(min = 34.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(container)
+            .combinedClickable(onClick = onClick, onLongClick = null)
+            .padding(horizontal = 14.dp, vertical = 7.dp),
+        contentAlignment = Alignment.Center,
     ) {
         Text(
             text,
-            style = MaterialTheme.typography.bodySmall,
-            color = if (ready) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.labelLarge,
+            color = content,
+            maxLines = 1,
         )
     }
 }

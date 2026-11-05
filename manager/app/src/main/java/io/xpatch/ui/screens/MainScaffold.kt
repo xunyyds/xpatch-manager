@@ -116,6 +116,10 @@ fun MainScaffold(
         mutableStateOf(RuntimeLogsState(hasAccess = logStore.hasAccess()))
     }
     var homeRefreshing by remember { mutableStateOf(false) }
+    var shizukuAvailable by remember { mutableStateOf(ShizukuBridge.isAvailable()) }
+    var shizukuReady by remember {
+        mutableStateOf(shizukuAvailable && ShizukuBridge.hasPermission())
+    }
     var modulesRefreshing by remember { mutableStateOf(false) }
     var pendingExportFileName by remember { mutableStateOf<String?>(null) }
     var pendingLogText by remember { mutableStateOf<String?>(null) }
@@ -361,6 +365,8 @@ fun MainScaffold(
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
+                shizukuAvailable = ShizukuBridge.isAvailable()
+                shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
                 val access = logStore.hasAccess()
                 val hadAccess = logsRuntime.hasAccess
                 logsRuntime = logsRuntime.copy(hasAccess = access)
@@ -488,12 +494,36 @@ fun MainScaffold(
                 is Page.Home -> when (nav.tab) {
                     Tab.Home -> HomeScreen(
                         apps = patchedApps,
-                        shizukuReady = ShizukuBridge.isAvailable() && ShizukuBridge.hasPermission(),
-                        shizukuAvailable = ShizukuBridge.isAvailable(),
-                        onRequestShizuku = { ShizukuBridge.requestPermission { granted ->
-                                eventLog.add(if (granted) "已授权" else "Shizuku 授权被拒绝")
+                        shizukuReady = shizukuReady,
+                        shizukuAvailable = shizukuAvailable,
+                        onRequestShizuku = {
+                            shizukuAvailable = ShizukuBridge.isAvailable()
+                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
+                            if (shizukuReady) {
+                                eventLog.add("Shizuku 已授权")
                                 token++
-                            } },
+                            } else if (!shizukuAvailable) {
+                                failure = "未检测到 Shizuku。请先安装并启动 Shizuku，或使用「打开方式」自行选择安装器。"
+                            } else {
+                                ShizukuBridge.requestPermission { granted ->
+                                    shizukuReady = granted
+                                    eventLog.add(if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝")
+                                    token++
+                                }
+                            }
+                        },
+                        onRecheckShizuku = {
+                            shizukuAvailable = ShizukuBridge.isAvailable()
+                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
+                            eventLog.add(
+                                when {
+                                    shizukuReady -> "Shizuku 已授权"
+                                    shizukuAvailable -> "Shizuku 可用但未授权"
+                                    else -> "未检测到 Shizuku"
+                                },
+                            )
+                            token++
+                        },
                         refreshing = homeRefreshing,
                         onRefresh = {
                             scope.launch {
