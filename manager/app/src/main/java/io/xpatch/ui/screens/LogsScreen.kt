@@ -5,7 +5,6 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,20 +20,20 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Sort
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.UnfoldLess
+import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -54,7 +53,7 @@ import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -63,13 +62,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.RuntimeLogStore
-import io.xpatch.ui.components.Chip
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.SearchField
+import io.xpatch.ui.theme.LocalMiuix
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun LogsScreen(
@@ -91,11 +91,8 @@ internal fun LogsScreen(
     var opQueryText by remember { mutableStateOf(state.opQuery) }
     var copyText by mutableStateOf("")
     var copyTick by mutableIntStateOf(0)
-    var sortOpen by mutableStateOf(false)
     var menuOpen by mutableStateOf(false)
-    var appFilterOpen by mutableStateOf(false)
-    var layerOpen by mutableStateOf(false)
-    var viewOpen by mutableStateOf(false)
+    var filterOpen by mutableStateOf(false)
     var clearTarget by mutableStateOf<LogsTab?>(null)
     var outcome by mutableStateOf<ClearOutcome?>(null)
     var detailOf by mutableStateOf<RuntimeLogStore.Entry?>(null)
@@ -227,15 +224,23 @@ internal fun LogsScreen(
 
     Box(Modifier.fillMaxSize()) {
         Column(Modifier.fillMaxSize()) {
-            LogsTabBar(
-                state = state,
-                operationsCount = operations.size,
+            LogsTopBar(
+                tab = state.tab,
                 loadedCount = totalLoaded,
+                operationsCount = operations.size,
+                filterActive = state.filterActive,
+                canToggleAll = state.view == LogViewMode.Module && ready?.groups?.isNotEmpty() == true,
+                allOpen = ready?.let { state.allOpen(it.groups) } == true,
                 menuOpen = menuOpen,
                 onMenuOpenChange = { menuOpen = it },
                 exportOptions = exportOptions,
                 canClear = if (state.tab == LogsTab.Runtime) totalLoaded > 0 || runtime.snapshot != null
                 else operations.isNotEmpty(),
+                onTabChange = { state.tab = it },
+                onOpenFilter = { filterOpen = true },
+                onToggleAll = {
+                    ready?.let { state.setAll(it.groups, !state.allOpen(it.groups)) }
+                },
                 onExport = { option ->
                     menuOpen = false
                     onExport(option.fileName, option.build())
@@ -252,40 +257,33 @@ internal fun LogsScreen(
                     onValueChange = { queryText = it },
                     placeholder = "搜索日志内容、模块或应用",
                 )
-                FilterRow(
-                    state = state,
-                    ready = ready,
-                    layerOpen = layerOpen,
-                    viewOpen = viewOpen,
-                    onLayerOpenChange = { layerOpen = it },
-                    onViewOpenChange = { viewOpen = it },
-                    onAppFilter = { appFilterOpen = true },
+            } else {
+                SearchField(
+                    value = opQueryText,
+                    onValueChange = { opQueryText = it },
+                    placeholder = "搜索操作记录",
                 )
-                SortRow(
-                    state = state,
-                    canToggleAll = state.view == LogViewMode.Module &&
-                        (ready?.groups?.isNotEmpty() == true),
-                    allOpen = ready?.let { state.allOpen(it.groups) } == true,
-                    onSort = {
-                        android.util.Log.i("LogsDbg", "sort chip tapped, sortOpen=$sortOpen")
-                        sortOpen = true
-                        android.util.Log.i("LogsDbg", "sortOpen now=$sortOpen")
-                    },
-                    onToggleAll = {
-                        ready?.let { state.setAll(it.groups, !state.allOpen(it.groups)) }
-                    },
-                )
-                StatusLine(
-                    matched = matched,
-                    loaded = totalLoaded,
-                    filtered = ready?.filtered == true,
-                    snapshot = runtime.snapshot,
-                    refreshing = runtime.refreshing,
-                    onReset = {
-                        state.resetFilters()
-                        queryText = ""
-                    },
-                )
+            }
+
+            if (state.tab == LogsTab.Runtime) {
+                val snapshot = runtime.snapshot
+                val showStatus = ready?.filtered == true ||
+                    snapshot?.truncatedByLimit == true ||
+                    snapshot?.headTruncated == true ||
+                    snapshot?.failures?.isNotEmpty() == true
+                if (showStatus) {
+                    SlimStatusLine(
+                        matched = matched,
+                        loaded = totalLoaded,
+                        filtered = ready?.filtered == true,
+                        snapshot = snapshot,
+                        refreshing = runtime.refreshing,
+                        onReset = {
+                            state.resetFilters()
+                            queryText = ""
+                        },
+                    )
+                }
                 RuntimeLogList(
                     runtime = runtime,
                     state = state,
@@ -295,6 +293,7 @@ internal fun LogsScreen(
                     listState = listState,
                     hasNew = hasNew,
                     expandedEntries = expandedEntries,
+                    modifier = Modifier.weight(1f),
                     onToggleEntry = { id -> expandedEntries[id] = !(expandedEntries[id] ?: false) },
                     onOpenDetail = { detailOf = it },
                     onCopy = { entry ->
@@ -318,27 +317,25 @@ internal fun LogsScreen(
                     },
                 )
             } else {
-                SearchField(
-                    value = opQueryText,
-                    onValueChange = { opQueryText = it },
-                    placeholder = "搜索操作记录",
-                )
-                StatusLine(
-                    matched = shownOperations.size,
-                    loaded = operations.size,
-                    filtered = needle.isNotEmpty(),
-                    snapshot = null,
-                    refreshing = false,
-                    onReset = {
-                        state.opQuery = ""
-                        opQueryText = ""
-                    },
-                )
+                if (needle.isNotEmpty()) {
+                    SlimStatusLine(
+                        matched = shownOperations.size,
+                        loaded = operations.size,
+                        filtered = true,
+                        snapshot = null,
+                        refreshing = false,
+                        onReset = {
+                            state.opQuery = ""
+                            opQueryText = ""
+                        },
+                    )
+                }
                 OperationLogList(
                     operations = shownOperations,
                     total = operations.size,
                     query = needle,
                     listState = listState,
+                    modifier = Modifier.weight(1f),
                     onCopy = { line ->
                         clipboard.setText(AnnotatedString(line))
                         copyText = "已复制操作日志"
@@ -371,27 +368,15 @@ internal fun LogsScreen(
             )
         }
 
-        if (sortOpen) {
-            SortPanel(
-                view = state.view,
-                groupOrder = state.groupOrder,
-                timeOrder = state.timeOrder,
-                onViewChange = { state.view = it },
-                onGroupOrderChange = { state.groupOrder = it },
-                onTimeOrderChange = { state.timeOrder = it },
-                onDismiss = { sortOpen = false },
-            )
-        }
-
-        if (appFilterOpen) {
-            AppFilterDialog(
+        if (filterOpen) {
+            FilterPanel(
+                state = state,
                 apps = ready?.apps.orEmpty(),
-                selected = state.apps,
-                onConfirm = {
-                    state.apps = it
-                    appFilterOpen = false
+                onDismiss = { filterOpen = false },
+                onReset = {
+                    state.resetFilters()
+                    queryText = ""
                 },
-                onDismiss = { appFilterOpen = false },
             )
         }
 
@@ -446,53 +431,89 @@ internal fun LogsScreen(
 }
 
 @Composable
-private fun LogsTabBar(
-    state: LogsState,
-    operationsCount: Int,
+private fun LogsTopBar(
+    tab: LogsTab,
     loadedCount: Int,
+    operationsCount: Int,
+    filterActive: Boolean,
+    canToggleAll: Boolean,
+    allOpen: Boolean,
     menuOpen: Boolean,
     onMenuOpenChange: (Boolean) -> Unit,
     exportOptions: List<LogExportOption>,
     canClear: Boolean,
+    onTabChange: (LogsTab) -> Unit,
+    onOpenFilter: () -> Unit,
+    onToggleAll: () -> Unit,
     onExport: (LogExportOption) -> Unit,
     onClear: () -> Unit,
 ) {
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 6.dp, top = 8.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
+            .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 2.dp),
+        horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Chip(
+        LogsPill(
             text = LogsTab.Runtime.label + " " + countText(loadedCount),
-            selected = state.tab == LogsTab.Runtime,
-            onClick = { state.tab = LogsTab.Runtime },
+            selected = tab == LogsTab.Runtime,
+            onClick = { onTabChange(LogsTab.Runtime) },
         )
-        Chip(
+        LogsPill(
             text = LogsTab.Operations.label + " " + countText(operationsCount),
-            selected = state.tab == LogsTab.Operations,
-            onClick = { state.tab = LogsTab.Operations },
+            selected = tab == LogsTab.Operations,
+            onClick = { onTabChange(LogsTab.Operations) },
         )
         Spacer(Modifier.weight(1f))
+        if (tab == LogsTab.Runtime && canToggleAll) {
+            IconButton(onClick = onToggleAll) {
+                Icon(
+                    if (allOpen) Icons.Rounded.UnfoldLess else Icons.Rounded.UnfoldMore,
+                    contentDescription = if (allOpen) "全部收起" else "全部展开",
+                    modifier = Modifier.size(20.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+        IconButton(onClick = onOpenFilter) {
+            Box {
+                Icon(
+                    Icons.Rounded.Tune,
+                    contentDescription = "筛选与排序",
+                    modifier = Modifier.size(20.dp),
+                    tint = if (filterActive) MaterialTheme.colorScheme.primary
+                    else MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (filterActive) {
+                    Box(
+                        Modifier
+                            .align(Alignment.TopEnd)
+                            .size(6.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary),
+                    )
+                }
+            }
+        }
         Box {
             IconButton(onClick = { onMenuOpenChange(true) }) {
                 Icon(
                     Icons.Rounded.MoreVert,
                     contentDescription = "更多日志操作",
+                    modifier = Modifier.size(20.dp),
                     tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
             DropdownMenu(expanded = menuOpen, onDismissRequest = { onMenuOpenChange(false) }) {
-                exportOptions.forEachIndexed { index, option ->
-                    val enabled = index == 0 && option.hasContent || index == 1 && option.hasContent
+                exportOptions.forEach { option ->
                     DropdownMenuItem(
                         text = {
                             Column(Modifier.width(236.dp)) {
                                 Text(
                                     option.label,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = if (enabled) MaterialTheme.colorScheme.onSurface
+                                    color = if (option.hasContent) MaterialTheme.colorScheme.onSurface
                                     else MaterialTheme.colorScheme.onSurfaceVariant,
                                 )
                                 Text(
@@ -502,7 +523,7 @@ private fun LogsTabBar(
                                 )
                             }
                         },
-                        enabled = enabled,
+                        enabled = option.hasContent,
                         onClick = { onExport(option) },
                     )
                 }
@@ -513,7 +534,7 @@ private fun LogsTabBar(
                     text = {
                         Column(Modifier.width(236.dp)) {
                             Text(
-                                if (state.tab == LogsTab.Runtime) "清空运行日志…" else "清空操作日志…",
+                                if (tab == LogsTab.Runtime) "清空运行日志…" else "清空操作日志…",
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = MaterialTheme.colorScheme.error,
                             )
@@ -533,123 +554,45 @@ private fun LogsTabBar(
 }
 
 @Composable
-private fun FilterRow(
-    state: LogsState,
-    ready: LogsBase?,
-    layerOpen: Boolean,
-    viewOpen: Boolean,
-    onLayerOpenChange: (Boolean) -> Unit,
-    onViewOpenChange: (Boolean) -> Unit,
-    onAppFilter: () -> Unit,
+private fun LogsPill(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
 ) {
-    Row(
+    val miuix = LocalMiuix.current
+    val container = when {
+        selected && miuix -> MiuixTheme.colorScheme.tertiaryContainer
+        selected -> MaterialTheme.colorScheme.primaryContainer
+        else -> Color.Transparent
+    }
+    val content = when {
+        selected && miuix -> MiuixTheme.colorScheme.onTertiaryContainer
+        selected -> MaterialTheme.colorScheme.onPrimaryContainer
+        miuix -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+        else -> MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    Box(
         Modifier
-            .fillMaxWidth()
-            .horizontalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 2.dp),
-        horizontalArrangement = Arrangement.spacedBy(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .heightIn(min = 32.dp)
+            .clip(RoundedCornerShape(10.dp))
+            .background(container)
+            .combinedClickable(onClick = onClick, onLongClick = null)
+            .padding(horizontal = 11.dp, vertical = 6.dp),
+        contentAlignment = Alignment.Center,
     ) {
-        FilterChipButton(
-            text = appChipText(state.apps, ready?.apps.orEmpty()),
-            active = state.apps.isNotEmpty(),
-            onClick = onAppFilter,
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+            color = content,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        Box {
-            FilterChipButton(
-                text = state.layer.label,
-                active = state.layer != LogLayer.All,
-                onClick = { onLayerOpenChange(true) },
-            )
-            DropdownMenu(expanded = layerOpen, onDismissRequest = { onLayerOpenChange(false) }) {
-                LogLayer.entries.forEach { item ->
-                    DropdownMenuItem(
-                        text = { Text(item.label) },
-                        onClick = {
-                            onLayerOpenChange(false)
-                            state.layer = item
-                        },
-                    )
-                }
-            }
-        }
-        Box {
-            FilterChipButton(
-                text = state.view.label,
-                active = state.view == LogViewMode.Timeline,
-                onClick = { onViewOpenChange(true) },
-            )
-            DropdownMenu(expanded = viewOpen, onDismissRequest = { onViewOpenChange(false) }) {
-                LogViewMode.entries.forEach { item ->
-                    DropdownMenuItem(
-                        text = { Text(item.label) },
-                        onClick = {
-                            onViewOpenChange(false)
-                            state.view = item
-                        },
-                    )
-                }
-            }
-        }
     }
 }
 
 @Composable
-private fun SortRow(
-    state: LogsState,
-    canToggleAll: Boolean,
-    allOpen: Boolean,
-    onSort: () -> Unit,
-    onToggleAll: () -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(start = 16.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Row(
-            Modifier
-                .heightIn(min = 36.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-                .combinedClickable(onClick = onSort, onLongClick = null)
-                .semantics {
-                    contentDescription = "排序与视图，当前 " +
-                        sortSummary(state.view, state.groupOrder, state.timeOrder)
-                }
-                .padding(start = 10.dp, end = 4.dp, top = 7.dp, bottom = 7.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(
-                Icons.Rounded.Sort,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(5.dp))
-            Text(
-                sortSummary(state.view, state.groupOrder, state.timeOrder),
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                maxLines = 1,
-            )
-            Icon(
-                Icons.Rounded.ArrowDropDown,
-                contentDescription = null,
-                modifier = Modifier.size(16.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-            )
-        }
-        Spacer(Modifier.weight(1f))
-        if (canToggleAll) {
-            TinyTextButton(if (allOpen) "全部收起" else "全部展开", onToggleAll)
-        }
-    }
-}
-
-@Composable
-private fun StatusLine(
+private fun SlimStatusLine(
     matched: Int,
     loaded: Int,
     filtered: Boolean,
@@ -660,42 +603,38 @@ private fun StatusLine(
     Row(
         Modifier
             .fillMaxWidth()
-            .padding(start = 16.dp, end = 8.dp, top = 2.dp, bottom = 2.dp),
+            .padding(start = 18.dp, end = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
-            if (filtered) {
-                "匹配 " + countText(matched) + " / 已加载 " + countText(loaded)
-            } else {
-                "已加载 " + countText(loaded) + " 条"
+            buildString {
+                if (filtered) {
+                    append("匹配 ")
+                    append(countText(matched))
+                    append(" / 共 ")
+                    append(countText(loaded))
+                } else {
+                    append(countText(loaded))
+                    append(" 条")
+                }
+                if (snapshot != null && (snapshot.truncatedByLimit || snapshot.headTruncated)) {
+                    append(" · 已截断")
+                }
+                if (snapshot != null && snapshot.failures.isNotEmpty()) {
+                    append(" · ")
+                    append(snapshot.failures.size)
+                    append(" 个文件读取失败")
+                }
             },
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
         )
         if (refreshing) {
             Spacer(Modifier.width(6.dp))
             CircularProgressIndicator(Modifier.size(10.dp), strokeWidth = 1.5.dp)
-        }
-        if (snapshot != null && (snapshot.truncatedByLimit || snapshot.headTruncated)) {
-            Spacer(Modifier.width(6.dp))
-            Text(
-                "· 已截断",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.tertiary,
-                maxLines = 1,
-            )
-        }
-        if (snapshot != null && snapshot.failures.isNotEmpty()) {
-            Spacer(Modifier.width(6.dp))
-            Text(
-                "· " + snapshot.failures.size + " 个文件读取失败",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.error,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
         }
         Spacer(Modifier.weight(1f))
         if (filtered) {
@@ -708,10 +647,10 @@ private fun StatusLine(
 internal fun TinyTextButton(text: String, onClick: () -> Unit) {
     Box(
         Modifier
-            .heightIn(min = 36.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .heightIn(min = 32.dp)
+            .clip(RoundedCornerShape(8.dp))
             .combinedClickable(onClick = onClick, onLongClick = null)
-            .padding(horizontal = 10.dp, vertical = 8.dp),
+            .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
     ) {
         Text(
@@ -719,52 +658,6 @@ internal fun TinyTextButton(text: String, onClick: () -> Unit) {
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.primary,
             maxLines = 1,
-        )
-    }
-}
-
-@Composable
-private fun FilterChipButton(
-    text: String,
-    active: Boolean,
-    onClick: () -> Unit,
-    icon: ImageVector? = null,
-) {
-    Row(
-        Modifier
-            .clip(RoundedCornerShape(14.dp))
-            .background(
-                if (active) MaterialTheme.colorScheme.secondaryContainer
-                else MaterialTheme.colorScheme.surfaceContainerHigh,
-            )
-            .combinedClickable(onClick = onClick, onLongClick = null)
-            .semantics {
-                contentDescription = "$text 筛选" + if (active) "，已启用" else "，未启用"
-            }
-            .padding(start = 11.dp, end = 6.dp, top = 9.dp, bottom = 9.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        if (icon != null) {
-            Icon(
-                icon,
-                contentDescription = null,
-                modifier = Modifier.size(14.dp),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.width(4.dp))
-        }
-        Text(
-            text,
-            style = MaterialTheme.typography.labelMedium,
-            color = if (active) MaterialTheme.colorScheme.onSecondaryContainer
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
-        )
-        Icon(
-            Icons.Rounded.ArrowDropDown,
-            contentDescription = null,
-            modifier = Modifier.size(16.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
         )
     }
 }
@@ -779,6 +672,7 @@ private fun RuntimeLogList(
     listState: LazyListState,
     hasNew: Boolean,
     expandedEntries: Map<String, Boolean>,
+    modifier: Modifier = Modifier,
     onToggleEntry: (String) -> Unit,
     onOpenDetail: (RuntimeLogStore.Entry) -> Unit,
     onCopy: (RuntimeLogStore.Entry) -> Unit,
@@ -791,99 +685,99 @@ private fun RuntimeLogList(
     PullRefreshBox(
         refreshing = runtime.refreshing,
         onRefresh = { if (!runtime.loading) onRefresh() },
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
     ) {
         Box(Modifier.fillMaxSize()) {
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 4.dp, bottom = 120.dp),
-        ) {
-            when {
-                !runtime.hasAccess -> item(key = "state:no-access") {
-                    LogStateCard(
-                        title = "无法读取运行日志",
-                        body = "运行日志写在其它应用的 Android/data 目录下，需要「所有文件访问」权限才能读取。授权后返回本页会自动重新检查。",
-                        action = "前往授权",
-                        onAction = onRequestStorage,
-                    )
-                }
-
-                runtime.snapshot == null && runtime.loading -> item(key = "state:loading") {
-                    LogLoadingCard("正在读取运行日志…")
-                }
-
-                runtime.snapshot == null && runtime.error != null -> item(key = "state:error") {
-                    LogStateCard(
-                        title = "读取失败",
-                        body = runtime.error,
-                        action = "重试",
-                        onAction = onRefresh,
-                    )
-                }
-
-                runtime.entries.isEmpty() -> item(key = "state:empty") {
-                    LogStateCard(
-                        title = "暂无运行日志",
-                        body = "已安装模块的应用运行后才会生成日志，路径为 Android/data/应用包名/.logs。下拉可重新加载。",
-                        action = "重新加载",
-                        onAction = onRefresh,
-                    )
-                }
-
-                rows.isEmpty() && computing -> item(key = "state:computing") {
-                    LogLoadingCard("正在筛选日志…")
-                }
-
-                rows.isEmpty() -> item(key = "state:no-match") {
-                    EmptyResultCard(query = base?.query.orEmpty(), onReset = onReset)
-                }
-
-                else -> items(
-                    count = rows.size,
-                    key = { index -> rows[index].key },
-                ) { index ->
-                    when (val row = rows[index]) {
-                        is LogRow.Header -> ModuleHeaderRow(
-                            group = row.group,
-                            open = row.open,
-                            showTarget = base?.multiApp == true,
-                            onToggle = { onToggleGroup(row.group) },
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 120.dp),
+            ) {
+                when {
+                    !runtime.hasAccess -> item(key = "state:no-access") {
+                        LogStateCard(
+                            title = "无法读取运行日志",
+                            body = "运行日志写在其它应用的 Android/data 目录下，需要「所有文件访问」权限才能读取。授权后返回本页会自动重新检查。",
+                            action = "前往授权",
+                            onAction = onRequestStorage,
                         )
+                    }
 
-                        is LogRow.Day -> DayRow(row.day)
+                    runtime.snapshot == null && runtime.loading -> item(key = "state:loading") {
+                        LogLoadingCard("正在读取运行日志…")
+                    }
 
-                        is LogRow.EntryRow -> LogEntryItem(
-                            entry = row.entry,
-                            query = base?.query.orEmpty(),
-                            expanded = expandedEntries[row.entry.id] ?: false,
-                            timeline = state.view == LogViewMode.Timeline,
-                            modal = state.view == LogViewMode.Module,
-                            last = row.last,
-                            onToggle = { onToggleEntry(row.entry.id) },
-                            onCopy = { onCopy(row.entry) },
-                            onDetail = { onOpenDetail(row.entry) },
+                    runtime.snapshot == null && runtime.error != null -> item(key = "state:error") {
+                        LogStateCard(
+                            title = "读取失败",
+                            body = runtime.error,
+                            action = null,
+                            onAction = {},
                         )
+                    }
+
+                    runtime.entries.isEmpty() -> item(key = "state:empty") {
+                        LogStateCard(
+                            title = "暂无运行日志",
+                            body = "已安装模块的应用运行后才会生成日志，路径为 Android/data/应用包名/.logs。下拉可重新加载。",
+                            action = null,
+                            onAction = {},
+                        )
+                    }
+
+                    rows.isEmpty() && computing -> item(key = "state:computing") {
+                        LogLoadingCard("正在筛选日志…")
+                    }
+
+                    rows.isEmpty() -> item(key = "state:no-match") {
+                        EmptyResultCard(query = base?.query.orEmpty(), onReset = onReset)
+                    }
+
+                    else -> items(
+                        count = rows.size,
+                        key = { index -> rows[index].key },
+                    ) { index ->
+                        when (val row = rows[index]) {
+                            is LogRow.Header -> ModuleHeaderRow(
+                                group = row.group,
+                                open = row.open,
+                                showTarget = base?.multiApp == true,
+                                onToggle = { onToggleGroup(row.group) },
+                            )
+
+                            is LogRow.Day -> DayRow(row.day)
+
+                            is LogRow.EntryRow -> LogEntryItem(
+                                entry = row.entry,
+                                query = base?.query.orEmpty(),
+                                expanded = expandedEntries[row.entry.id] ?: false,
+                                timeline = state.view == LogViewMode.Timeline,
+                                modal = state.view == LogViewMode.Module,
+                                last = row.last,
+                                onToggle = { onToggleEntry(row.entry.id) },
+                                onCopy = { onCopy(row.entry) },
+                                onDetail = { onOpenDetail(row.entry) },
+                            )
+                        }
                     }
                 }
             }
-        }
 
-        if (hasNew) {
-            Text(
-                if (state.timeOrder == TimeOrder.NewestFirst) "有新日志 · 跳到最新 ↑"
-                else "有新日志 · 跳到末尾 ↓",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSecondaryContainer,
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .padding(end = 16.dp, bottom = 24.dp)
-                    .clip(RoundedCornerShape(18.dp))
-                    .background(MaterialTheme.colorScheme.secondaryContainer)
-                    .combinedClickable(onClick = onJumpLatest, onLongClick = null)
-                    .padding(horizontal = 14.dp, vertical = 9.dp),
-            )
-        }
+            if (hasNew) {
+                Text(
+                    if (state.timeOrder == TimeOrder.NewestFirst) "有新日志 · 跳到最新 ↑"
+                    else "有新日志 · 跳到末尾 ↓",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSecondaryContainer,
+                    modifier = Modifier
+                        .align(Alignment.BottomEnd)
+                        .padding(end = 16.dp, bottom = 24.dp)
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(MaterialTheme.colorScheme.secondaryContainer)
+                        .combinedClickable(onClick = onJumpLatest, onLongClick = null)
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
+                )
+            }
         }
     }
 }
@@ -894,12 +788,13 @@ private fun OperationLogList(
     total: Int,
     query: String,
     listState: LazyListState,
+    modifier: Modifier = Modifier,
     onCopy: (String) -> Unit,
     onReset: () -> Unit,
 ) {
     LazyColumn(
         state = listState,
-        modifier = Modifier.fillMaxSize(),
+        modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(bottom = 120.dp),
     ) {
         when {
@@ -1257,13 +1152,3 @@ private fun OperationRow(
 internal fun countText(value: Int): String =
     if (value < 1000) value.toString()
     else String.format(java.util.Locale.US, "%.1fk", value / 1000.0)
-
-internal fun appChipText(selected: Set<String>, apps: List<LogAppFilter>): String = when {
-    selected.isEmpty() -> "应用 · 全部"
-    selected.size == 1 -> {
-        val target = selected.first()
-        "应用 · " + (apps.firstOrNull { it.target == target }?.label ?: target)
-    }
-
-    else -> "应用 · " + selected.size + " 个"
-}
