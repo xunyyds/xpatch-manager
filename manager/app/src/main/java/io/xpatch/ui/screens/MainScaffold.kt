@@ -113,7 +113,7 @@ fun MainScaffold(
     val logsState = remember { LogsState() }
     var logsRefreshing by remember { mutableStateOf(false) }
     var logsRuntime by remember {
-        mutableStateOf(RuntimeLogsState(hasAccess = false))
+        mutableStateOf(RuntimeLogsState(hasAccess = logStore.hasAccess()))
     }
     var homeRefreshing by remember { mutableStateOf(false) }
     var modulesRefreshing by remember { mutableStateOf(false) }
@@ -296,29 +296,38 @@ fun MainScaffold(
 
     val loadRuntimeLogs: suspend () -> Unit = {
         if (!logsRefreshing) {
-            if (!logStore.hasAccess()) {
-                logsRuntime = logsRuntime.copy(hasAccess = false, loading = false)
-            } else {
-                logsRefreshing = true
-                logsRuntime = logsRuntime.copy(loading = true, error = null, hasAccess = true)
-                val outcome = runCatching {
-                    withContext(Dispatchers.IO) { logStore.load() }
+            logsRefreshing = true
+            logsRuntime = logsRuntime.copy(loading = true, error = null)
+            try {
+                val snapshot = withContext(Dispatchers.IO) {
+                    val targets = repository.patchedPackageNames()
+                    val local = runCatching { logStore.load(targets) }.getOrNull()
+                    if (local != null && local.entries.isNotEmpty()) {
+                        local
+                    } else if (ShizukuBridge.hasPermission()) {
+                        runCatching {
+                            logStore.loadViaShell({ command -> ShizukuBridge.exec(command) }, targets)
+                        }.getOrNull() ?: local
+                    } else {
+                        local
+                    }
                 }
-                outcome
-                    .onSuccess { snapshot ->
-                        logsRuntime = RuntimeLogsState(
-                            snapshot = snapshot,
-                            loading = false,
-                            error = null,
-                            hasAccess = true,
-                        )
-                    }
-                    .onFailure { error ->
-                        logsRuntime = logsRuntime.copy(
-                            loading = false,
-                            error = "读取运行日志失败：" + (error.message ?: "未知错误"),
-                        )
-                    }
+                logsRuntime = if (snapshot != null) {
+                    RuntimeLogsState(
+                        snapshot = snapshot,
+                        loading = false,
+                        error = null,
+                        hasAccess = true,
+                    )
+                } else {
+                    logsRuntime.copy(loading = false, error = "读取运行日志失败")
+                }
+            } catch (error: Throwable) {
+                logsRuntime = logsRuntime.copy(
+                    loading = false,
+                    error = "读取运行日志失败：" + (error.message ?: "未知错误"),
+                )
+            } finally {
                 logsRefreshing = false
             }
         }
@@ -524,7 +533,7 @@ fun MainScaffold(
                     )
 
                     Tab.Logs -> LogsScreen(
-                        runtime = logsRuntime.copy(hasAccess = logStore.hasAccess()),
+                        runtime = logsRuntime,
                         operations = logs,
                         state = logsState,
                         labelOf = labelOf,
