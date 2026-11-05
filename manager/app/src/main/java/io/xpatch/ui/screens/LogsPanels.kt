@@ -64,12 +64,7 @@ internal fun FilterPanel(
 ) {
     BackHandler(enabled = true) { onDismiss() }
     val miuix = LocalMiuix.current
-    val scope = rememberCoroutineScope()
-    val progress = remember { Animatable(0f) }
     var appPickerOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) {
-        progress.animateTo(1f, tween(durationMillis = 220, easing = FastOutSlowInEasing))
-    }
     Box(
         Modifier
             .fillMaxSize()
@@ -78,13 +73,12 @@ internal fun FilterPanel(
                 indication = null,
                 onClick = onDismiss,
             )
-            .background(Color.Black.copy(alpha = 0.28f * progress.value)),
+            .background(Color.Black.copy(alpha = 0.28f)),
     ) {
         Column(
             Modifier
                 .fillMaxWidth()
                 .align(Alignment.BottomCenter)
-                .graphicsLayer { translationY = (1f - progress.value) * 320.dp.toPx() }
                 .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
                 .background(
                     if (miuix) MiuixTheme.colorScheme.surface
@@ -95,6 +89,7 @@ internal fun FilterPanel(
                     indication = null,
                 ) { }
                 .navigationBarsPadding()
+                .verticalScroll(rememberScrollState())
                 .padding(start = 18.dp, end = 18.dp, top = 16.dp, bottom = 12.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {

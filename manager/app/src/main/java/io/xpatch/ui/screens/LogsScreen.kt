@@ -467,44 +467,24 @@ private fun LogsTopBar(
         )
         Spacer(Modifier.weight(1f))
         if (tab == LogsTab.Runtime && canToggleAll) {
-            IconButton(onClick = onToggleAll) {
-                Icon(
-                    if (allOpen) Icons.Rounded.UnfoldLess else Icons.Rounded.UnfoldMore,
-                    contentDescription = if (allOpen) "全部收起" else "全部展开",
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            TopBarIcon(
+                icon = if (allOpen) Icons.Rounded.UnfoldLess else Icons.Rounded.UnfoldMore,
+                description = if (allOpen) "全部收起" else "全部展开",
+                onClick = onToggleAll,
+            )
         }
-        IconButton(onClick = onOpenFilter) {
-            Box {
-                Icon(
-                    Icons.Rounded.Tune,
-                    contentDescription = "筛选与排序",
-                    modifier = Modifier.size(20.dp),
-                    tint = if (filterActive) MaterialTheme.colorScheme.primary
-                    else MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-                if (filterActive) {
-                    Box(
-                        Modifier
-                            .align(Alignment.TopEnd)
-                            .size(6.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.primary),
-                    )
-                }
-            }
-        }
+        TopBarIcon(
+            icon = Icons.Rounded.Tune,
+            description = "筛选与排序",
+            highlighted = filterActive,
+            onClick = onOpenFilter,
+        )
         Box {
-            IconButton(onClick = { onMenuOpenChange(true) }) {
-                Icon(
-                    Icons.Rounded.MoreVert,
-                    contentDescription = "更多日志操作",
-                    modifier = Modifier.size(20.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
+            TopBarIcon(
+                icon = Icons.Rounded.MoreVert,
+                description = "更多日志操作",
+                onClick = { onMenuOpenChange(true) },
+            )
             DropdownMenu(expanded = menuOpen, onDismissRequest = { onMenuOpenChange(false) }) {
                 exportOptions.forEach { option ->
                     DropdownMenuItem(
@@ -549,6 +529,40 @@ private fun LogsTopBar(
                     onClick = onClear,
                 )
             }
+        }
+    }
+}
+
+@Composable
+private fun TopBarIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    highlighted: Boolean = false,
+    onClick: () -> Unit,
+) {
+    Box(
+        Modifier
+            .size(44.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .combinedClickable(onClick = onClick, onLongClick = null),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            icon,
+            contentDescription = description,
+            modifier = Modifier.size(21.dp),
+            tint = if (highlighted) MaterialTheme.colorScheme.primary
+            else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (highlighted) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 9.dp, end = 9.dp)
+                    .size(6.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary),
+            )
         }
     }
 }
