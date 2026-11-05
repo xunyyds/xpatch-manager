@@ -1,24 +1,50 @@
 package io.xpatch.patch
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.IBinder
 import android.provider.Settings
+import io.xpatch.BuildConfig
+import io.xpatch.IXPatchService
 import rikka.shizuku.Shizuku
-import rikka.shizuku.ShizukuBinderWrapper
-import rikka.shizuku.SystemServiceHelper
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
-/**
- * Shizuku 能力封装：授权、强行停止、重启。
- *
- * 借助 Shizuku 的 shell 权限拿到 system_server 的 activity 服务绑定，
- * 调用 forceStopPackage 完成免 Root 的强制停止。
- */
 object ShizukuBridge {
 
     private const val REQUEST_CODE = 1001
+    private const val BIND_TIMEOUT_SECONDS = 6L
+
+    private val serviceRef = AtomicReference<IXPatchService?>(null)
+    private var bound = false
+
+    private val connection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            serviceRef.set(
+                if (binder != null && binder.pingBinder()) {
+                    IXPatchService.Stub.asInterface(binder)
+                } else {
+                    null
+                },
+            )
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            serviceRef.set(null)
+        }
+    }
+
+    private fun args(): Shizuku.UserServiceArgs =
+        Shizuku.UserServiceArgs(ComponentName(BuildConfig.APPLICATION_ID, XPatchUserService::class.java.name))
+            .daemon(false)
+            .processNameSuffix("service")
+            .debuggable(BuildConfig.DEBUG)
+            .version(BuildConfig.VERSION_CODE)
 
     fun isAvailable(): Boolean = runCatching {
         Shizuku.pingBinder() && Shizuku.getVersion() >= 11
@@ -53,29 +79,43 @@ object ShizukuBridge {
             }
     }
 
-    /** 强行停止指定应用（需要 Shizuku 已授权）。 */
+    private fun service(): IXPatchService? {
+        serviceRef.get()?.let { if (it.asBinder().pingBinder()) return it }
+        if (!isAvailable() || !hasPermission()) return null
+        val latch = CountDownLatch(1)
+        runCatching {
+            Shizuku.bindUserService(args(), object : ServiceConnection {
+                override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                    serviceRef.set(
+                        if (binder != null && binder.pingBinder()) {
+                            IXPatchService.Stub.asInterface(binder)
+                        } else {
+                            null
+                        },
+                    )
+                    latch.countDown()
+                }
+
+                override fun onServiceDisconnected(name: ComponentName?) {
+                    latch.countDown()
+                }
+            })
+        }.onFailure { return null }
+        runCatching { latch.await(BIND_TIMEOUT_SECONDS, TimeUnit.SECONDS) }
+        return serviceRef.get()
+    }
+
+    fun exec(command: String): String? =
+        runCatching { service()?.exec(command) }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    fun readText(path: String, maxBytes: Int): String? =
+        runCatching { service()?.readText(path, maxBytes) }.getOrNull()?.takeIf { it.isNotEmpty() }
+
     fun forceStop(packageName: String): Boolean = runCatching {
-        if (!hasPermission()) return false
-
-        val binder = SystemServiceHelper.getSystemService("activity")
-        val wrapped: IBinder = ShizukuBinderWrapper(binder)
-        val stub = Class.forName("android.app.IActivityManager\$Stub")
-        val manager = stub.getMethod("asInterface", IBinder::class.java).invoke(null, wrapped)
-            ?: return false
-
-        val userId = runCatching {
-            Class.forName("android.os.UserHandle")
-                .getMethod("getUserId", Int::class.javaPrimitiveType)
-                .invoke(null, android.os.Process.myUid()) as Int
-        }.getOrDefault(0)
-
-        manager.javaClass
-            .getMethod("forceStopPackage", String::class.java, Int::class.javaPrimitiveType)
-            .invoke(manager, packageName, userId)
+        service()?.forceStop(packageName)
         true
     }.getOrDefault(false)
 
-    /** 强制停止后重新拉起。 */
     fun restart(context: Context, packageName: String): Boolean {
         val stopped = forceStop(packageName)
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
@@ -86,7 +126,6 @@ object ShizukuBridge {
         return stopped
     }
 
-    /** 直接拉起应用主界面。 */
     fun launch(context: Context, packageName: String): Boolean {
         val intent = context.packageManager.getLaunchIntentForPackage(packageName)
             ?: return false
@@ -94,7 +133,6 @@ object ShizukuBridge {
         return runCatching { context.startActivity(intent) }.isSuccess
     }
 
-    /** 打开系统应用详情页。 */
     fun openAppDetails(context: Context, packageName: String) {
         val intent = Intent(
             Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
@@ -103,70 +141,15 @@ object ShizukuBridge {
         runCatching { context.startActivity(intent) }
     }
 
-    /** 通过 Shizuku 以 shell 身份执行命令，返回标准输出（失败返回 null）。 */
-    fun exec(command: String): String? = runCatching {
-        if (!hasPermission()) return null
-        val method = Shizuku::class.java.getDeclaredMethod(
-            "newProcess",
-            Array<String>::class.java,
-            Array<String>::class.java,
-            String::class.java,
-        )
-        method.isAccessible = true
-        val process = method.invoke(
-            null,
-            arrayOf("sh", "-c", command),
-            null,
-            null,
-        ) as? Process ?: return null
-        val out = process.inputStream.bufferedReader().use { it.readText() }
-        process.waitFor()
-        out
-    }.getOrNull()
-
-    /** 通过 Shizuku 读取文件内容，失败返回 null。 */
-    fun readFile(path: String): String? = exec("cat " + shellQuote(path))
-
-    private fun shellQuote(value: String): String = "'" + value.replace("'", "'\\''") + "'"
-
-    /** 通过 Shizuku 列出目录，失败返回 null。 */
-    fun listDirs(path: String): List<String>? = exec("ls " + shellQuote(path))
-        ?.lineSequence()
-        ?.map { it.trim() }
-        ?.filter { it.isNotEmpty() }
-        ?.toList()
-
-    /** 通过 Shizuku 触发 Dexopt 优化。 */
     fun dexopt(packageName: String): Boolean = runCatching {
-        if (!hasPermission()) return false
-
-        val binder = SystemServiceHelper.getSystemService("package")
-        val manager = Class.forName("android.content.pm.IPackageManager\$Stub")
-            .getMethod("asInterface", IBinder::class.java)
-            .invoke(null, ShizukuBinderWrapper(binder)) ?: return false
-
-        val candidates = manager.javaClass.methods.filter { it.name == "performDexOptMode" }
-        for (method in candidates) {
-            val args = buildDexoptArgs(method.parameterTypes, packageName) ?: continue
-            runCatching { method.invoke(manager, *args) }
-        }
+        service()?.dexopt(packageName)
         true
     }.getOrDefault(false)
 
-    private fun buildDexoptArgs(types: Array<Class<*>>, packageName: String): Array<Any?>? {
-        if (types.isEmpty() || types[0] != String::class.java) return null
-        val args = arrayOfNulls<Any>(types.size)
-        args[0] = packageName
-        for (i in 1 until types.size) {
-            val type = types[i]
-            args[i] = when {
-                type == Boolean::class.javaPrimitiveType || type == java.lang.Boolean::class.java -> true
-                type == String::class.java -> "speed"
-                type == java.lang.Integer::class.java || type == Int::class.javaPrimitiveType -> 0
-                type.isArray -> null
-                else -> null
-            }
-        }
-        return args
+    fun unbind() {
+        if (!bound) return
+        runCatching { Shizuku.unbindUserService(args(), connection, true) }
+        bound = false
+        serviceRef.set(null)
     }
 }
