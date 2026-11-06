@@ -13,7 +13,7 @@ $env:ANDROID_JAR         = 'C:\android-sdk\platforms\android-37.0\android.jar'
 $env:ANDROID_BUILD_TOOLS = 'C:\android-sdk\build-tools\37.0.0'
 ```
 
-## 1. 构建运行时 dex
+## 1. 构建内核 dex
 
 ```powershell
 ./runtime/build-java.ps1

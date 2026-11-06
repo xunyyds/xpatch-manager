@@ -937,7 +937,8 @@ class ApkPatcher(private val context: Context) {
             LEGACY_DIR + "core.dex",
         )
 
-        const val LEGACY_DIR = "xp" + "t/"
+        // 本项目的早期命名空间。保留字面量以便识别并剥离旧版的注入层。
+        const val LEGACY_DIR = "xpt/"
 
         val LEGACY_PREFIXES = listOf("fpa/", LEGACY_DIR, "npatch/", "lspatch/")
 

@@ -5,8 +5,8 @@
 ```
 目标应用
   └─ AndroidManifest 中声明的 AppComponentFactory
-       └─ 引导入口：加载运行时 dex（内存加载，不落盘）
-            └─ 运行时初始化
+       └─ 引导入口：加载内核 dex（内存加载，不落盘）
+            └─ 内核初始化
                  ├─ 读取配置（模块列表、API 级别、签名信息）
                  ├─ 解包并加载 hook 引擎（LSPlant 兼容层）
                  ├─ 预置 deopt：把 Application 创建路径上的三个方法置为解释器执行
@@ -27,7 +27,7 @@ Android 17 之后，模块加载器必须按依赖方向分三层（详见 `comp
 ```
 PathClassLoader(模块APK, 模块APK!/lib/<abi>/)
    └─ InMemoryDexClassLoader(wrapper dex × N)
-        └─ 运行时 ClassLoader
+        └─ 内核 ClassLoader
 ```
 
 设计取舍：
@@ -51,11 +51,11 @@ PathClassLoader(模块APK, 模块APK!/lib/<abi>/)
 
 ### 打包器 GUI
 
-现有工程提供的是运行时与工具链。把"选择应用 → 注入运行时 → 重签 → 安装"做成 GUI，
+现有工程提供的是内核与工具链。把"选择应用 → 注入内核 → 重签 → 安装"做成 GUI，
 需要一套独立的打包器，计划包含：
 
 - APK 解析与清单改写（`AppComponentFactory` 指向引导入口）；
-- 运行时条目注入（`assets/` 或独立目录）与对齐；
+- 内核条目注入（`assets/` 或独立目录）与对齐；
 - 内置签名与签名校验（覆盖安装需要与原应用签名一致）；
 - 多用户/多开场景下的安装引导。
 

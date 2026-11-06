@@ -1,6 +1,6 @@
-# 运行时源码
+# 内核源码
 
-`java/` 是运行时框架的主体源码（Java，javac + d8 构建）；`smali/` 保留两类无法以
+`java/` 是内核框架的主体源码（Java，javac + d8 构建）；`smali/` 保留两类无法以
 public android.jar 编译的血统类，由 `build-java.ps1` 合并进同一 dex。
 
 | 目录 | 职责 |
@@ -34,5 +34,5 @@ public android.jar 编译的血统类，由 `build-java.ps1` 合并进同一 dex
 
 ## 命名空间
 
-运行时统一使用 `io.xpatch.*`。引导桥 `io.xpatch.core.CoreEntry` 的全限定名被引导 dex
+内核统一使用 `io.xpatch.*`。引导桥 `io.xpatch.core.CoreEntry` 的全限定名被引导 dex
 以字符串写死，改名需要同步修改引导 dex 与 APK 内资源布局。

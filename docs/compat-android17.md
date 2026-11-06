@@ -43,7 +43,7 @@ Java 方法 hook 与 Native 方法 hook 均实测正常 —— 二者通过 ArtM
 
 **根因**
 
-运行时把原生库解包到应用缓存目录的固定路径（`cache/android_id/<hash>`），
+内核把原生库解包到应用缓存目录的固定路径（`cache/android_id/<hash>`），
 然后 `System.load`。而目标应用冷启动会同时拉起主进程与多个子进程，
 每个进程都执行一次初始化，也就都对这个**固定路径**做截断+写入。
 先完成 mmap 的进程会遇到别人写到一半的文件：
@@ -101,7 +101,7 @@ Kotlin 协程抛 `Main dispatcher is missing`、`UnsatisfiedLinkError: couldn't 
 ```
 PathClassLoader(模块APK, 模块APK!/lib/arm64-v8a/)      ← 模块类 + APK 资源 + 原生库
    └─ InMemoryDexClassLoader(wrapper dex 列表)        ← Xposed API 垫片
-        └─ 框架 ClassLoader                           ← 运行时自身
+        └─ 框架 ClassLoader                           ← 内核自身
 ```
 
 要点：

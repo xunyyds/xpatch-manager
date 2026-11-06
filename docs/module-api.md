@@ -54,13 +54,13 @@ public class Entry implements IXposedHookLoadPackage {
 ## 模块自带原生库
 
 模块 APK 中的 `lib/<abi>/*.so` 可以直接用 `System.loadLibrary("xxx")` 加载，
-运行时会把 `模块APK!/lib/<abi>/` 加入模块加载器的原生库搜索路径，无需自行解包。
+内核会把 `模块APK!/lib/<abi>/` 加入模块加载器的原生库搜索路径，无需自行解包。
 
 ## 依赖说明
 
 - 模块中可自由使用 Kotlin、协程、DexKit 等依赖；
 - 依赖的 `META-INF/services` 资源会从模块 APK 中正常解析；
-- 模块内不要打包自己的 Xposed API 实现（`de.robv.android.xposed.*`），这些类由运行时提供。
+- 模块内不要打包自己的 Xposed API 实现（`de.robv.android.xposed.*`），这些类由内核提供。
 
 ## 调试建议
 

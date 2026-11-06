@@ -19,9 +19,9 @@ refactor: 重构加载器链
    - 用 `tools/dex-verify/` 在真机上跑到 `ALL OK`；
 3. 提交 PR，描述里写清楚**现象 / 根因 / 方案 / 验证方式**。
 
-## 修改运行时的注意事项
+## 修改内核的注意事项
 
-运行时主体是 `runtime/java/` 下的 Java 源码，经 javac + d8 构建；仅依赖 android.jar 隐藏签名的桥接类保留在 `runtime/smali/`。改动产物时几个 dex 级硬约束必须知道（踩过坑）：
+内核主体是 `runtime/java/` 下的 Java 源码，经 javac + d8 构建；仅依赖 android.jar 隐藏签名的桥接类保留在 `runtime/smali/`。改动产物时几个 dex 级硬约束必须知道（踩过坑）：
 
 | 约束 | 说明 |
 | --- | --- |
