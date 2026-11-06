@@ -105,8 +105,7 @@ fun EntryRow(
     onLongClick: (() -> Unit)? = null,
     badge: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
-) {
-    val miuix = LocalMiuix.current
+) {    val miuix = LocalMiuix.current
     val base = Modifier.fillMaxWidth()
     val modifier = when {
         onClick != null && onLongClick != null ->

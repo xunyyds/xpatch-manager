@@ -357,16 +357,6 @@ private fun SwitchLine(
     checked: Boolean,
     onChange: (Boolean) -> Unit,
 ) {
-    if (LocalMiuix.current) {
-        SwitchPreference(
-            checked = checked,
-            onCheckedChange = onChange,
-            title = title,
-            summary = subtitle,
-            insideMargin = PaddingValues(start = 16.dp, end = 16.dp, top = 10.dp, bottom = 10.dp),
-        )
-        return
-    }
     Row(
         Modifier
             .fillMaxWidth()
@@ -383,7 +373,7 @@ private fun SwitchLine(
                 )
             }
         }
-        androidx.compose.material3.Switch(checked = checked, onCheckedChange = onChange)
+        io.xpatch.ui.components.JellySwitch(checked = checked, onCheckedChange = onChange)
     }
 }
 

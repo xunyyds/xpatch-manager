@@ -20,7 +20,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
+import io.xpatch.ui.components.JellySwitch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -222,7 +222,7 @@ internal fun PickerScreen(
                         modifier = Modifier.weight(1f),
                         style = MaterialTheme.typography.bodyMedium,
                     )
-                    Switch(checked = includeSystem, onCheckedChange = onToggleSystem)
+                    JellySwitch(checked = includeSystem, onCheckedChange = onToggleSystem)
                 }
             },
             trigger = { open ->

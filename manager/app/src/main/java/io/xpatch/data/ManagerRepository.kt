@@ -94,8 +94,10 @@ class ManagerRepository(private val context: Context) {
 
     fun appsOfModule(modulePackage: String) = scope.appsOf(modulePackage)
 
-    fun setInScope(modulePackage: String, appPackage: String, inScope: Boolean) =
+    fun setInScope(modulePackage: String, appPackage: String, inScope: Boolean) {
         scope.setInScope(modulePackage, appPackage, inScope)
+        scope.invalidate()
+    }
 
     fun isInScopeFor(modulePackage: String, appPackage: String): Boolean =
         appPackage in scope.appsOf(modulePackage)

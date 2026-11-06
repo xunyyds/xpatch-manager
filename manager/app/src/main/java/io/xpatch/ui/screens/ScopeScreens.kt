@@ -21,7 +21,6 @@ import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -40,6 +39,7 @@ import io.xpatch.model.ModuleInfo
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
+import io.xpatch.ui.components.SwitchableEntryRow
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SortMenu
@@ -49,7 +49,6 @@ import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.preference.ArrowPreference
-import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.text.Collator
 import java.util.Locale
@@ -97,23 +96,12 @@ private fun ScopeAppRow(
     checked: Boolean,
     onToggle: (AppInfo, Boolean) -> Unit,
 ) {
-    if (LocalMiuix.current) {
-        SwitchPreference(
-            checked = checked,
-            onCheckedChange = { onToggle(app, it) },
-            title = app.label,
-            summary = app.packageName,
-            startAction = { AppIcon(app.icon, size = 42) },
-        )
-        return
-    }
-    EntryRow(
+    SwitchableEntryRow(
         icon = app.icon,
         title = app.label,
         subtitle = app.packageName,
-        trailing = {
-            Switch(checked = checked, onCheckedChange = { onToggle(app, it) })
-        },
+        checked = checked,
+        onCheckedChange = { onToggle(app, it) },
     )
 }
 
@@ -136,6 +124,7 @@ internal fun AppScopeScreen(
     onUpdateCore: () -> Unit,
     inScope: (ModuleInfo) -> Boolean,
     onToggle: (ModuleInfo, Boolean) -> Unit,
+    onOpenModule: (ModuleInfo) -> Unit,
 ) {
     val miuix = LocalMiuix.current
     val background = if (miuix) MiuixTheme.colorScheme.background else MaterialTheme.colorScheme.background
@@ -151,6 +140,7 @@ internal fun AppScopeScreen(
     }
     val collator = remember { Collator.getInstance(Locale.CHINA) }
     val enabledFlags = modules.associate { it.packageName to inScope(it) }
+    val recommendedFlags = modules.associate { it.packageName to (app.packageName in it.recommendedApps) }
 
     val listed = modules
         .filter { module ->
@@ -166,7 +156,10 @@ internal fun AppScopeScreen(
             }
         }
         .let { if (reversed) it.asReversed() else it }
-        .sortedByDescending { enabledFlags[it.packageName] == true }
+        .sortedWith(
+            compareByDescending<ModuleInfo> { enabledFlags[it.packageName] == true }
+                .thenByDescending { recommendedFlags[it.packageName] == true },
+        )
 
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
         item { GroupHeader("应用详情") }
@@ -274,7 +267,8 @@ internal fun AppScopeScreen(
                             module,
                             inScope(module),
                             apiOf(module) to { api -> onApiChange(module, api) },
-                            recommended = app.packageName in module.recommendedApps,
+                            recommended = recommendedFlags[module.packageName] == true,
+                            onOpen = { onOpenModule(module) },
                         ) { onToggle(module, it) }
                         if (index != listed.lastIndex) MiuixDivider()
                     }
@@ -286,7 +280,8 @@ internal fun AppScopeScreen(
                     module,
                     inScope(module),
                     apiOf(module) to { api -> onApiChange(module, api) },
-                    recommended = app.packageName in module.recommendedApps,
+                    recommended = recommendedFlags[module.packageName] == true,
+                    onOpen = { onOpenModule(module) },
                 ) { onToggle(module, it) }
                 RowDivider()
             }
@@ -300,38 +295,24 @@ private fun ScopeModuleRow(
     checked: Boolean,
     api: Pair<Int, (Int) -> Unit>,
     recommended: Boolean,
+    onOpen: () -> Unit,
     onToggle: (Boolean) -> Unit,
 ) {
-    if (LocalMiuix.current) {
-        SwitchPreference(
-            checked = checked,
-            onCheckedChange = onToggle,
-            title = module.label,
-            summary = module.packageName,
-            startAction = { AppIcon(module.icon, size = 42) },
-            endActions = {
-                if (recommended) RecommendBadge()
-                ApiSelector(module, api.first) { api.second(it) }
-                Spacer(Modifier.width(4.dp))
-            },
-        )
-        return
-    }
-    EntryRow(
+    SwitchableEntryRow(
         icon = module.icon,
         title = module.label,
         subtitle = module.packageName,
+        checked = checked,
+        onCheckedChange = onToggle,
+        onClick = onOpen,
         badge = if (recommended) {
             { RecommendBadge() }
         } else {
             null
         },
-        trailing = {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                ApiSelector(module, api.first) { api.second(it) }
-                Spacer(Modifier.width(6.dp))
-                Switch(checked = checked, onCheckedChange = onToggle)
-            }
+        minHeight = 64.dp,
+        endExtra = {
+            ApiSelector(module, api.first) { api.second(it) }
         },
     )
 }

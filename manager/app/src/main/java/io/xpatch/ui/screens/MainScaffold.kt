@@ -417,6 +417,7 @@ fun MainScaffold(
         is Page.Config -> "Patch 配置"
         is Page.ModuleScope -> current.module.label
         is Page.AppScope -> current.app.label
+        is Page.ModuleDetail -> current.module.label
         is Page.Repo -> "模块仓库"
         is Page.RepoDetail -> current.module.name
         is Page.LogModule -> if (current.framework) LogLayer.Framework.label
@@ -1013,11 +1014,30 @@ fun MainScaffold(
                         }.getOrNull()
                     },
                     inScope = { module -> repository.isInScopeFor(module.packageName, current.app.packageName) },
+                    onOpenModule = { module ->
+                        nav.navigate(Page.ModuleDetail(module, current.app, true))
+                    },
                     onToggle = { module, inScope ->
                         repository.setInScope(module.packageName, current.app.packageName, inScope)
                         eventLog.add(
                             if (inScope) "作用域 + ${module.packageName} → ${current.app.packageName}"
                             else "作用域 - ${module.packageName} → ${current.app.packageName}",
+                        )
+                        token++
+                        syncScopeFile(current.app.packageName)
+                    },
+                )
+
+                is Page.ModuleDetail -> ModuleDetailScreen(
+                    module = current.module,
+                    appLabel = current.app.label,
+                    checked = repository.isInScopeFor(current.module.packageName, current.app.packageName),
+                    scopeCount = repository.countApps(current.module.packageName),
+                    onToggle = { inScope ->
+                        repository.setInScope(current.module.packageName, current.app.packageName, inScope)
+                        eventLog.add(
+                            if (inScope) "作用域 + ${current.module.packageName} → ${current.app.packageName}"
+                            else "作用域 - ${current.module.packageName} → ${current.app.packageName}",
                         )
                         token++
                         syncScopeFile(current.app.packageName)

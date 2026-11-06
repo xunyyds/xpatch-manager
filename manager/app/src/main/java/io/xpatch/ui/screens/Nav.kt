@@ -31,6 +31,11 @@ internal sealed interface Page {
     data class Config(val target: PatchTarget) : Page
     data class ModuleScope(val module: ModuleInfo) : Page
     data class AppScope(val app: AppInfo) : Page
+    data class ModuleDetail(
+        val module: ModuleInfo,
+        val app: AppInfo,
+        val fromScope: Boolean,
+    ) : Page
     data object Repo : Page
     data class RepoDetail(val module: RepoStore.RepoModule) : Page
     data class LogModule(
