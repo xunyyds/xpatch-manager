@@ -1,5 +1,8 @@
 package io.xpatch.ui.screens
 
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -14,6 +17,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -23,10 +28,12 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -44,12 +51,13 @@ import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SortMenu
 import io.xpatch.ui.components.SortOption
-import io.xpatch.ui.components.StickySearchBar
+import io.xpatch.ui.components.SearchField
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import kotlinx.coroutines.delay
 import java.text.Collator
 import java.util.Locale
 
@@ -125,12 +133,16 @@ internal fun AppScopeScreen(
     inScope: (ModuleInfo) -> Boolean,
     onToggle: (ModuleInfo, Boolean) -> Unit,
     onOpenModule: (ModuleInfo) -> Unit,
+    listState: LazyListState,
+    query: String,
+    onQueryChange: (String) -> Unit,
+    sort: Int,
+    onSortChange: (Int) -> Unit,
+    reversed: Boolean,
+    onReversedChange: (Boolean) -> Unit,
 ) {
     val miuix = LocalMiuix.current
     val background = if (miuix) MiuixTheme.colorScheme.background else MaterialTheme.colorScheme.background
-    var query by remember { mutableStateOf("") }
-    var sort by remember { mutableIntStateOf(0) }
-    var reversed by remember { mutableStateOf(false) }
     val sortOptions = remember {
         listOf(
             SortOption("0", "默认"),
@@ -141,6 +153,28 @@ internal fun AppScopeScreen(
     val collator = remember { Collator.getInstance(Locale.CHINA) }
     val enabledFlags = modules.associate { it.packageName to inScope(it) }
     val recommendedFlags = modules.associate { it.packageName to (app.packageName in it.recommendedApps) }
+
+    // 勾选后等开关动画完全播完（由 JellySwitch 的 onSettled 回调触发），
+    // 再让该行平滑前移并短暂高亮，避免生硬跳位。
+    val settledState = remember { mutableStateOf(enabledFlags) }
+    var highlightPackage by remember { mutableStateOf<String?>(null) }
+    var pendingPackage by remember { mutableStateOf<String?>(null) }
+    val settledEnabled = settledState.value
+    val highlightScope = rememberCoroutineScope()
+
+    val onSwitchSettled: (String) -> Unit = { pkg ->
+        pendingPackage = pkg
+    }
+    // 动画播完后才把最新状态并入排序，触发 animateItem 的平滑位移。
+    LaunchedEffect(pendingPackage, enabledFlags) {
+        val pkg = pendingPackage ?: return@LaunchedEffect
+        if (settledEnabled[pkg] == enabledFlags[pkg]) return@LaunchedEffect
+        settledState.value = enabledFlags
+        highlightPackage = pkg
+        pendingPackage = null
+        delay(1000)
+        highlightPackage = null
+    }
 
     val listed = modules
         .filter { module ->
@@ -157,11 +191,11 @@ internal fun AppScopeScreen(
         }
         .let { if (reversed) it.asReversed() else it }
         .sortedWith(
-            compareByDescending<ModuleInfo> { enabledFlags[it.packageName] == true }
+            compareByDescending<ModuleInfo> { settledEnabled[it.packageName] == true }
                 .thenByDescending { recommendedFlags[it.packageName] == true },
         )
 
-    LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
+    LazyColumn(state = listState, contentPadding = PaddingValues(bottom = 24.dp)) {
         item { GroupHeader("应用详情") }
         item {
             if (miuix) {
@@ -207,7 +241,46 @@ internal fun AppScopeScreen(
             }
         }
         stickyHeader(key = "modules-header") {
-            StickySearchBar(background, query, { query = it }, "搜索模块 / 包名") {
+            Column(Modifier.fillMaxWidth().background(background)) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(end = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Box(Modifier.weight(1f)) {
+                        SearchField(query, onQueryChange, "搜索模块 / 包名")
+                    }
+                    SortMenu(
+                        options = sortOptions,
+                        selectedId = sort.toString(),
+                        reversed = reversed,
+                        onSelect = { onSortChange(it.toInt()) },
+                        onReverse = { onReversedChange(!reversed) },
+                        trigger = { open ->
+                            val primary = if (miuix) MiuixTheme.colorScheme.primary
+                            else MaterialTheme.colorScheme.primary
+                            Box(
+                                Modifier
+                                    .size(42.dp)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(
+                                        if (miuix) MiuixTheme.colorScheme.surfaceContainerHighest
+                                        else MaterialTheme.colorScheme.surfaceContainerHighest,
+                                    )
+                                    .clickable { open() },
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(
+                                    Icons.Rounded.Sort,
+                                    contentDescription = "排序",
+                                    modifier = Modifier.size(19.dp),
+                                    tint = primary,
+                                )
+                            }
+                        },
+                    )
+                }
                 Row(
                     Modifier
                         .fillMaxWidth()
@@ -215,38 +288,13 @@ internal fun AppScopeScreen(
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(Modifier.weight(1f)) { GroupHeader("全部模块 ${listed.size} 个") }
-                    SortMenu(
-                        options = sortOptions,
-                        selectedId = sort.toString(),
-                        reversed = reversed,
-                        onSelect = { sort = it.toInt() },
-                        onReverse = { reversed = !reversed },
-                        trigger = { open ->
-                            val primary = if (miuix) MiuixTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.primary
-                            Row(
-                                Modifier
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .clickable { open() }
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                            ) {
-                                Icon(
-                                    Icons.Rounded.Sort,
-                                    contentDescription = "排序",
-                                    modifier = Modifier.size(16.dp),
-                                    tint = primary,
-                                )
-                                Spacer(Modifier.width(4.dp))
-                                Text(
-                                    sortOptions[sort].label + if (reversed) " ↓" else " ↑",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    color = primary,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
-                            }
-                        },
+                    Text(
+                        sortOptions[sort].label + if (reversed) " ↓" else " ↑",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (miuix) MiuixTheme.colorScheme.primary
+                        else MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        softWrap = false,
                     )
                 }
             }
@@ -255,6 +303,59 @@ internal fun AppScopeScreen(
             item { EmptyState("没有已安装的模块") }
         } else if (listed.isEmpty()) {
             item { EmptyState("没有匹配的模块") }
+        } else if (sort == 2) {
+            // 首字母排序：与「选择已安装的应用」一致，按字母分组并吸顶显示分组标题。
+            val groups = listed.groupBy { letterOf(it.label) }
+                .toList()
+                .sortedWith(compareBy({ if (it.first == "#") 1 else 0 }, { it.first }))
+            groups.forEach { (letter, group) ->
+                stickyHeader(key = "letter-$letter") {
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .background(background),
+                    ) {
+                        GroupHeader(letter)
+                    }
+                }
+                if (miuix) {
+                    item(key = "card-$letter") {
+                        MiuixCard(
+                            modifier = Modifier
+                                .padding(horizontal = 12.dp)
+                                .padding(bottom = 12.dp),
+                        ) {
+                            group.forEachIndexed { index, module ->
+                                ScopeModuleRow(
+                                    module,
+                                    inScope(module),
+                                    apiOf(module) to { api -> onApiChange(module, api) },
+                                    recommended = recommendedFlags[module.packageName] == true,
+                                    onOpen = { onOpenModule(module) },
+                                    highlight = module.packageName == highlightPackage,
+                                    onSwitchSettled = { onSwitchSettled(module.packageName) },
+                                ) { onToggle(module, it) }
+                                if (index != group.lastIndex) MiuixDivider()
+                            }
+                        }
+                    }
+                } else {
+                    items(group, key = { it.packageName }) { module ->
+                        Column(Modifier.animateItem()) {
+                            ScopeModuleRow(
+                                module,
+                                inScope(module),
+                                apiOf(module) to { api -> onApiChange(module, api) },
+                                recommended = recommendedFlags[module.packageName] == true,
+                                onOpen = { onOpenModule(module) },
+                                highlight = module.packageName == highlightPackage,
+                                onSwitchSettled = { onSwitchSettled(module.packageName) },
+                            ) { onToggle(module, it) }
+                            RowDivider()
+                        }
+                    }
+                }
+            }
         } else if (miuix) {
             item {
                 MiuixCard(
@@ -269,6 +370,8 @@ internal fun AppScopeScreen(
                             apiOf(module) to { api -> onApiChange(module, api) },
                             recommended = recommendedFlags[module.packageName] == true,
                             onOpen = { onOpenModule(module) },
+                            highlight = module.packageName == highlightPackage,
+                            onSwitchSettled = { onSwitchSettled(module.packageName) },
                         ) { onToggle(module, it) }
                         if (index != listed.lastIndex) MiuixDivider()
                     }
@@ -276,14 +379,18 @@ internal fun AppScopeScreen(
             }
         } else {
             items(listed, key = { it.packageName }) { module ->
-                ScopeModuleRow(
-                    module,
-                    inScope(module),
-                    apiOf(module) to { api -> onApiChange(module, api) },
-                    recommended = recommendedFlags[module.packageName] == true,
-                    onOpen = { onOpenModule(module) },
-                ) { onToggle(module, it) }
-                RowDivider()
+                Column(Modifier.animateItem()) {
+                    ScopeModuleRow(
+                        module,
+                        inScope(module),
+                        apiOf(module) to { api -> onApiChange(module, api) },
+                        recommended = recommendedFlags[module.packageName] == true,
+                        onOpen = { onOpenModule(module) },
+                        highlight = module.packageName == highlightPackage,
+                        onSwitchSettled = { onSwitchSettled(module.packageName) },
+                    ) { onToggle(module, it) }
+                    RowDivider()
+                }
             }
         }
     }
@@ -296,8 +403,16 @@ private fun ScopeModuleRow(
     api: Pair<Int, (Int) -> Unit>,
     recommended: Boolean,
     onOpen: () -> Unit,
+    highlight: Boolean = false,
+    onSwitchSettled: () -> Unit = {},
     onToggle: (Boolean) -> Unit,
 ) {
+    val highlightAlpha by animateFloatAsState(
+        targetValue = if (highlight) 1f else 0f,
+        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow),
+        label = "highlight",
+    )
+    val accent = if (LocalMiuix.current) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
     SwitchableEntryRow(
         icon = module.icon,
         title = module.label,
@@ -305,6 +420,8 @@ private fun ScopeModuleRow(
         checked = checked,
         onCheckedChange = onToggle,
         onClick = onOpen,
+        onSwitchSettled = onSwitchSettled,
+        rowBackground = if (highlightAlpha > 0.01f) accent.copy(alpha = 0.10f * highlightAlpha) else null,
         badge = if (recommended) {
             { RecommendBadge() }
         } else {

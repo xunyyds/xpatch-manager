@@ -267,7 +267,7 @@ private fun PickerRow(app: AppInfo, sortId: String, onPick: () -> Unit) {
     )
 }
 
-private fun letterOf(label: String): String {
+internal fun letterOf(label: String): String {
     val c = label.firstOrNull()?.uppercaseChar() ?: return "#"
     return if (c in 'A'..'Z') c.toString() else "#"
 }

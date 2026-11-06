@@ -1,6 +1,7 @@
 package io.xpatch.ui.components
 
 import android.graphics.drawable.Drawable
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -15,6 +16,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
@@ -38,7 +40,9 @@ fun SwitchableEntryRow(
     onClick: (() -> Unit)? = null,
     badge: (@Composable () -> Unit)? = null,
     endExtra: (@Composable () -> Unit)? = null,
+    rowBackground: Color? = null,
     minHeight: Dp = 56.dp,
+    onSwitchSettled: (() -> Unit)? = null,
 ) {
     val miuix = LocalMiuix.current
     val rowModifier = if (onClick != null) {
@@ -50,6 +54,13 @@ fun SwitchableEntryRow(
     }
     Row(
         modifier = rowModifier
+            .then(
+                if (rowBackground != null) {
+                    Modifier.background(rowBackground)
+                } else {
+                    Modifier
+                },
+            )
             .heightIn(min = minHeight)
             .padding(
                 start = if (miuix) 16.dp else 20.dp,
@@ -112,9 +123,11 @@ fun SwitchableEntryRow(
         }
         Spacer(Modifier.width(8.dp))
         // 开关自带点击，事件在此被消费，不会冒泡到整行的 onClick。
+        // onSettled 在整段动画播完后回调，让调用方可以"先播动画、后移动"。
         JellySwitch(
             checked = checked,
             onCheckedChange = onCheckedChange,
+            onSettled = onSwitchSettled,
         )
     }
 }

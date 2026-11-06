@@ -138,6 +138,10 @@ fun MainScaffold(
         }
     }
     var query by remember { mutableStateOf("") }
+    var scopeQuery by remember { mutableStateOf("") }
+    var scopeSort by remember { mutableIntStateOf(0) }
+    var scopeReversed by remember { mutableStateOf(false) }
+    val scopeListState = androidx.compose.foundation.lazy.rememberLazyListState()
     var includeSystem by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
     var busyText by remember { mutableStateOf<String?>(null) }
@@ -1017,6 +1021,13 @@ fun MainScaffold(
                     onOpenModule = { module ->
                         nav.navigate(Page.ModuleDetail(module, current.app, true))
                     },
+                    listState = scopeListState,
+                    query = scopeQuery,
+                    onQueryChange = { scopeQuery = it },
+                    sort = scopeSort,
+                    onSortChange = { scopeSort = it },
+                    reversed = scopeReversed,
+                    onReversedChange = { scopeReversed = it },
                     onToggle = { module, inScope ->
                         repository.setInScope(module.packageName, current.app.packageName, inScope)
                         eventLog.add(
