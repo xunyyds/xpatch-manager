@@ -187,7 +187,16 @@ class PatchService(private val context: Context) {
     }
 
     private companion object {
-        val SOURCE_ENTRIES = listOf("xp/source.apk", "fpa/source.apk", "xp/o_app.apk")
+        // 顺序：本项目优先，其次历史命名空间，最后第三方补丁工具（NPatch / LSPatch）
+        // 的内嵌原始包布局，保证「更新核心」从任意来源产物都能取到原始 APK。
+        val SOURCE_ENTRIES = listOf(
+            "xp/source.apk",
+            "fpa/source.apk",
+            "xp/o_app.apk",
+            "assets/npatch/origin.apk",
+            "lspatch/origin.apk",
+            "assets/lspatch/origin.apk",
+        )
     }
 }
 

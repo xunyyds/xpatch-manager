@@ -62,7 +62,10 @@ class ApkPatcher(private val context: Context) {
         onLog("解析完成，共 ${entries.size} 个条目")
 
         var depth = 0
-        while (depth < MAX_STRIP_DEPTH && entries.any { isInjectedEntry(it.name) }) {
+        while (
+            depth < MAX_STRIP_DEPTH &&
+            entries.any { isInjectedEntry(it.name) || embeddedSourceOf(it.name) }
+        ) {
             val legacyFamily = legacyFamily(entries)
             onLog(
                 if (depth == 0) {
@@ -938,15 +941,28 @@ class ApkPatcher(private val context: Context) {
         )
 
         // 本项目的早期命名空间。保留字面量以便识别并剥离旧版的注入层。
+        // 注意 NPatch / LSPatch 的实际布局把条目放在 assets/ 之下，必须一并识别，
+        // 否则已注入检测（isInjectedEntry）会漏判，剥离循环不会启动。
         const val LEGACY_DIR = "xpt/"
 
-        val LEGACY_PREFIXES = listOf("fpa/", LEGACY_DIR, "npatch/", "lspatch/")
+        val LEGACY_PREFIXES = listOf(
+            "fpa/",
+            LEGACY_DIR,
+            "npatch/",
+            "assets/npatch/",
+            "lspatch/",
+            "assets/lspatch/",
+        )
 
         private fun legacyFamily(entries: List<Entry>): String? = when {
             entries.any { it.name.startsWith("fpa/") } -> "FPA"
             entries.any { it.name.startsWith(LEGACY_DIR) } -> "XPT"
-            entries.any { it.name.startsWith("npatch/") } -> "NPatch"
-            entries.any { it.name.startsWith("lspatch/") } -> "LSPatch"
+            entries.any {
+                it.name.startsWith("npatch/") || it.name.startsWith("assets/npatch/")
+            } -> "NPatch"
+            entries.any {
+                it.name.startsWith("lspatch/") || it.name.startsWith("assets/lspatch/")
+            } -> "LSPatch"
             else -> null
         }
 
@@ -993,7 +1009,12 @@ class ApkPatcher(private val context: Context) {
                     name.removePrefix("classes").removeSuffix(".dex").toIntOrNull() != null)
 
         fun embeddedSourceOf(name: String): Boolean =
-            name == SOURCE_ENTRY || name == "fpa/source.apk" || name == "xp/o_app.apk"
+            name == SOURCE_ENTRY ||
+                name == "fpa/source.apk" ||
+                name == "xp/o_app.apk" ||
+                name == "assets/npatch/origin.apk" ||
+                name == "lspatch/origin.apk" ||
+                name == "assets/lspatch/origin.apk"
 
         const val STORED = 0
         const val DEFLATED = 8
