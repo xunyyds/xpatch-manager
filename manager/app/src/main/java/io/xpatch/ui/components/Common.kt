@@ -103,6 +103,7 @@ fun EntryRow(
     caption: String? = null,
     onClick: (() -> Unit)? = null,
     onLongClick: (() -> Unit)? = null,
+    badge: (@Composable () -> Unit)? = null,
     trailing: (@Composable () -> Unit)? = null,
 ) {
     val miuix = LocalMiuix.current
@@ -127,14 +128,18 @@ fun EntryRow(
         Spacer(Modifier.width(if (miuix) 14.dp else 16.dp))
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.Center) {
             if (miuix) {
-                MiuixText(
-                    title,
-                    fontSize = MiuixTheme.textStyles.headline1.fontSize,
-                    fontWeight = FontWeight.Medium,
-                    color = MiuixTheme.colorScheme.onSurface,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    MiuixText(
+                        title,
+                        fontSize = MiuixTheme.textStyles.headline1.fontSize,
+                        fontWeight = FontWeight.Medium,
+                        color = MiuixTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    badge?.invoke()
+                }
                 Spacer(Modifier.height(2.dp))
                 MiuixText(
                     subtitle,
@@ -153,13 +158,17 @@ fun EntryRow(
                     )
                 }
             } else {
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    badge?.invoke()
+                }
                 Spacer(Modifier.height(2.dp))
                 Text(
                     subtitle,

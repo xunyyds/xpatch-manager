@@ -51,6 +51,8 @@ import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.preference.SwitchPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.text.Collator
+import java.util.Locale
 
 @Composable
 internal fun ModuleScopeScreen(
@@ -144,13 +146,13 @@ internal fun AppScopeScreen(
         listOf(
             SortOption("0", "默认"),
             SortOption("1", "名称"),
-            SortOption("2", "已启用优先"),
+            SortOption("2", "首字母"),
         )
     }
+    val collator = remember { Collator.getInstance(Locale.CHINA) }
+    val enabledFlags = modules.associate { it.packageName to inScope(it) }
 
-    val recommended = modules.filter { app.packageName in it.recommendedApps }
-    val others = modules.filter { app.packageName !in it.recommendedApps }
-    val listed = others
+    val listed = modules
         .filter { module ->
             query.isBlank() ||
                 module.label.contains(query, ignoreCase = true) ||
@@ -159,14 +161,12 @@ internal fun AppScopeScreen(
         .let { source ->
             when (sort) {
                 1 -> source.sortedBy { it.label.lowercase() }
-                2 -> source.sortedWith(
-                    compareByDescending<ModuleInfo> { inScope(it) }.thenBy { it.label.lowercase() },
-                )
-
+                2 -> source.sortedWith(compareBy(collator) { it.label })
                 else -> source
             }
         }
-        .let { if (reversed) it.reversed() else it }
+        .let { if (reversed) it.asReversed() else it }
+        .sortedByDescending { enabledFlags[it.packageName] == true }
 
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
         item { GroupHeader("应用详情") }
@@ -180,6 +180,7 @@ internal fun AppScopeScreen(
                     DetailRow("版本号", app.versionName.ifBlank { "未设置" } + "（" + app.versionCode + "）", Modifier.padding(horizontal = 16.dp))
                     DetailRow("安装时间", meta?.installTime ?: "未设置", Modifier.padding(horizontal = 16.dp))
                     DetailRow("大小", meta?.apkSize ?: "未设置", Modifier.padding(horizontal = 16.dp))
+                    DetailRow("运行时", runtimeLabel(app), Modifier.padding(horizontal = 16.dp))
                     Spacer(Modifier.height(12.dp))
                     MiuixDivider()
                     ActionRow("启动应用", onLaunch)
@@ -201,6 +202,7 @@ internal fun AppScopeScreen(
                     DetailRow("版本号", app.versionName.ifBlank { "未设置" } + "（" + app.versionCode + "）")
                     DetailRow("安装时间", meta?.installTime ?: "未设置")
                     DetailRow("大小", meta?.apkSize ?: "未设置")
+                    DetailRow("运行时", runtimeLabel(app))
                 }
                 ActionRow("启动应用", onLaunch)
                 ActionRow("强制停止", onForceStop, "正在停止 ")
@@ -209,36 +211,6 @@ internal fun AppScopeScreen(
                 ActionRow("打开系统应用信息页", onAppInfo)
                 ActionRow("查看日志", onViewLogs)
                 ActionRow("更新核心", onUpdateCore, "从内嵌原始包重新打包")
-            }
-        }
-        if (recommended.isNotEmpty()) {
-            item { GroupHeader("推荐给本应用的模块") }
-            if (miuix) {
-                item {
-                    MiuixCard(
-                        modifier = Modifier
-                            .padding(horizontal = 12.dp)
-                            .padding(bottom = 12.dp),
-                    ) {
-                        recommended.forEachIndexed { index, module ->
-                            ScopeModuleRow(
-                                module,
-                                inScope(module),
-                                apiOf(module) to { api -> onApiChange(module, api) },
-                            ) { onToggle(module, it) }
-                            if (index != recommended.lastIndex) MiuixDivider()
-                        }
-                    }
-                }
-            } else {
-                items(recommended, key = { "rec-" + it.packageName }) { module ->
-                    ScopeModuleRow(
-                        module,
-                        inScope(module),
-                        apiOf(module) to { api -> onApiChange(module, api) },
-                    ) { onToggle(module, it) }
-                    RowDivider()
-                }
             }
         }
         stickyHeader(key = "modules-header") {
@@ -286,7 +258,7 @@ internal fun AppScopeScreen(
                 }
             }
         }
-        if (others.isEmpty()) {
+        if (modules.isEmpty()) {
             item { EmptyState("没有已安装的模块") }
         } else if (listed.isEmpty()) {
             item { EmptyState("没有匹配的模块") }
@@ -302,6 +274,7 @@ internal fun AppScopeScreen(
                             module,
                             inScope(module),
                             apiOf(module) to { api -> onApiChange(module, api) },
+                            recommended = app.packageName in module.recommendedApps,
                         ) { onToggle(module, it) }
                         if (index != listed.lastIndex) MiuixDivider()
                     }
@@ -313,6 +286,7 @@ internal fun AppScopeScreen(
                     module,
                     inScope(module),
                     apiOf(module) to { api -> onApiChange(module, api) },
+                    recommended = app.packageName in module.recommendedApps,
                 ) { onToggle(module, it) }
                 RowDivider()
             }
@@ -325,6 +299,7 @@ private fun ScopeModuleRow(
     module: ModuleInfo,
     checked: Boolean,
     api: Pair<Int, (Int) -> Unit>,
+    recommended: Boolean,
     onToggle: (Boolean) -> Unit,
 ) {
     if (LocalMiuix.current) {
@@ -335,6 +310,7 @@ private fun ScopeModuleRow(
             summary = module.packageName,
             startAction = { AppIcon(module.icon, size = 42) },
             endActions = {
+                if (recommended) RecommendBadge()
                 ApiSelector(module, api.first) { api.second(it) }
                 Spacer(Modifier.width(4.dp))
             },
@@ -345,6 +321,11 @@ private fun ScopeModuleRow(
         icon = module.icon,
         title = module.label,
         subtitle = module.packageName,
+        badge = if (recommended) {
+            { RecommendBadge() }
+        } else {
+            null
+        },
         trailing = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ApiSelector(module, api.first) { api.second(it) }
@@ -353,6 +334,31 @@ private fun ScopeModuleRow(
             }
         },
     )
+}
+
+@Composable
+internal fun RecommendBadge() {
+    val primary = if (LocalMiuix.current) MiuixTheme.colorScheme.primary
+    else MaterialTheme.colorScheme.primary
+    Text(
+        "推荐",
+        style = MaterialTheme.typography.labelSmall,
+        color = primary,
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(primary.copy(alpha = 0.14f))
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+    )
+}
+
+private const val LATEST_RUNTIME_VERSION = 39
+
+internal fun runtimeLabel(app: AppInfo): String {
+    if (app.runtimeVersion <= 0) return "未打包"
+    val core = app.hookCore ?: "未知"
+    val version = "v" + app.runtimeVersion
+    return if (app.runtimeVersion < LATEST_RUNTIME_VERSION) "$core $version（旧，建议重新打包）" else "$core $version"
 }
 
 @Composable

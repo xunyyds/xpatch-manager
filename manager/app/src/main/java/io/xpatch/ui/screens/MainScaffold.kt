@@ -137,16 +137,6 @@ fun MainScaffold(
             }.getOrDefault(packageName)
         }
     }
-    val syncScopeFile: (String) -> Unit = { appPackage ->
-        scope.launch(Dispatchers.IO) {
-            val result = ScopeFileWriter(context).sync(appPackage)
-            if (!result.ok) {
-                eventLog.add("作用域写入失败 " + (result.failureText ?: appPackage))
-                val entries = eventLog.entries()
-                withContext(Dispatchers.Main) { logs = entries }
-            }
-        }
-    }
     var query by remember { mutableStateOf("") }
     var includeSystem by remember { mutableStateOf(false) }
     var showAddDialog by remember { mutableStateOf(false) }
@@ -169,6 +159,16 @@ fun MainScaffold(
     var repoBusy by remember { mutableStateOf(false) }
     var repoError by remember { mutableStateOf<String?>(null) }
     var token by remember { mutableIntStateOf(0) }
+    val syncScopeFile: (String) -> Unit = { appPackage ->
+        scope.launch(Dispatchers.IO) {
+            val result = ScopeFileWriter(context).sync(appPackage)
+            if (!result.ok) {
+                eventLog.add("作用域写入失败 " + (result.failureText ?: appPackage))
+                val entries = eventLog.entries()
+                withContext(Dispatchers.Main) { logs = entries }
+            }
+        }
+    }
 
     val apkPicker = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
