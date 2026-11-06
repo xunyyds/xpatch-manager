@@ -55,7 +55,7 @@ internal fun PatchProgressDialog(
     failed: String?,
     resultPath: String?,
     onExport: () -> Unit,
-    onOpenWith: () -> Unit,
+    onShare: () -> Unit,
     onInstall: () -> Unit,
     onDismiss: () -> Unit,
 ) {
@@ -120,7 +120,7 @@ internal fun PatchProgressDialog(
                     ResultActions(
                         primary = primary,
                         onExport = onExport,
-                        onOpenWith = onOpenWith,
+                        onShare = onShare,
                         onInstall = onInstall,
                     )
                 } else {
@@ -264,7 +264,7 @@ private fun TypewriterLogs(
 private fun ResultActions(
     primary: Color,
     onExport: () -> Unit,
-    onOpenWith: () -> Unit,
+    onShare: () -> Unit,
     onInstall: () -> Unit,
 ) {
     Row(
@@ -273,7 +273,7 @@ private fun ResultActions(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         ActionLabel("导出", primary, onClick = onExport)
-        ActionLabel("打开方式", primary, onClick = onOpenWith)
+        ActionLabel("分享", primary, onClick = onShare)
         ActionLabel("安装", primary, onClick = onInstall)
     }
 }

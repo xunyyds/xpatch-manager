@@ -72,6 +72,7 @@ import io.xpatch.patch.InstallHelper
 import io.xpatch.patch.PatchOptions
 import io.xpatch.patch.PatchService
 import io.xpatch.patch.ShizukuBridge
+import io.xpatch.patch.ShizukuInstaller
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.LiquidBar
 import io.xpatch.ui.components.MiuixBottomBar
@@ -1138,6 +1139,59 @@ fun MainScaffold(
         }
     }
 
+    val showToast: (String) -> Unit = { message ->
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    // Shizuku 不可用/失败时的兜底：调起系统安装器（原「打开方式」的调用），全程有反馈。
+    val fallbackInstall: (PatchService.Outcome) -> Unit = fallback@{ outcome ->
+        if (!InstallHelper.canInstall(context)) {
+            eventLog.add("缺少「安装未知应用」权限，已停止安装 " + outcome.packageName)
+            showToast("需要安装权限，请授权后重试")
+            installBlocked = InstallBlock(outcome.packageName, false)
+            logs = eventLog.entries()
+            return@fallback
+        }
+        val launched = runCatching { InstallHelper.openWith(context, outcome.apk) }.getOrDefault(false)
+        if (launched) {
+            eventLog.add("已调起系统安装器 " + outcome.packageName + "，请在弹窗中确认安装")
+            showToast("已调起系统安装器，请在弹窗中确认")
+        } else {
+            eventLog.add("没有可用的安装器 " + outcome.packageName)
+            showToast("没有可用的安装器")
+        }
+        logs = eventLog.entries()
+    }
+
+    // 默认 Shizuku 静默安装；失败/不可用回退系统安装器，所有分支均有反馈。
+    val installOutcome: (PatchService.Outcome) -> Unit = { outcome ->
+        scope.launch {
+            val viaShizuku = ShizukuBridge.isAvailable()
+            busyText = if (viaShizuku) "正在通过 Shizuku 安装…" else null
+            try {
+                when (val step = ShizukuInstaller.install(context, outcome.apk, outcome.packageName)) {
+                    is ShizukuInstaller.Result.Success -> {
+                        eventLog.add(step.message)
+                        showToast(step.message)
+                    }
+                    is ShizukuInstaller.Result.Failure -> {
+                        eventLog.add(step.message)
+                        showToast(step.message)
+                        fallbackInstall(outcome)
+                    }
+                    ShizukuInstaller.Result.Unavailable -> {
+                        eventLog.add("Shizuku 不可用，改用系统安装器 " + outcome.packageName)
+                        fallbackInstall(outcome)
+                    }
+                }
+            } finally {
+                busyText = null
+            }
+            logs = eventLog.entries()
+            token++
+        }
+    }
+
     if (patchRunning || result != null || patchFailure != null) {
         PatchProgressDialog(
             state = PatchProgress(
@@ -1157,22 +1211,28 @@ fun MainScaffold(
                     saved.onSuccess { path ->
                         patchLog.add("已导出到 " + path)
                         eventLog.add("已导出到 " + path)
+                        showToast("已导出 " + path.substringAfterLast('/'))
                     }.onFailure {
                         val msg = "导出失败：" + (it.message ?: "未知错误")
                         patchLog.add(msg)
                         eventLog.add(msg)
+                        showToast(msg)
                     }
                     logs = eventLog.entries()
                     token++
                 }
             },
-            onOpenWith = {
+            onShare = {
                 val outcome = result ?: return@PatchProgressDialog
-                runCatching { InstallHelper.openWith(context, outcome.apk) }
-                    .onSuccess { opened ->
-                        if (!opened) eventLog.add("没有可处理安装包的应用")
-                    }
-                    .onFailure { eventLog.add("打开失败 ${it.message}") }
+                val shared = runCatching { InstallHelper.shareApk(context, outcome.apk) }
+                    .getOrDefault(false)
+                if (shared) {
+                    eventLog.add("已调起系统分享 " + outcome.packageName)
+                    showToast("已调起系统分享")
+                } else {
+                    eventLog.add("没有可分享安装包的应用 " + outcome.packageName)
+                    showToast("没有可分享安装包的应用")
+                }
                 logs = eventLog.entries()
                 result = null
                 patchLog.clear()
@@ -1184,21 +1244,14 @@ fun MainScaffold(
                     outcome.packageName,
                     signatureStore.certificateBytes(signatureStore.defaultProfile()),
                 )
-                if (matched == false) {
-                    pendingInstall = outcome
-                } else if (!InstallHelper.canInstall(context)) {
-                    installBlocked = InstallBlock(outcome.packageName, false)
-                } else {
-                    val started = runCatching { patchService.install(outcome) }.isSuccess
-                    eventLog.add(
-                        if (started) "已调起系统安装器 " + outcome.packageName
-                        else "没有可用的安装器 " + outcome.packageName,
-                    )
-                    logs = eventLog.entries()
-                }
                 result = null
                 patchLog.clear()
                 token++
+                if (matched == false) {
+                    pendingInstall = outcome
+                } else {
+                    installOutcome(outcome)
+                }
             },
             onDismiss = {
                 result = null
@@ -1216,22 +1269,14 @@ fun MainScaffold(
             actions = listOf(
                 DialogAction("返回") { pendingInstall = null },
                 DialogAction("继续安装") {
-                    val installed = runCatching {
-                        patchService.install(outcome)
-                    }.isSuccess
-                    if (installed) {
-                        eventLog.add("调起系统安装器 " + outcome.packageName)
-                    } else {
-                        eventLog.add("没有可用的安装器，已改为打开方式 " + outcome.packageName)
-                        runCatching { InstallHelper.openWith(context, outcome.apk) }
-                    }
+                    val target = pendingInstall
                     pendingInstall = null
-                    token++
+                    if (target != null) installOutcome(target)
                 },
             ),
         ) {
             Text(
-                "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n可以先卸载原应用，或改用「打开方式」自行选择安装器。\n\n点「返回」会保留打包结果，不必重新打包。",
+                "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n可以先卸载原应用再安装，或改用其他签名重新打包。\n\n点「返回」会保留打包结果，不必重新打包。",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
