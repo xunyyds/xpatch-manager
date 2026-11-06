@@ -166,9 +166,26 @@ class PatchService(private val context: Context) {
 
     fun export(outcome: Outcome): File {
         val dir = outputDir().apply { mkdirs() }
-        val target = File(dir, "${outcome.label}-${outcome.packageName}.apk")
-        outcome.apk.copyTo(target, overwrite = true)
+        val target = uniqueTarget(dir, "${outcome.label}-${outcome.packageName}.apk")
+        if (target.absolutePath != outcome.apk.absolutePath) {
+            outcome.apk.copyTo(target, overwrite = false)
+        }
         return target
+    }
+
+    /** 输出目录内取不重名的目标文件：重名自动追加 (1)、(2)…，绝不覆盖旧产物。 */
+    private fun uniqueTarget(dir: File, fileName: String): File {
+        var candidate = File(dir, fileName)
+        if (!candidate.exists()) return candidate
+        val dot = fileName.lastIndexOf('.')
+        val stem = if (dot > 0) fileName.substring(0, dot) else fileName
+        val ext = if (dot > 0) fileName.substring(dot) else ""
+        var index = 1
+        while (candidate.exists()) {
+            candidate = File(dir, "$stem($index)$ext")
+            index++
+        }
+        return candidate
     }
 
     /**
