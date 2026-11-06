@@ -956,8 +956,11 @@ private fun ModuleHeaderRow(
                 )
                 Text(
                     buildString {
-                        append(group.module)
-                        append(" · ")
+                        // 框架层分组标题已经显示「框架层」，副标题不再重复打印 _framework。
+                        if (!group.framework) {
+                            append(group.module)
+                            append(" · ")
+                        }
                         if (showTarget) {
                             append(group.targets.joinToString("、"))
                             append(" · ")

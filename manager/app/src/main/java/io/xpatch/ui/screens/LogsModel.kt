@@ -179,7 +179,7 @@ internal data class LogGroup(
 internal sealed interface LogRow {
     val key: String
 
-    data class Header(val group: LogGroup, val open: Boolean) : LogRow {
+    data class Header(val group: LogGroup) : LogRow {
         override val key: String get() = "h:" + group.key
     }
 
@@ -333,7 +333,7 @@ internal fun buildRows(
     }
     val searching = base.query.isNotEmpty()
     base.groups.forEach { group ->
-        rows += LogRow.Header(group, searching)
+        rows += LogRow.Header(group)
         if (!searching) return@forEach
         var previousDay: String? = null
         group.entries.forEachIndexed { index, entry ->
