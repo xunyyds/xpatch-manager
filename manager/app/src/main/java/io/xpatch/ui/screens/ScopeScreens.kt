@@ -455,7 +455,7 @@ internal fun RecommendBadge() {
     )
 }
 
-private const val LATEST_RUNTIME_VERSION = 39
+private const val LATEST_RUNTIME_VERSION = 40
 
 internal fun runtimeLabel(app: AppInfo): String {
     if (app.runtimeVersion <= 0) return "未打包"

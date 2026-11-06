@@ -917,7 +917,7 @@ class ApkPatcher(private val context: Context) {
         const val HOOK_SO_ENTRY = "xp/hook_core.so"
         const val STUB_CLASS = "io.xpatch.stub.AppEntry"
         const val ATTR_FACTORY_NAME = "appComponentFactory"
-        const val RUNTIME_VERSION = 39
+        const val RUNTIME_VERSION = 40
 
         val INJECTED_NAMES = setOf(
             "xp/core.dex",

@@ -110,6 +110,9 @@ class ScopeFileWriter(private val context: Context) {
     fun sync(appPackage: String): Result = sync(appPackage, ScopeStore(context))
 
     private fun sync(appPackage: String, scopeStore: ScopeStore): Result {
+        // 无感迁移：旧版把作用域写在 Android/media/<pkg>/ 根下，
+        // 新版统一放到 <pkg>/XPatch/，这里先迁移再按新路径读写。
+        runCatching { migrateLegacyMedia(appPackage) }
         val modules = scopeStore.modulesOf(appPackage)
         val mediaFile = mediaScopeFile(appPackage)
         val legacyDataFile = scopeFile(appPackage)
@@ -118,6 +121,7 @@ class ScopeFileWriter(private val context: Context) {
         if (modules.isEmpty()) {
             runCatching { mediaFile.delete() }
                 .onFailure { errors.add("media 删除: " + (it.message ?: "未知错误")) }
+            runCatching { legacyMediaScopeFile(appPackage).delete() }
             var dataViaShizuku = false
             if (legacyDataFile.isFile) {
                 runCatching { legacyDataFile.delete() }
@@ -214,13 +218,44 @@ class ScopeFileWriter(private val context: Context) {
         return File(dir, sha1("$appPackage.scope"))
     }
 
+    /** 新位置：<pkg>/XPatch/<sha1>，与管理器自己的配置同目录，避免与其他工具混放。 */
     private fun mediaScopeFile(appPackage: String): File {
+        val dir = File(
+            File(Environment.getExternalStorageDirectory(), "Android/media/$appPackage"),
+            CONFIG_DIR,
+        )
+        return File(dir, sha1("$appPackage.scope"))
+    }
+
+    /**
+     * 旧位置（历史版本写入）：Android/media/<pkg>/<sha1>。
+     * 检测到就迁移到 XPatch/ 子目录，迁移后删除旧文件，实现无感升级。
+     */
+    private fun legacyMediaScopeFile(appPackage: String): File {
         val dir = File(Environment.getExternalStorageDirectory(), "Android/media/$appPackage")
         return File(dir, sha1("$appPackage.scope"))
+    }
+
+    private fun migrateLegacyMedia(appPackage: String) {
+        val legacy = legacyMediaScopeFile(appPackage)
+        if (!legacy.isFile) return
+        val target = mediaScopeFile(appPackage)
+        if (!target.isFile) {
+            runCatching {
+                target.parentFile?.mkdirs()
+                legacy.copyTo(target, overwrite = true)
+            }
+        }
+        // 迁移完成（或目标已存在）后清理旧文件，避免两份并存导致状态歧义。
+        if (target.isFile) runCatching { legacy.delete() }
     }
 
     private fun sha1(value: String): String {
         val digest = MessageDigest.getInstance("SHA-1").digest(value.toByteArray())
         return digest.joinToString("") { "%02X".format(it) }
+    }
+
+    private companion object {
+        const val CONFIG_DIR = "XPatch"
     }
 }

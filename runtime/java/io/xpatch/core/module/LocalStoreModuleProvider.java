@@ -16,6 +16,7 @@ import org.json.JSONObject;
 
 class LocalStoreModuleProvider implements IModuleProvider {
     private static final String TAG = "LocalStoreModuleProvider";
+    private static final String CONFIG_DIR = "XPatch";
     private final Context context;
 
     public LocalStoreModuleProvider(Context context) {
@@ -143,7 +144,11 @@ class LocalStoreModuleProvider implements IModuleProvider {
             strSha1 = String.valueOf((AppEnv.packageName + ".scope").hashCode());
         }
         File externalStorageDirectory = Environment.getExternalStorageDirectory();
+        // 新位置：<pkg>/XPatch/ 下的独立配置目录，避免与其他工具的文件混杂；
+        // 旧位置保留在末尾兜底，保证升级后未迁移的旧配置仍可读到（无感兼容）。
         return new String[]{
+            new File(new File(new File(externalStorageDirectory, "Android/media/" + AppEnv.packageName), CONFIG_DIR), strSha1).getAbsolutePath(),
+            new File(new File(new File(externalStorageDirectory, "Android/data/" + AppEnv.packageName), CONFIG_DIR), strSha1).getAbsolutePath(),
             new File(new File(externalStorageDirectory, "Android/media/" + AppEnv.packageName), strSha1).getAbsolutePath(),
             new File(new File(externalStorageDirectory, "Android/data/" + AppEnv.packageName), strSha1).getAbsolutePath()
         };
