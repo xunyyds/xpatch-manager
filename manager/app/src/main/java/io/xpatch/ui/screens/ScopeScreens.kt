@@ -308,9 +308,11 @@ internal fun AppScopeScreen(
             item { EmptyState("没有匹配的模块") }
         } else if (sort == 2) {
             // 首字母排序：与「选择已安装的应用」一致，按字母分组并吸顶显示分组标题。
+            // 逆序时分组之间的顺序也要反转，与排序标签的 ↓ 保持一致。
             val groups = listed.groupBy { letterOf(it.label) }
                 .toList()
                 .sortedWith(compareBy({ if (it.first == "#") 1 else 0 }, { it.first }))
+                .let { if (reversed) it.reversed() else it }
             groups.forEach { (letter, group) ->
                 stickyHeader(key = "letter-$letter") {
                     Box(

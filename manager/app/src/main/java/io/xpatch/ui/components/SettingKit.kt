@@ -214,25 +214,6 @@ internal fun SettingChoiceItem(
 }
 
 @Composable
-internal fun SettingAside(text: String) {
-    if (LocalMiuix.current) {
-        MiuixText(
-            text,
-            style = MiuixTheme.textStyles.footnote1,
-            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-            modifier = Modifier.padding(start = 28.dp, end = 28.dp, bottom = 12.dp),
-        )
-    } else {
-        Text(
-            text,
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-        )
-    }
-}
-
-@Composable
 private fun SettingTitles(title: String, subtitle: String?) {
     Text(title, style = MaterialTheme.typography.bodyLarge)
     if (subtitle != null) {

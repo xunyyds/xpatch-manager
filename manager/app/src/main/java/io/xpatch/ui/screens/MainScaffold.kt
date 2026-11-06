@@ -49,6 +49,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
@@ -87,6 +89,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -111,11 +115,10 @@ fun MainScaffold(
 
     val nav = rememberNavigator()
     val miuix = LocalMiuix.current
+    val clipboard = LocalClipboardManager.current
     val logsState = remember { LogsState() }
     var logDetailState by remember { mutableStateOf(LogDetailState()) }
     val logDetailList = androidx.compose.foundation.lazy.rememberLazyListState()
-    var logCopied by remember { mutableStateOf("") }
-    var logCopyTick by remember { mutableIntStateOf(0) }
     var logsRefreshing by remember { mutableStateOf(false) }
     var logsRuntime by remember {
         mutableStateOf(RuntimeLogsState(hasAccess = logStore.hasAccess()))
@@ -163,13 +166,21 @@ fun MainScaffold(
     var repoBusy by remember { mutableStateOf(false) }
     var repoError by remember { mutableStateOf<String?>(null) }
     var token by remember { mutableIntStateOf(0) }
+    // 按应用包名串行化作用域同步：sync 先取快照再写文件，
+    // 并发执行时旧快照会覆盖新选择（关掉最后一个模块后文件又被写回）。
+    val scopeSyncLocks = remember { HashMap<String, Mutex>() }
     val syncScopeFile: (String) -> Unit = { appPackage ->
+        val lock = synchronized(scopeSyncLocks) {
+            scopeSyncLocks.getOrPut(appPackage) { Mutex() }
+        }
         scope.launch(Dispatchers.IO) {
-            val result = ScopeFileWriter(context).sync(appPackage)
-            if (!result.ok) {
-                eventLog.add("作用域写入失败 " + (result.failureText ?: appPackage))
-                val entries = eventLog.entries()
-                withContext(Dispatchers.Main) { logs = entries }
+            lock.withLock {
+                val result = ScopeFileWriter(context).sync(appPackage)
+                if (!result.ok) {
+                    eventLog.add("作用域写入失败 " + (result.failureText ?: appPackage))
+                    val entries = eventLog.entries()
+                    withContext(Dispatchers.Main) { logs = entries }
+                }
             }
         }
     }
@@ -800,8 +811,12 @@ fun MainScaffold(
                 )
 
                 is Page.LogModule -> {
+                    // 分组 key 由 target+module 构成，详情页必须沿用同一口径：
+                    // 按 targets 过滤，避免同名模块在其他应用里的日志串进来。
                     val groupEntries = logsRuntime.entries.filter { entry ->
-                        if (current.framework) entry.framework else entry.module == current.module
+                        val targetHit = entry.target in current.targets
+                        if (current.framework) targetHit && entry.framework
+                        else targetHit && entry.module == current.module
                     }
                     LogModuleScreen(
                         module = current.module,
@@ -812,8 +827,7 @@ fun MainScaffold(
                         state = logDetailState,
                         listState = logDetailList,
                         onCopy = { entry ->
-                            logCopied = "已复制 " + entry.timeText
-                            logCopyTick++
+                            clipboard.setText(AnnotatedString(entry.fullText))
                         },
                     )
                 }
@@ -1019,7 +1033,7 @@ fun MainScaffold(
                     },
                     inScope = { module -> repository.isInScopeFor(module.packageName, current.app.packageName) },
                     onOpenModule = { module ->
-                        nav.navigate(Page.ModuleDetail(module, current.app, true))
+                        nav.navigate(Page.ModuleDetail(module, current.app))
                     },
                     listState = scopeListState,
                     query = scopeQuery,

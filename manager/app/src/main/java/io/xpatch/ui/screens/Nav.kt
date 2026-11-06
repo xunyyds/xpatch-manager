@@ -34,7 +34,6 @@ internal sealed interface Page {
     data class ModuleDetail(
         val module: ModuleInfo,
         val app: AppInfo,
-        val fromScope: Boolean,
     ) : Page
     data object Repo : Page
     data class RepoDetail(val module: RepoStore.RepoModule) : Page

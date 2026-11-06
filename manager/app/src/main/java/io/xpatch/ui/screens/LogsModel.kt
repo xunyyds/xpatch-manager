@@ -33,7 +33,8 @@ internal enum class LogViewMode(val label: String) {
 internal enum class GroupOrder(val label: String, val short: String) {
     LayerFirst("框架层在前", "框架优先"),
     ModuleFirst("模块层在前", "模块优先"),
-}internal enum class TimeOrder(val label: String, val short: String) {
+}
+internal enum class TimeOrder(val label: String, val short: String) {
     NewestFirst("最新在前", "时间 ↓"),
     OldestFirst("最早在前", "时间 ↑"),
 }
@@ -46,7 +47,6 @@ internal enum class LogLevel(val label: String, val short: String) {
     Debug("调试", "DEBUG"),
 }
 
-internal const val LOGS_EXPAND_ALL_THRESHOLD = 4
 internal const val LOGS_HIGHLIGHT_LIMIT = 32
 internal const val LOGS_SEARCH_DEBOUNCE_MS = 220L
 internal const val LOGS_SUMMARY_MAX_LINES = 4

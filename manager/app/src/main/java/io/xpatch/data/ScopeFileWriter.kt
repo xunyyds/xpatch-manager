@@ -48,15 +48,35 @@ class ScopeFileWriter(private val context: Context) {
     private fun sync(appPackage: String, scopeStore: ScopeStore): Result {
         val modules = scopeStore.modulesOf(appPackage)
         if (modules.isEmpty()) {
-            runCatching { scopeFile(appPackage).delete() }
-            runCatching { mediaScopeFile(appPackage).delete() }
+            val errors = mutableListOf<String>()
+            val mediaFile = mediaScopeFile(appPackage)
+            val dataFile = scopeFile(appPackage)
+            var mediaOk = runCatching { mediaFile.delete() }
+                .onFailure { errors.add("media 删除: " + (it.message ?: "未知错误")) }
+                .isSuccess
+            var dataOk = runCatching { dataFile.delete() }
+                .onFailure { errors.add("data 删除: " + (it.message ?: "未知错误")) }
+                .isSuccess
+            var dataViaShizuku = false
+            // data 目录属应用私有，直删失败时改走 Shizuku 特权删除，
+            // 否则运行时会按 media 优先、data 兜底读到残留文件，已取消的模块"复活"。
+            if (!dataOk && dataFile.isFile) {
+                dataViaShizuku = deleteDataViaShizuku(dataFile)
+                if (dataViaShizuku) {
+                    dataOk = true
+                    errors.removeAll { it.startsWith("data 删除: ") }
+                }
+            }
+            // 文件本来就不存在也算删除成功。
+            if (!mediaOk && !mediaFile.isFile) mediaOk = true
+            if (!dataOk && !dataFile.isFile) dataOk = true
             return Result(
                 appPackage = appPackage,
                 hasScope = false,
-                mediaWritten = true,
-                dataWritten = true,
-                dataViaShizuku = false,
-                errors = emptyList(),
+                mediaWritten = mediaOk,
+                dataWritten = dataOk,
+                dataViaShizuku = dataViaShizuku,
+                errors = errors,
             )
         }
         val payload = payloadOf(appPackage, modules)
@@ -118,6 +138,12 @@ class ScopeFileWriter(private val context: Context) {
         val command = "cp " + quote(mirror.absolutePath) + " " + quote(data.absolutePath) +
             " && chmod 644 " + quote(data.absolutePath) +
             " && echo __XP_SCOPE_OK__"
+        return ShizukuBridge.exec(command)?.contains("__XP_SCOPE_OK__") == true
+    }
+
+    private fun deleteDataViaShizuku(data: File): Boolean {
+        if (!ShizukuBridge.hasPermission()) return false
+        val command = "rm -f " + quote(data.absolutePath) + " && echo __XP_SCOPE_OK__"
         return ShizukuBridge.exec(command)?.contains("__XP_SCOPE_OK__") == true
     }
 
