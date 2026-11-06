@@ -61,6 +61,7 @@ import io.xpatch.data.ManagerRepository
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.RepoStore
 import io.xpatch.data.RuntimeLogStore
+import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
 import io.xpatch.model.AppInfo
@@ -134,6 +135,16 @@ fun MainScaffold(
                 val info = context.packageManager.getApplicationInfo(packageName, 0)
                 context.packageManager.getApplicationLabel(info).toString()
             }.getOrDefault(packageName)
+        }
+    }
+    val syncScopeFile: (String) -> Unit = { appPackage ->
+        scope.launch(Dispatchers.IO) {
+            val result = ScopeFileWriter(context).sync(appPackage)
+            if (!result.ok) {
+                eventLog.add("作用域写入失败 " + (result.failureText ?: appPackage))
+                val entries = eventLog.entries()
+                withContext(Dispatchers.Main) { logs = entries }
+            }
         }
     }
     var query by remember { mutableStateOf("") }
@@ -900,6 +911,7 @@ fun MainScaffold(
                             else "作用域 - ${current.module.packageName} → ${app.packageName}",
                         )
                         token++
+                        syncScopeFile(app.packageName)
                     },
                 )
 
@@ -913,9 +925,7 @@ fun MainScaffold(
                         moduleApiStore.setApi(current.app.packageName, module.packageName, api)
                         eventLog.add("API ${module.packageName} → ${ModuleApiStore.label(api)}，重启目标应用后生效")
                         token++
-                        scope.launch(Dispatchers.IO) {
-                            io.xpatch.data.ScopeFileWriter(context).sync(current.app.packageName)
-                        }
+                        syncScopeFile(current.app.packageName)
                     },
                     onLaunch = {
                         runCatching { ShizukuBridge.launch(context, current.app.packageName) }
@@ -1010,6 +1020,7 @@ fun MainScaffold(
                             else "作用域 - ${module.packageName} → ${current.app.packageName}",
                         )
                         token++
+                        syncScopeFile(current.app.packageName)
                     },
                 )
             }
