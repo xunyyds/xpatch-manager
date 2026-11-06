@@ -60,9 +60,10 @@ internal fun ModuleScopeScreen(
     onToggle: (AppInfo, Boolean) -> Unit,
 ) {
     val scope = scopeOf()
+    val selected = scope.intersect(apps.map { it.packageName }.toSet())
     val miuix = LocalMiuix.current
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { ScopeHeader(module.label, module.packageName, "已选择 ${scope.size} 个应用") }
+        item { ScopeHeader(module.label, module.packageName, "已选择 ${selected.size} 个应用") }
         item { GroupHeader("应用") }
         if (apps.isEmpty()) {
             item { EmptyState("没有可作用的应用") }

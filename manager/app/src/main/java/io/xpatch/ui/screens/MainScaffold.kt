@@ -902,7 +902,7 @@ fun MainScaffold(
 
                 is Page.ModuleScope -> ModuleScopeScreen(
                     module = current.module,
-                    apps = (patchedApps + patchableApps).distinctBy { it.packageName },
+                    apps = patchedApps,
                     scopeOf = { repository.appsOfModule(current.module.packageName) },
                     onToggle = { app, inScope ->
                         repository.setInScope(current.module.packageName, app.packageName, inScope)
