@@ -33,7 +33,6 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -160,20 +159,24 @@ internal fun AppScopeScreen(
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
     val settledEnabled = settledState.value
-    val highlightScope = rememberCoroutineScope()
 
     val onSwitchSettled: (String) -> Unit = { pkg ->
         pendingPackage = pkg
     }
     // 动画播完后才把最新状态并入排序，触发 animateItem 的平滑位移。
-    LaunchedEffect(pendingPackage, enabledFlags) {
+    // pendingPackage 只负责启动：立即清空并另起协程延时清除高亮，
+    // 避免把它作为本 effect 的 key 导致 effect 自取消、高亮卡住不消失。
+    LaunchedEffect(pendingPackage) {
         val pkg = pendingPackage ?: return@LaunchedEffect
+        pendingPackage = null
         if (settledEnabled[pkg] == enabledFlags[pkg]) return@LaunchedEffect
         settledState.value = enabledFlags
         highlightPackage = pkg
-        pendingPackage = null
+    }
+    LaunchedEffect(highlightPackage) {
+        val pkg = highlightPackage ?: return@LaunchedEffect
         delay(1000)
-        highlightPackage = null
+        if (highlightPackage == pkg) highlightPackage = null
     }
 
     val listed = modules
