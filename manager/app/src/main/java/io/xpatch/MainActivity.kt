@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import io.xpatch.data.EventLog
 import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.SettingsStore
 import io.xpatch.ui.components.DialogAction
@@ -62,7 +63,15 @@ class MainActivity : ComponentActivity() {
         val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
         storageGranted = granted
         if (granted) {
-            Thread { runCatching { ScopeFileWriter(applicationContext).syncAll() } }.start()
+            Thread {
+                runCatching {
+                    // 等 Shizuku binder/UserService 就绪再清扫遗留，避免冷启动竞态。
+                    Thread.sleep(3000)
+                    ScopeFileWriter(applicationContext).syncAll { message ->
+                        runCatching { EventLog(applicationContext).add(message) }
+                    }
+                }
+            }.start()
         }
     }
 

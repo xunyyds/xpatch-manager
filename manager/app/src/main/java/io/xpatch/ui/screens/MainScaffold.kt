@@ -177,7 +177,11 @@ fun MainScaffold(
             lock.withLock {
                 val result = ScopeFileWriter(context).sync(appPackage)
                 if (!result.ok) {
-                    eventLog.add("作用域写入失败 " + (result.failureText ?: appPackage))
+                    eventLog.add("作用域同步失败 " + (result.failureText ?: appPackage))
+                    val entries = eventLog.entries()
+                    withContext(Dispatchers.Main) { logs = entries }
+                } else if (result.dataViaShizuku) {
+                    eventLog.add("已通过 Shizuku 清理 " + appPackage + " 的遗留 data 作用域")
                     val entries = eventLog.entries()
                     withContext(Dispatchers.Main) { logs = entries }
                 }

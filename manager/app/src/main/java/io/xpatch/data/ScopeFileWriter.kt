@@ -8,27 +8,38 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
+/**
+ * 作用域同步：只以 Android/media/<pkg>/<sha1> 为唯一来源。
+ *
+ * media 目录在「所有文件访问」权限下可直接读写，无需特权通道；
+ * Android/data 为应用私有目录，历史版本可能遗留旧作用域文件，
+ * 而运行时按 media 优先、data 兜底读取，因此关闭全部模块时
+ * 若发现遗留 data 份会一并清理（直删失败则以空作用域覆盖），
+ * 避免已取消的模块经 data 兜底"复活"。
+ */
 class ScopeFileWriter(private val context: Context) {
 
     data class Result(
         val appPackage: String,
         val hasScope: Boolean,
-        val mediaWritten: Boolean,
-        val dataWritten: Boolean,
+        val mediaReady: Boolean,
+        val legacyDataCleaned: Boolean,
         val dataViaShizuku: Boolean,
         val errors: List<String>,
     ) {
-        val ok: Boolean get() = !hasScope || (mediaWritten && dataWritten)
+        val ok: Boolean get() = mediaReady && legacyDataCleaned
 
         val failureText: String?
             get() {
                 if (ok) return null
                 return buildString {
                     append(appPackage).append("：")
-                    if (!mediaWritten) append("media 写入失败；")
-                    if (!dataWritten) {
-                        append("data 写入失败")
-                        if (!dataViaShizuku) append("（Shizuku 兜底不可用，旧版运行时将读不到模块）")
+                    if (!mediaReady) {
+                        append(if (hasScope) "media 写入失败；" else "media 删除失败；")
+                    }
+                    if (!legacyDataCleaned) {
+                        append("遗留 data 作用域清理失败")
+                        if (!dataViaShizuku) append("（Shizuku 兜底不可用）")
                         append("；")
                     }
                     if (errors.isNotEmpty()) append(errors.joinToString("；"))
@@ -36,75 +47,120 @@ class ScopeFileWriter(private val context: Context) {
             }
     }
 
-    fun syncAll(): List<Result> {
+    /**
+     * [onEvent]：可选的进度/失败回调（由 UI 层传入，用于把结果写进操作日志）。
+     * sweep 失败常因 Shizuku UserService 冷启动未就绪，此处重试等待。
+     */
+    fun syncAll(onEvent: (String) -> Unit = {}) {
         val scopeStore = ScopeStore(context)
         val targets = LinkedHashSet<String>()
         scopeStore.exportAll().values.forEach { targets.addAll(it) }
-        return targets.map { target -> sync(target, scopeStore) }
+        val results = targets.map { target -> sync(target, scopeStore) }.toMutableList()
+        // 遗留清理：旧版本可能在 Android/data 留下作用域文件，而对应应用已无任何作用域，
+        // 不在 exportAll 的 targets 里会被跳过；这里对常见残留路径做一次全量清扫。
+        runCatching { sweepLegacyScopes(results, onEvent) }
+    }
+
+    private fun sweepLegacyScopes(results: MutableList<Result>, onEvent: (String) -> Unit) {
+        val dataRoot = File(Environment.getExternalStorageDirectory(), "Android/data")
+        val files = dataRoot.listFiles() ?: return
+        for (dir in files) {
+            if (!dir.isDirectory) continue
+            val legacy = File(dir, sha1(dir.name + ".scope"))
+            if (!legacy.isFile) continue
+            // 与当前作用域一致的残留由 targets 路径处理；这里只处理"已无作用域"的应用。
+            val hasScope = results.any { it.appPackage == dir.name && it.hasScope }
+            if (hasScope) continue
+            val staging = File(
+                File(Environment.getExternalStorageDirectory(), "Android/media/" + dir.name),
+                legacy.name + ".empty",
+            )
+            var viaShizuku = false
+            runCatching {
+                staging.parentFile?.mkdirs()
+                staging.writeText(JSONObject().put("scopes", JSONArray()).toString())
+                // Shizuku UserService 冷启动可能落后于本线程，重试等待最多 ~8 秒。
+                repeat(4) { attempt ->
+                    if (!viaShizuku) {
+                        viaShizuku = copyDataViaShizuku(staging, legacy)
+                        if (!viaShizuku && attempt < 3) Thread.sleep(2000)
+                    }
+                }
+            }
+            runCatching { staging.delete() }
+            val cleaned = !legacy.isFile || readScopeIsEmpty(legacy)
+            if (!cleaned) {
+                onEvent("遗留 data 作用域清理失败 " + dir.name + "（Shizuku 通道未生效）")
+            } else if (viaShizuku) {
+                onEvent("已通过 Shizuku 清理 " + dir.name + " 的遗留 data 作用域")
+            }
+            results.add(
+                Result(
+                    appPackage = dir.name,
+                    hasScope = false,
+                    mediaReady = true,
+                    legacyDataCleaned = cleaned,
+                    dataViaShizuku = viaShizuku,
+                    errors = if (cleaned) emptyList() else listOf("遗留 data 清理失败（Shizuku 通道未生效）"),
+                ),
+            )
+        }
     }
 
     fun sync(appPackage: String): Result = sync(appPackage, ScopeStore(context))
 
     private fun sync(appPackage: String, scopeStore: ScopeStore): Result {
         val modules = scopeStore.modulesOf(appPackage)
+        val mediaFile = mediaScopeFile(appPackage)
+        val legacyDataFile = scopeFile(appPackage)
+        val errors = mutableListOf<String>()
+
         if (modules.isEmpty()) {
-            val errors = mutableListOf<String>()
-            val mediaFile = mediaScopeFile(appPackage)
-            val dataFile = scopeFile(appPackage)
-            var mediaOk = runCatching { mediaFile.delete() }
+            runCatching { mediaFile.delete() }
                 .onFailure { errors.add("media 删除: " + (it.message ?: "未知错误")) }
-                .isSuccess
-            var dataOk = runCatching { dataFile.delete() }
-                .onFailure { errors.add("data 删除: " + (it.message ?: "未知错误")) }
-                .isSuccess
             var dataViaShizuku = false
-            // data 目录属应用私有，直删失败时改走 Shizuku 特权删除，
-            // 否则运行时会按 media 优先、data 兜底读到残留文件，已取消的模块"复活"。
-            if (!dataOk && dataFile.isFile) {
-                dataViaShizuku = deleteDataViaShizuku(dataFile)
-                if (dataViaShizuku) {
-                    dataOk = true
-                    errors.removeAll { it.startsWith("data 删除: ") }
+            if (legacyDataFile.isFile) {
+                runCatching { legacyDataFile.delete() }
+                if (legacyDataFile.isFile) {
+                    // 直删失败（FUSE 权限限制），改走实测可靠的 cp 通道写入空作用域。
+                    // 注意：cp 源必须放在 media 下（shell uid 可读），
+                    // 应用私有 cacheDir 的文件 UserService 读不到，会导致整条命令失败。
+                    // UserService 冷启动可能超过绑定超时，这里重试最多 3 次。
+                    val staging = File(mediaFile.parentFile, mediaFile.name + ".empty")
+                    runCatching {
+                        staging.parentFile?.mkdirs()
+                        staging.writeText(JSONObject().put("scopes", JSONArray()).toString())
+                        repeat(3) { attempt ->
+                            if (!dataViaShizuku) {
+                                dataViaShizuku = copyDataViaShizuku(staging, legacyDataFile)
+                                if (!dataViaShizuku && attempt < 2) Thread.sleep(2000)
+                            }
+                        }
+                    }
+                    runCatching { staging.delete() }
                 }
             }
-            // 文件本来就不存在也算删除成功。
-            if (!mediaOk && !mediaFile.isFile) mediaOk = true
-            if (!dataOk && !dataFile.isFile) dataOk = true
             return Result(
                 appPackage = appPackage,
                 hasScope = false,
-                mediaWritten = mediaOk,
-                dataWritten = dataOk,
+                mediaReady = !mediaFile.isFile,
+                legacyDataCleaned = !legacyDataFile.isFile || readScopeIsEmpty(legacyDataFile),
                 dataViaShizuku = dataViaShizuku,
                 errors = errors,
             )
         }
+
         val payload = payloadOf(appPackage, modules)
-        val errors = mutableListOf<String>()
-        val mirror = mediaScopeFile(appPackage)
         val mediaOk = runCatching {
-            mirror.parentFile?.mkdirs()
-            mirror.writeText(payload)
+            mediaFile.parentFile?.mkdirs()
+            mediaFile.writeText(payload)
         }.onFailure { errors.add("media: " + (it.message ?: "未知错误")) }.isSuccess
-        val file = scopeFile(appPackage)
-        var dataOk = runCatching {
-            file.parentFile?.mkdirs()
-            file.writeText(payload)
-        }.onFailure { errors.add("data: " + (it.message ?: "未知错误")) }.isSuccess
-        var dataViaShizuku = false
-        if (!dataOk) {
-            dataViaShizuku = copyDataViaShizuku(mirror, file)
-            if (dataViaShizuku) {
-                dataOk = true
-                errors.removeAll { it.startsWith("data: ") }
-            }
-        }
         return Result(
             appPackage = appPackage,
             hasScope = true,
-            mediaWritten = mediaOk,
-            dataWritten = dataOk,
-            dataViaShizuku = dataViaShizuku,
+            mediaReady = mediaOk,
+            legacyDataCleaned = true,
+            dataViaShizuku = false,
             errors = errors,
         )
     }
@@ -132,20 +188,19 @@ class ScopeFileWriter(private val context: Context) {
         return JSONObject().put("scopes", scopes).toString()
     }
 
-    private fun copyDataViaShizuku(mirror: File, data: File): Boolean {
+    private fun copyDataViaShizuku(source: File, target: File): Boolean {
         if (!ShizukuBridge.hasPermission()) return false
-        if (!mirror.isFile) return false
-        val command = "cp " + quote(mirror.absolutePath) + " " + quote(data.absolutePath) +
-            " && chmod 644 " + quote(data.absolutePath) +
+        if (!source.isFile) return false
+        val command = "cp " + quote(source.absolutePath) + " " + quote(target.absolutePath) +
+            " && chmod 644 " + quote(target.absolutePath) +
             " && echo __XP_SCOPE_OK__"
         return ShizukuBridge.exec(command)?.contains("__XP_SCOPE_OK__") == true
     }
 
-    private fun deleteDataViaShizuku(data: File): Boolean {
-        if (!ShizukuBridge.hasPermission()) return false
-        val command = "rm -f " + quote(data.absolutePath) + " && echo __XP_SCOPE_OK__"
-        return ShizukuBridge.exec(command)?.contains("__XP_SCOPE_OK__") == true
-    }
+    private fun readScopeIsEmpty(file: File): Boolean = runCatching {
+        val scopes = JSONObject(file.readText()).optJSONArray("scopes")
+        scopes == null || scopes.length() == 0
+    }.getOrDefault(false)
 
     private fun quote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
