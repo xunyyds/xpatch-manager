@@ -225,7 +225,20 @@ fun MainScaffold(
                     apkPath = file.absolutePath,
                     versionCode = @Suppress("DEPRECATION") info.versionCode.toLong(),
                 )
-                nav.navigate(Page.Config(PatchTarget.Installed(app)))
+                // 外部安装包必须按 FromFile 打包：直接使用选中的文件，
+                // 不得因包名已安装而被替换成已安装应用的 APK。
+                nav.navigate(
+                    Page.Config(
+                        PatchTarget.FromFile(
+                            file = file,
+                            label = app.label,
+                            packageName = app.packageName,
+                            versionName = app.versionName,
+                            versionCode = app.versionCode,
+                            icon = app.icon,
+                        ),
+                    ),
+                )
             }
         }
     }

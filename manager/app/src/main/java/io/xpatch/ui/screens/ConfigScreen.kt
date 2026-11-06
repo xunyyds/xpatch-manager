@@ -62,8 +62,14 @@ internal fun ConfigScreen(
     var injectSignature by remember { mutableStateOf(defaults.injectSignature) }
     var fileProvider by remember { mutableStateOf(defaults.fileProvider) }
     var dynamicMode by remember { mutableStateOf(defaults.dynamicMode) }
-    val installedName = (target as? PatchTarget.Installed)?.app?.versionName.orEmpty()
-    val installedCode = (target as? PatchTarget.Installed)?.app?.versionCode ?: 0
+    val installedName = when (target) {
+        is PatchTarget.Installed -> target.app.versionName
+        is PatchTarget.FromFile -> target.versionName
+    }.orEmpty()
+    val installedCode = when (target) {
+        is PatchTarget.Installed -> target.app.versionCode
+        is PatchTarget.FromFile -> target.versionCode
+    } ?: 0
     var versionName by remember { mutableStateOf("") }
     var versionCode by remember { mutableStateOf("") }
 
@@ -73,9 +79,12 @@ internal fun ConfigScreen(
     }
     val packageName = when (target) {
         is PatchTarget.Installed -> target.app.packageName
-        is PatchTarget.FromFile -> target.file.name
+        is PatchTarget.FromFile -> target.packageName ?: target.file.name
     }
-    val icon = (target as? PatchTarget.Installed)?.app?.icon
+    val icon = when (target) {
+        is PatchTarget.Installed -> target.app.icon
+        is PatchTarget.FromFile -> target.icon
+    }
 
     Column(Modifier.fillMaxSize()) {
         AppHeaderCard(icon, name, packageName)

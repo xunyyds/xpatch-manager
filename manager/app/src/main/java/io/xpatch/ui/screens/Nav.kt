@@ -19,7 +19,19 @@ import java.io.File
 
 internal sealed interface PatchTarget {
     data class Installed(val app: AppInfo) : PatchTarget
-    data class FromFile(val file: File, val label: String) : PatchTarget
+
+    /**
+     * 用户显式选择的外部安装包。必须直接使用该文件打包，
+     * 不允许回退到已安装应用的 APK（即使包名已安装）。
+     */
+    data class FromFile(
+        val file: File,
+        val label: String,
+        val packageName: String? = null,
+        val versionName: String? = null,
+        val versionCode: Long? = null,
+        val icon: android.graphics.drawable.Drawable? = null,
+    ) : PatchTarget
 }
 
 internal data class InstallBlock(val packageName: String, val fromRepo: Boolean)
