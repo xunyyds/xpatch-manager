@@ -25,6 +25,7 @@ class SignatureStore(private val context: Context) {
         Triple(BUILTIN_XPATCH, "XPatch", BUILTIN_XPATCH),
         Triple("fpa", "FPA", "fpa"),
         Triple("np", "NPatch", "np"),
+        Triple("npatch", "NPatch 官方密钥", "npatch"),
     ).filter { isBuiltinAvailable(it.third) }
         .map { (id, name, builtinId) ->
             Profile(id = id, name = name, kind = Kind.BUILTIN, builtinId = builtinId)
