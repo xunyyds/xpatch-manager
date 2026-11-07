@@ -1,14 +1,12 @@
 package io.xpatch.ui.screens
 
-import android.content.pm.PackageManager
-import android.webkit.WebView
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,19 +18,19 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.unit.IntOffset
@@ -45,7 +43,6 @@ import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
@@ -69,12 +66,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
+import androidx.compose.ui.unit.sp
 import io.xpatch.data.RepoStore
 import io.xpatch.ui.components.BottomSheet
 import io.xpatch.ui.components.DialogAction
@@ -86,6 +82,8 @@ import io.xpatch.ui.components.SearchField
 import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
+import io.xpatch.ui.components.markdownItems
+import io.xpatch.ui.components.rememberMarkdownBlocks
 import io.xpatch.ui.format.formatTime
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
@@ -345,17 +343,12 @@ internal fun RepoPageScreen(
         ) {
             Box(
                 contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .graphicsLayer {
-                        scaleX = iconPulse.value
-                        scaleY = iconPulse.value
-                    }
-                    .onGloballyPositioned { coords ->
-                        downloadIconCenter = Offset(
-                            coords.positionInRoot().x + coords.size.width / 2f,
-                            coords.positionInRoot().y + coords.size.height / 2f,
-                        )
-                    },
+                modifier = Modifier.onGloballyPositioned { coords ->
+                    downloadIconCenter = Offset(
+                        coords.positionInRoot().x + coords.size.width / 2f,
+                        coords.positionInRoot().y + coords.size.height / 2f,
+                    )
+                },
             ) {
                 if (downloadingPkg != null) {
                     DownloadProgressRing(downloadProgress)
@@ -369,18 +362,31 @@ internal fun RepoPageScreen(
                         } else {
                             MaterialTheme.colorScheme.primary
                         },
+                        modifier = Modifier.graphicsLayer {
+                            scaleX = iconPulse.value
+                            scaleY = iconPulse.value
+                        },
                     )
                 }
                 if (!showDoneFlash && snapshot.badge > 0) {
-                    Text(
-                        snapshot.badge.toString(),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onPrimary,
+                    Box(
+                        contentAlignment = Alignment.Center,
                         modifier = Modifier
                             .align(Alignment.TopEnd)
-                            .background(MaterialTheme.colorScheme.primary, CircleShape)
-                            .padding(horizontal = 4.dp),
-                    )
+                            .offset(x = 2.dp, y = (-2).dp)
+                            .size(18.dp)
+                            .background(MaterialTheme.colorScheme.primary, CircleShape),
+                    ) {
+                        Text(
+                            text = if (snapshot.badge > 99) "99+" else snapshot.badge.toString(),
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            fontSize = 10.sp,
+                            lineHeight = 10.sp,
+                            fontWeight = FontWeight.Medium,
+                            maxLines = 1,
+                            softWrap = false,
+                        )
+                    }
                 }
             }
         }
@@ -565,12 +571,35 @@ internal fun RepoPageScreen(
 
 @Composable
 private fun DownloadProgressRing(progress: () -> Int) {
-    CircularProgressIndicator(
-        progress = { progress() / 100f },
-        modifier = Modifier.size(48.dp),
-        strokeWidth = 2.5.dp,
-        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-    )
+    val track = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+    val indicator = MaterialTheme.colorScheme.primary
+    Canvas(Modifier.size(34.dp)) {
+        val stroke = 2.dp.toPx()
+        val inset = stroke / 2f
+        val arcSize = Size(size.width - stroke, size.height - stroke)
+        val topLeft = Offset(inset, inset)
+        drawArc(
+            color = track,
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = topLeft,
+            size = arcSize,
+            style = Stroke(width = stroke, cap = StrokeCap.Round),
+        )
+        val value = progress().coerceIn(0, 100)
+        if (value > 0) {
+            drawArc(
+                color = indicator,
+                startAngle = -90f,
+                sweepAngle = 360f * value / 100f,
+                useCenter = false,
+                topLeft = topLeft,
+                size = arcSize,
+                style = Stroke(width = stroke, cap = StrokeCap.Round),
+            )
+        }
+    }
 }
 
 @Composable
@@ -956,11 +985,7 @@ internal fun DownloadsScreen(
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
-                        val status = when {
-                            installed != null && installed == entry.version -> "已安装"
-                            installed != null -> "已安装（旧版本）"
-                            else -> "未安装"
-                        }
+                        val status = if (!installed.isNullOrBlank()) "已安装(" + installed + ")" else "未安装"
                         val meta = mutableListOf<String>()
                         meta.add("v" + entry.version)
                         meta.add(formatSize(entry.size))
@@ -1014,118 +1039,106 @@ internal fun RepoDetailScreen(
         cached -> "安装模块"
         else -> "下载并安装"
     }
+    val blocks = rememberMarkdownBlocks(readme)
     Column(Modifier.fillMaxSize()) {
-        Column(
-            Modifier
+        LazyColumn(
+            modifier = Modifier
                 .weight(1f)
-                .verticalScroll(rememberScrollState()),
+                .fillMaxWidth(),
+            contentPadding = PaddingValues(bottom = 16.dp),
         ) {
-            Card(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(16.dp),
-                shape = RoundedCornerShape(20.dp),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
-            ) {
-                Column(Modifier.padding(20.dp)) {
-                    Text(module.name, style = MaterialTheme.typography.titleMedium)
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        module.packageName,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
+            item(key = "detail:header") {
+                Card(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp),
+                    shape = RoundedCornerShape(20.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                ) {
+                    Column(Modifier.padding(20.dp)) {
+                        Text(module.name, style = MaterialTheme.typography.titleMedium)
+                        Spacer(Modifier.height(6.dp))
                         Text(
-                            "版本 " + module.version,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.primary,
+                            module.packageName,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
-                        if (module.author.isNotBlank()) {
-                            Spacer(Modifier.width(10.dp))
+                        Spacer(Modifier.height(6.dp))
+                        Row(verticalAlignment = Alignment.CenterVertically) {
                             Text(
-                                module.author,
+                                "版本 " + module.version,
                                 style = MaterialTheme.typography.labelMedium,
+                                color = MaterialTheme.colorScheme.primary,
+                            )
+                            if (module.author.isNotBlank()) {
+                                Spacer(Modifier.width(10.dp))
+                                Text(
+                                    module.author,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (installed != null) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "已安装 " + installed + if (installedMatch) " · 已是最新" else " · 可更新",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (installedMatch) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                            )
+                        }
+                        val times = mutableListOf<String>()
+                        if (module.createTime > 0L) times.add("创建 " + formatTime(module.createTime))
+                        if (module.updateTime > 0L) times.add("更新 " + formatTime(module.updateTime))
+                        if (times.isNotEmpty()) {
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                times.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
                     }
-                    if (installed != null) {
-                        Spacer(Modifier.height(4.dp))
+                }
+            }
+
+            item(key = "detail:compat") {
+                CompatibilityCard(module)
+            }
+
+            if (module.summary.isNotBlank()) {
+                item(key = "detail:summary") {
+                    Column(Modifier.padding(horizontal = 20.dp)) {
                         Text(
-                            "已安装 " + installed + if (installedMatch) " · 已是最新" else " · 可更新",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = if (installedMatch) {
-                                MaterialTheme.colorScheme.onSurfaceVariant
-                            } else {
-                                MaterialTheme.colorScheme.primary
-                            },
+                            "简介",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
                         )
-                    }
-                    val times = mutableListOf<String>()
-                    if (module.createTime > 0L) times.add("创建 " + formatTime(module.createTime))
-                    if (module.updateTime > 0L) times.add("更新 " + formatTime(module.updateTime))
-                    if (times.isNotEmpty()) {
-                        Spacer(Modifier.height(4.dp))
+                        Spacer(Modifier.height(6.dp))
                         Text(
-                            times.joinToString(" · "),
-                            style = MaterialTheme.typography.labelSmall,
+                            module.summary,
+                            style = MaterialTheme.typography.bodyMedium,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
                 }
             }
 
-            CompatibilityCard(module)
-
-            if (module.summary.isNotBlank()) {
-                Column(Modifier.padding(horizontal = 20.dp)) {
-                    Text("简介", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-                    Spacer(Modifier.height(6.dp))
+            if (!readme.isNullOrBlank()) {
+                item(key = "detail:readme") {
                     Text(
-                        module.summary,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        "说明",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.padding(start = 20.dp, end = 20.dp, top = 18.dp, bottom = 8.dp),
                     )
                 }
+                markdownItems(blocks)
             }
-
-            if (!readme.isNullOrBlank()) {
-                Spacer(Modifier.height(16.dp))
-                Text(
-                    "说明",
-                    style = MaterialTheme.typography.labelLarge,
-                    color = MaterialTheme.colorScheme.primary,
-                    modifier = Modifier.padding(horizontal = 20.dp),
-                )
-                Spacer(Modifier.height(6.dp))
-                val dark = isSystemInDarkTheme()
-                val html = remember(readme, dark) { readmeBody(readme, dark) }
-                AndroidView(
-                    factory = { ctx ->
-                        WebView(ctx).apply {
-                            settings.javaScriptEnabled = false
-                            settings.loadsImagesAutomatically = true
-                            isVerticalScrollBarEnabled = false
-                            setBackgroundColor(Color.Transparent.toArgb())
-                            tag = html
-                            loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
-                        }
-                    },
-                    update = { webView ->
-                        if (webView.tag != html) {
-                            webView.tag = html
-                            webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
-                        }
-                    },
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 20.dp)
-                        .heightIn(min = 96.dp, max = 520.dp),
-                )
-            }
-            Spacer(Modifier.height(16.dp))
         }
         Button(
             onClick = onAction,
@@ -1198,15 +1211,6 @@ private fun TagBadge(text: String, enabled: Boolean) {
             .padding(horizontal = 8.dp, vertical = 4.dp),
     )
 }
-
-private fun readmeBody(body: String, dark: Boolean): String =
-    "<html><head><meta charset='utf-8'>" +
-        "<meta name='viewport' content='width=device-width, initial-scale=1'>" +
-        "<style>body{font-family:sans-serif;font-size:15px;line-height:1.6;padding:4px 0;" +
-        "background:transparent;color:" + (if (dark) "#e2e2e6" else "#1c1b1f") + ";}" +
-        "img{max-width:100%;height:auto;}pre{white-space:pre-wrap;}" +
-        "a{color:" + (if (dark) "#9ecbff" else "#1a73e8") + ";}</style></head>" +
-        "<body>" + body + "</body></html>"
 
 private fun formatSize(bytes: Long): String = when {
     bytes >= 1L shl 30 -> "%.1f GB".format(bytes / 1073741824.0)
