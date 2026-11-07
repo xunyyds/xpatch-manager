@@ -70,11 +70,17 @@ internal fun ModuleScopeScreen(
     val scope = scopeOf()
     val selectedCount = apps.count { it.packageName in scope }
     val miuix = LocalMiuix.current
+    val ordered = remember(apps, module.recommendedApps) {
+        apps.sortedWith(
+            compareByDescending<AppInfo> { it.packageName in module.recommendedApps }
+                .thenBy { it.label },
+        )
+    }
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { ScopeHeader(module.label, module.packageName, "已选择 $selectedCount 个应用") }
+        item { ModuleScopeHeader(module, selectedCount) }
         item { GroupHeader("应用") }
         if (apps.isEmpty()) {
-            item { EmptyState("没有可作用的应用") }
+            item { EmptyState("还没有已打包的应用\n先到首页「添加应用」完成一次打包\n模块只能作用于已打包应用") }
         } else if (miuix) {
             item {
                 MiuixCard(
@@ -82,15 +88,25 @@ internal fun ModuleScopeScreen(
                         .padding(horizontal = 12.dp)
                         .padding(bottom = 12.dp),
                 ) {
-                    apps.forEachIndexed { index, app ->
-                        ScopeAppRow(app, app.packageName in scope, onToggle)
-                        if (index != apps.lastIndex) MiuixDivider()
+                    ordered.forEachIndexed { index, app ->
+                        ScopeAppRow(
+                            app = app,
+                            checked = app.packageName in scope,
+                            recommended = app.packageName in module.recommendedApps,
+                            onToggle = onToggle,
+                        )
+                        if (index != ordered.lastIndex) MiuixDivider()
                     }
                 }
             }
         } else {
-            items(apps, key = { it.packageName }) { app ->
-                ScopeAppRow(app, app.packageName in scope, onToggle)
+            items(ordered, key = { it.packageName }) { app ->
+                ScopeAppRow(
+                    app = app,
+                    checked = app.packageName in scope,
+                    recommended = app.packageName in module.recommendedApps,
+                    onToggle = onToggle,
+                )
                 RowDivider()
             }
         }
@@ -101,6 +117,7 @@ internal fun ModuleScopeScreen(
 private fun ScopeAppRow(
     app: AppInfo,
     checked: Boolean,
+    recommended: Boolean,
     onToggle: (AppInfo, Boolean) -> Unit,
 ) {
     SwitchableEntryRow(
@@ -109,6 +126,11 @@ private fun ScopeAppRow(
         subtitle = app.packageName,
         checked = checked,
         onCheckedChange = { onToggle(app, it) },
+        badge = if (recommended) {
+            { RecommendBadge() }
+        } else {
+            null
+        },
     )
 }
 
@@ -529,5 +551,64 @@ internal fun ScopeHeader(title: String, subtitle: String, countText: String) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+@Composable
+private fun ModuleScopeHeader(module: ModuleInfo, selectedCount: Int) {
+    val miuix = LocalMiuix.current
+    val hint = if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
+    else MaterialTheme.colorScheme.onSurfaceVariant
+    val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
+    val typeText = when {
+        module.modernModule && module.legacyModule -> "新版 + 旧版模块"
+        module.modernModule -> "新版模块"
+        module.legacyModule -> "旧版模块"
+        else -> "未知类型"
+    }
+    val metaLine = buildList {
+        if (module.versionName.isNotBlank()) add("v" + module.versionName)
+        add(typeText)
+        if (module.apiLevel > 0) add("API " + module.apiLevel)
+        add("已选择 " + selectedCount + " 个应用")
+    }.joinToString(" · ")
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 20.dp, vertical = 12.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            AppIcon(module.icon, size = 54)
+            Spacer(Modifier.width(14.dp))
+            Column(Modifier.weight(1f)) {
+                Text(
+                    module.label,
+                    style = if (miuix) MiuixTheme.textStyles.title3 else MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    module.packageName,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = hint,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            metaLine,
+            style = MaterialTheme.typography.labelMedium,
+            color = primary,
+        )
+        if (module.description.isNotBlank()) {
+            Spacer(Modifier.height(10.dp))
+            Text(
+                module.description,
+                style = if (miuix) MiuixTheme.textStyles.footnote1 else MaterialTheme.typography.bodySmall,
+                color = hint,
+            )
+        }
     }
 }
