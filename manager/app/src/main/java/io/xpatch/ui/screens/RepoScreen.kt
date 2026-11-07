@@ -2,6 +2,9 @@ package io.xpatch.ui.screens
 
 import android.content.pm.PackageManager
 import android.webkit.WebView
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -26,20 +29,27 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.IntOffset
+import kotlin.math.roundToInt
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -74,6 +84,7 @@ import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatTime
+import kotlinx.coroutines.delay
 
 private const val SCOPE_SYSTEM = "system"
 private const val SCOPE_FRAMEWORK = "android"
@@ -90,6 +101,7 @@ internal fun RepoPageScreen(
     downloadedBadge: Int,
     downloadingPkg: String?,
     downloadProgress: Int,
+    downloadDoneTick: Int,
     onOpenDownloads: () -> Unit,
     onRefresh: () -> Unit,
     onOpenDetail: (RepoStore.RepoModule) -> Unit,
@@ -110,6 +122,32 @@ internal fun RepoPageScreen(
     var scopeTarget by rememberSaveable { mutableStateOf<String?>(null) }
     var filterSheet by remember { mutableStateOf(false) }
     var scopePicker by remember { mutableStateOf(false) }
+    var showDoneFlash by remember { mutableStateOf(false) }
+
+    val flyProgress = remember { Animatable(1f) }
+    val iconPulse = remember { Animatable(1f) }
+    var flyStart by remember { mutableStateOf<Offset?>(null) }
+    var downloadIconCenter by remember { mutableStateOf<Offset?>(null) }
+    var overlayOrigin by remember { mutableStateOf<Offset?>(null) }
+
+    LaunchedEffect(downloadDoneTick) {
+        if (downloadDoneTick > 0) {
+            showDoneFlash = true
+            delay(900)
+            showDoneFlash = false
+        }
+    }
+
+    // 收纳动画：飞行物从点击位置沿弧线飞入右上角下载图标，落地时图标弹跳。
+    LaunchedEffect(flyStart) {
+        val start = flyStart ?: return@LaunchedEffect
+        val end = downloadIconCenter ?: return@LaunchedEffect
+        flyProgress.snapTo(0f)
+        flyProgress.animateTo(1f, tween(520, easing = FastOutSlowInEasing))
+        flyStart = null
+        iconPulse.snapTo(1.2f)
+        iconPulse.animateTo(1f, tween(200, easing = FastOutSlowInEasing))
+    }
 
     val readmeCache = remember {
         object : LinkedHashMap<String, String>(64, 0.75f, true) {
@@ -180,6 +218,7 @@ internal fun RepoPageScreen(
     val filtersActive = chip89 || chip100 || chipLsp || recentDays > 0 || statuses.isNotEmpty() ||
         authorFilter != null || scopeTarget != null || broadSearch
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
         Row(
             Modifier
@@ -188,15 +227,40 @@ internal fun RepoPageScreen(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Box {
-                IconButton(onClick = onOpenDownloads) {
-                    Icon(
-                        Icons.Rounded.Download,
-                        contentDescription = "下载管理",
-                        tint = MaterialTheme.colorScheme.primary,
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .graphicsLayer {
+                        scaleX = iconPulse.value
+                        scaleY = iconPulse.value
+                    }
+                    .onGloballyPositioned { coords ->
+                        downloadIconCenter = Offset(
+                            coords.positionInRoot().x + coords.size.width / 2f,
+                            coords.positionInRoot().y + coords.size.height / 2f,
+                        )
+                    },
+            ) {
+                if (downloadingPkg != null) {
+                    CircularProgressIndicator(
+                        progress = { downloadProgress / 100f },
+                        modifier = Modifier.size(48.dp),
+                        strokeWidth = 2.5.dp,
+                        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
                     )
                 }
-                if (downloadedBadge > 0) {
+                IconButton(onClick = onOpenDownloads) {
+                    Icon(
+                        imageVector = if (showDoneFlash) Icons.Rounded.Check else Icons.Rounded.Download,
+                        contentDescription = "下载管理",
+                        tint = if (showDoneFlash) {
+                            Color(0xFF2BA84A)
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                    )
+                }
+                if (!showDoneFlash && downloadedBadge > 0) {
                     Text(
                         downloadedBadge.toString(),
                         style = MaterialTheme.typography.labelSmall,
@@ -341,15 +405,51 @@ internal fun RepoPageScreen(
                             installedVersion = installedVersion(module.packageName),
                             cached = isCached(module),
                             downloading = downloadingPkg == module.packageName,
-                            downloadProgress = downloadProgress,
                             onOpen = { onOpenDetail(module) },
-                            onAction = { onAction(module) },
+                            onAction = { origin ->
+                                if (!isCached(module)) flyStart = origin
+                                onAction(module)
+                            },
                             onAuthor = { authorFilter = module.author },
                         )
                     }
                 }
             }
         }
+    }
+
+    // 飞行物层：从点击位置沿弧线飞向右上角下载图标
+    Box(
+        Modifier
+            .fillMaxSize()
+            .onGloballyPositioned { overlayOrigin = it.positionInRoot() },
+    )
+    flyStart?.let { start ->
+        val end = downloadIconCenter
+        if (end != null) {
+            Box(
+                Modifier
+                    .offset {
+                        val t = flyProgress.value
+                        val u = 1f - t
+                        val cx = (start.x + end.x) / 2f
+                        val cy = minOf(start.y, end.y) - 140f
+                        val x = u * u * start.x + 2f * u * t * cx + t * t * end.x
+                        val y = u * u * start.y + 2f * u * t * cy + t * t * end.y
+                        val o = overlayOrigin ?: Offset.Zero
+                        IntOffset((x - o.x).roundToInt(), (y - o.y).roundToInt())
+                    }
+                    .graphicsLayer {
+                        val t = flyProgress.value
+                        alpha = if (t > 0.85f) (1f - t) / 0.15f else 1f
+                        scaleX = 1f - 0.3f * t
+                        scaleY = 1f - 0.3f * t
+                    }
+                    .size(13.dp)
+                    .background(MaterialTheme.colorScheme.primary, CircleShape),
+            )
+        }
+    }
     }
 }
 
@@ -433,9 +533,8 @@ internal fun RepoModuleRow(
     installedVersion: String?,
     cached: Boolean,
     downloading: Boolean,
-    downloadProgress: Int,
     onOpen: () -> Unit,
-    onAction: () -> Unit,
+    onAction: (Offset) -> Unit,
     onAuthor: (() -> Unit)? = null,
 ) {
     val state = when {
@@ -499,15 +598,18 @@ internal fun RepoModuleRow(
             }
         }
         Spacer(Modifier.width(8.dp))
-        if (downloading) {
-            LinearProgressIndicator(
-                progress = { downloadProgress / 100f },
-                modifier = Modifier.width(72.dp),
-            )
-        } else {
-            TextButton(onClick = onAction) {
-                Text(if (cached) "安装" else "下载")
-            }
+        var buttonCenter by remember { mutableStateOf(Offset.Zero) }
+        TextButton(
+            onClick = { onAction(buttonCenter) },
+            enabled = !downloading,
+            modifier = Modifier.onGloballyPositioned { coords ->
+                buttonCenter = Offset(
+                    coords.positionInRoot().x + coords.size.width / 2f,
+                    coords.positionInRoot().y + coords.size.height / 2f,
+                )
+            },
+        ) {
+            Text(if (downloading) "下载中" else if (cached) "安装" else "下载")
         }
     }
     HorizontalDivider(

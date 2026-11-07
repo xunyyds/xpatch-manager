@@ -174,6 +174,7 @@ fun MainScaffold(
     var repoBusy by remember { mutableStateOf(false) }
     var repoDownloadPkg by remember { mutableStateOf<String?>(null) }
     var repoDownloadProgress by remember { mutableIntStateOf(0) }
+    var repoDownloadDoneTick by remember { mutableIntStateOf(0) }
     var repoError by remember { mutableStateOf<String?>(null) }
     var token by remember { mutableIntStateOf(0) }
     // 按应用包名串行化作用域同步：sync 先取快照再写文件，
@@ -825,6 +826,7 @@ fun MainScaffold(
                     downloadedBadge = downloadedBadge,
                     downloadingPkg = repoDownloadPkg,
                     downloadProgress = repoDownloadProgress,
+                    downloadDoneTick = repoDownloadDoneTick,
                     onOpenDownloads = { nav.navigate(Page.RepoDownloads) },
                     onRefresh = {
                         scope.launch {
@@ -855,11 +857,9 @@ fun MainScaffold(
                                         repoDownloadProgress = p
                                     }
                                     repoDownloadPkg = null
+                                    repoDownloadDoneTick++
                                     eventLog.add("已下载 " + module.name)
                                     showToast("已下载 " + module.name)
-                                    if (nav.page is Page.Repo || nav.page is Page.RepoDetail) {
-                                        nav.navigate(Page.RepoDownloads)
-                                    }
                                 }
                             }.onFailure {
                                 repoError = it.message ?: "下载失败"
@@ -944,11 +944,9 @@ fun MainScaffold(
                                             repoDownloadProgress = p
                                         }
                                         repoDownloadPkg = null
+                                        repoDownloadDoneTick++
                                         eventLog.add("已下载 " + current.module.name)
                                         showToast("已下载 " + current.module.name)
-                                        if (nav.page is Page.Repo || nav.page is Page.RepoDetail) {
-                                            nav.navigate(Page.RepoDownloads)
-                                        }
                                     }
                                 }.onFailure {
                                     repoError = it.message ?: "下载失败"
