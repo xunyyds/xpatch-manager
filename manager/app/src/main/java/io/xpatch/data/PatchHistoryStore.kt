@@ -28,6 +28,8 @@ data class PatchRecord(
     val bootDex: String,
     val originalFactory: String?,
     val config: String,
+    /** 打包时是否启用强行覆盖安装；旧记录没有该字段，按普通安装处理。 */
+    val forceOverwrite: Boolean = false,
     val exports: List<PatchExportRef> = emptyList(),
 ) {
     fun artifactFile(): File = File(apkPath)
@@ -177,6 +179,7 @@ class PatchHistoryStore(private val context: Context) {
                     bootDex = item.optString("bootDex"),
                     originalFactory = item.optString("originalFactory").takeIf { it.isNotBlank() },
                     config = item.optString("config"),
+                    forceOverwrite = item.optBoolean("forceOverwrite", false),
                     exports = exports,
                 ),
             )
@@ -200,6 +203,7 @@ class PatchHistoryStore(private val context: Context) {
         put("bootDex", record.bootDex)
         put("originalFactory", record.originalFactory.orEmpty())
         put("config", record.config)
+        put("forceOverwrite", record.forceOverwrite)
         val exports = JSONArray()
         record.exports.forEach { ref ->
             exports.put(

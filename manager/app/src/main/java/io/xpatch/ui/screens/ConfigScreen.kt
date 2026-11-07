@@ -34,6 +34,7 @@ import io.xpatch.data.HookCore
 import io.xpatch.data.PatchRecord
 import io.xpatch.data.SignatureStore
 import io.xpatch.patch.PatchOptions
+import io.xpatch.patch.ShizukuInstaller
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.Chip
 import io.xpatch.ui.components.DialogAction
@@ -77,6 +78,7 @@ internal fun ConfigScreen(
     var fileProvider by remember { mutableStateOf(defaults.fileProvider) }
     var dynamicMode by remember { mutableStateOf(defaults.dynamicMode) }
     var forceOverwrite by remember { mutableStateOf(defaults.forceOverwrite) }
+    var forceOverwriteError by remember { mutableStateOf<String?>(null) }
     val forceOverwriteNote = when {
         forceOverwrite && !forceOverwriteReady -> forceOverwriteBlockReason
         forceOverwrite -> "已启用：签名固定为 XPatch，安装时先保留数据卸载旧包"
@@ -211,7 +213,19 @@ internal fun ConfigScreen(
                         title = "强行覆盖安装",
                         subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
                         checked = forceOverwrite,
-                        onChange = { on -> onForceOverwriteChange(on) },
+                        onChange = { on ->
+                            // 实时查询，避免刚授权返回、状态尚未重组时被旧值拦住
+                            if (on && !ShizukuInstaller.forceOverwriteReady()) {
+                                // 环境不满足时明确反馈，不静默失败
+                                forceOverwriteError =
+                                    ShizukuInstaller.forceOverwriteBlockReason().ifBlank {
+                                        "当前环境不支持强行覆盖安装"
+                                    }
+                            } else {
+                                forceOverwrite = on
+                                onForceOverwriteChange(on)
+                            }
+                        },
                     )
                     NoteText(forceOverwriteNote)
                 }
@@ -252,6 +266,26 @@ internal fun ConfigScreen(
                 reuseConfirm = reusable
             } else {
                 onStart(options)
+            }
+        }
+    }
+
+    forceOverwriteError?.let { reason ->
+        XPatchDialog(
+            onDismiss = { forceOverwriteError = null },
+            title = "无法开启强行覆盖安装",
+            actions = listOf(
+                DialogAction("知道了") { forceOverwriteError = null },
+            ),
+        ) {
+            Column {
+                Text(reason, style = MaterialTheme.typography.bodySmall)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "该功能依赖 Shizuku 完成保留数据的卸载与重装，请先安装并授权 Shizuku 后再开启。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

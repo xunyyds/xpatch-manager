@@ -178,6 +178,7 @@ fun MainScaffold(
         }
     }
     var query by remember { mutableStateOf("") }
+    var pickerQuery by remember { mutableStateOf("") }
     var scopeQuery by remember { mutableStateOf("") }
     var scopeSort by remember { mutableIntStateOf(0) }
     var scopeReversed by remember { mutableStateOf(false) }
@@ -193,7 +194,6 @@ fun MainScaffold(
     var failure by remember { mutableStateOf<String?>(null) }
     var pendingInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var installBlocked by remember { mutableStateOf<InstallBlock?>(null) }
-    var pendingForceOverwrite by remember { mutableStateOf(false) }
 
     var patchedApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var patchableApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
@@ -649,7 +649,7 @@ fun MainScaffold(
             val viaShizuku = ShizukuBridge.isAvailable()
             busyText = if (viaShizuku) "正在通过 Shizuku 安装…" else null
             try {
-                val step = if (pendingForceOverwrite) {
+                val step = if (outcome.forceOverwrite) {
                     busyText = "正在强行覆盖安装…"
                     ShizukuInstaller.installForceOverwrite(context, outcome.apk, outcome.packageName)
                 } else {
@@ -662,12 +662,22 @@ fun MainScaffold(
                     }
                     is ShizukuInstaller.Result.Failure -> {
                         eventLog.add(step.message)
-                        showToast(step.message)
-                        fallbackInstall(outcome)
+                        if (outcome.forceOverwrite) {
+                            // 强行覆盖依赖 Shizuku，回退系统安装器必然因签名不一致再次失败，直接明确报错
+                            failure = step.message + "\n\n请确认 Shizuku 已授权，或改为普通打包后再安装。"
+                        } else {
+                            showToast(step.message)
+                            fallbackInstall(outcome)
+                        }
                     }
                     ShizukuInstaller.Result.Unavailable -> {
-                        eventLog.add("Shizuku 不可用，改用系统安装器 " + outcome.packageName)
-                        fallbackInstall(outcome)
+                        if (outcome.forceOverwrite) {
+                            eventLog.add("强行覆盖安装缺少 Shizuku，已停止 " + outcome.packageName)
+                            failure = "强行覆盖安装需要 Shizuku，当前不可用。\n\n请先安装并授权 Shizuku，然后重新安装；该产物始终按强行覆盖安装处理。"
+                        } else {
+                            eventLog.add("Shizuku 不可用，改用系统安装器 " + outcome.packageName)
+                            fallbackInstall(outcome)
+                        }
                     }
                 }
             } finally {
@@ -1160,8 +1170,8 @@ fun MainScaffold(
 
                 is Page.Picker -> PickerScreen(
                     apps = patchableApps,
-                    query = query,
-                    onQueryChange = { query = it },
+                    query = pickerQuery,
+                    onQueryChange = { pickerQuery = it },
                     onPick = { nav.navigate(Page.Config(PatchTarget.Installed(it))) },
                     includeSystem = includeSystem,
                     onToggleSystem = { includeSystem = it },
@@ -1173,8 +1183,11 @@ fun MainScaffold(
                     signatures = signatures,
                     defaultSignatureId = defaultSignatureId,
                     busy = busyText != null,
-                    forceOverwriteReady = remember(token) { ShizukuInstaller.forceOverwriteReady() },
-                    forceOverwriteBlockReason = remember(token) { ShizukuInstaller.forceOverwriteBlockReason() },
+                    // 跟随 ON_RESUME 刷新，授权返回后开关立即可用
+                    forceOverwriteReady = shizukuReady,
+                    forceOverwriteBlockReason = remember(shizukuReady, shizukuAvailable) {
+                        ShizukuInstaller.forceOverwriteBlockReason()
+                    },
                     onForceOverwriteChange = { on ->
                         settingsStore.setForceOverwrite(on)
                         settings = settings.copy(forceOverwrite = on)
@@ -1210,7 +1223,6 @@ fun MainScaffold(
                         settingsStore.setFileProvider(options.fileProvider)
                         settingsStore.setDynamicMode(options.dynamicMode)
                         settingsStore.setForceOverwrite(options.forceOverwrite)
-                        pendingForceOverwrite = options.forceOverwrite
                         settings = settings.copy(
                             hookCore = options.hookCore,
                             signatureBypassLevel = options.bypassLevel,
@@ -1267,6 +1279,7 @@ fun MainScaffold(
                                     bootDex = outcome.bootDex,
                                     originalFactory = outcome.originalFactory,
                                     config = outcome.config,
+                                    forceOverwrite = outcome.forceOverwrite,
                                 )
                                 withContext(Dispatchers.IO) { historyStore.record(record) }
                                 currentRecordId = record.id
@@ -1660,7 +1673,11 @@ fun MainScaffold(
             ),
         ) {
             Text(
-                "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n可以先卸载原应用再安装，或改用其他签名重新打包。\n\n点「返回」会保留打包结果，不必重新打包。",
+                if (outcome.forceOverwrite) {
+                    "该产物使用 XPatch 签名，与已安装应用签名不同。\n继续会先保留数据卸载原应用，再安装新包（需要 Shizuku）。\n\n点「返回」会保留打包结果，不必重新打包。"
+                } else {
+                    "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n可以先卸载原应用再安装，或改用其他签名重新打包。\n\n点「返回」会保留打包结果，不必重新打包。"
+                },
                 style = MaterialTheme.typography.bodySmall,
             )
         }

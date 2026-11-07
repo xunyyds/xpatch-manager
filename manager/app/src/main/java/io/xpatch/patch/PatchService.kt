@@ -31,6 +31,8 @@ class PatchService(private val context: Context) {
         val bootDex: String,
         val originalFactory: String?,
         val config: String,
+        /** 该产物打包时是否选择了强行覆盖安装，安装入口据此选择安装方式。 */
+        val forceOverwrite: Boolean = false,
     )
 
     suspend fun build(
@@ -140,6 +142,7 @@ class PatchService(private val context: Context) {
             bootDex = result.bootDexName,
             originalFactory = result.originalFactory,
             config = result.config,
+            forceOverwrite = options.forceOverwrite,
         )
     }
 
@@ -165,6 +168,7 @@ class PatchService(private val context: Context) {
         bootDex = record.bootDex,
         originalFactory = record.originalFactory,
         config = record.config,
+        forceOverwrite = record.forceOverwrite,
     )
 
     private fun uniqueTarget(dir: File, fileName: String): File {

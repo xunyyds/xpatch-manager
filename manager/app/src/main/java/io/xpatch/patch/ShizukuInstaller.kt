@@ -67,20 +67,32 @@ object ShizukuInstaller {
         val source = readableByShell(context, apk)
             ?: return@withContext Result.Failure("Shizuku 无法读取安装包")
 
-        ShizukuBridge.exec("pm uninstall -k " + shellQuote(packageName))
+        val uninstallOutput = ShizukuBridge.exec("pm uninstall -k " + shellQuote(packageName))
         val output = ShizukuBridge.exec("pm install -r -t -d " + shellQuote(source.absolutePath))
         when {
-            output.isNullOrBlank() -> Result.Failure("强行覆盖安装无响应")
+            output.isNullOrBlank() -> Result.Failure(failureMessage(uninstallOutput, "安装无响应"))
             output.contains("Success") ->
                 Result.Success("已强行覆盖安装 $packageName，应用数据已保留")
 
-            else ->
-                Result.Failure(
-                    "强行覆盖安装失败：" +
-                        output.trim().lineSequence().last { it.isNotBlank() },
-                )
+            else -> Result.Failure(
+                failureMessage(
+                    uninstallOutput,
+                    output.trim().lineSequence().last { it.isNotBlank() },
+                ),
+            )
         }
     }
+
+    /**
+     * 卸载与安装是两步，卸载成功而安装失败时应用已不在设备上，
+     * 提示必须说明这一点，否则用户会误以为重装一次即可。
+     */
+    private fun failureMessage(uninstallOutput: String?, detail: String): String =
+        if (uninstallOutput?.contains("Success") == true) {
+            "原应用已卸载（数据保留），但重装失败：$detail\n请改用其他签名重新打包后再安装。"
+        } else {
+            "强行覆盖安装失败：$detail"
+        }
 
     fun forceOverwriteReady(): Boolean =
         ShizukuBridge.isAvailable() && ShizukuBridge.hasPermission()
