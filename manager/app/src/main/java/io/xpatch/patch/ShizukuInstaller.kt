@@ -24,14 +24,14 @@ object ShizukuInstaller {
             }
             val source = readableByShell(context, apk)
                 ?: return@withContext Result.Failure("Shizuku 无法读取安装包，已回退系统安装器")
-            val output = ShizukuBridge.exec("pm install -r -t -d " + shellQuote(source.absolutePath))
+            val output = ShizukuBridge.exec("pm install -r -t -d --user current " + shellQuote(source.absolutePath))
+            cleanupStaged(source)
             when {
                 output.isNullOrBlank() -> Result.Failure("Shizuku 安装无响应，已回退系统安装器")
                 output.contains("Success") -> Result.Success("已通过 Shizuku 静默安装 $packageName")
                 else ->
                     Result.Failure(
-                        "Shizuku 安装失败：" +
-                            output.trim().lineSequence().last { it.isNotBlank() },
+                        "Shizuku 安装失败：" + failureDetail(output),
                     )
             }
         }
@@ -40,14 +40,24 @@ object ShizukuInstaller {
         ShizukuBridge.requestPermission { granted -> cont.resume(granted) }
     }
 
+    /**
+     * 选一个 system_server 读得到的路径再交给 pm install。
+     * /sdcard/Android/data 属于 FUSE 挂载，system_server 读取会被 SELinux 拒绝
+     * （avc denied ... fuse），必须复制到 /data/local/tmp 再安装。
+     */
     private fun readableByShell(context: Context, apk: File): File? {
         if (!apk.isFile) return null
-        val private = apk.absolutePath.startsWith(context.cacheDir.absolutePath) ||
-            apk.absolutePath.startsWith(context.filesDir.absolutePath)
-        if (!private) return apk
-        val dir = File(context.getExternalFilesDir(null), "install").apply { mkdirs() }
-        val target = File(dir, apk.name)
-        return runCatching { apk.copyTo(target, overwrite = true) }.getOrNull()
+        // 应用私有目录 shell 读不到，外部目录 system_server 又因 FUSE 读不到，
+        // 所以先落到外部目录，再由 shell 复制到 /data/local/tmp 供 pm install 使用。
+        val dir = File(context.getExternalFilesDir(null), "install-staging").apply { mkdirs() }
+        val staged = File(dir, PREFIX + System.currentTimeMillis() + ".apk")
+        runCatching { apk.copyTo(staged, overwrite = true) }.getOrNull() ?: return null
+
+        val tmpPath = "/data/local/tmp/" + staged.name
+        ShizukuBridge.exec("cp " + shellQuote(staged.absolutePath) + " " + shellQuote(tmpPath))
+        val verified = ShizukuBridge.exec("test -f " + shellQuote(tmpPath) + " && echo OK")
+        staged.delete()
+        return if (verified?.contains("OK") == true) File(tmpPath) else null
     }
 
     /**
@@ -67,32 +77,65 @@ object ShizukuInstaller {
         val source = readableByShell(context, apk)
             ?: return@withContext Result.Failure("Shizuku 无法读取安装包")
 
-        val uninstallOutput = ShizukuBridge.exec("pm uninstall -k " + shellQuote(packageName))
-        val output = ShizukuBridge.exec("pm install -r -t -d " + shellQuote(source.absolutePath))
+        // 按当前用户处理：设备上可能存在应用分身/隐私空间里的同名安装，
+        // 全用户卸载会因权限不足失败，全用户安装又会被别的用户的旧签名挡住。
+        val wasInstalled = installedForCurrentUser(packageName)
+        if (wasInstalled != false) {
+            val uninstallOutput = ShizukuBridge.exec(
+                "pm uninstall -k --user current " + shellQuote(packageName),
+            )
+            if (installedForCurrentUser(packageName) == true) {
+                return@withContext Result.Failure(
+                    "无法卸载 $packageName，强行覆盖安装已中止：" + failureDetail(uninstallOutput),
+                )
+            }
+        }
+
+        val output = ShizukuBridge.exec(
+            "pm install -r -t -d --user current " + shellQuote(source.absolutePath),
+        )
+        cleanupStaged(source)
         when {
-            output.isNullOrBlank() -> Result.Failure(failureMessage(uninstallOutput, "安装无响应"))
+            output.isNullOrBlank() -> Result.Failure("强行覆盖安装无响应")
             output.contains("Success") ->
                 Result.Success("已强行覆盖安装 $packageName，应用数据已保留")
 
             else -> Result.Failure(
-                failureMessage(
-                    uninstallOutput,
-                    output.trim().lineSequence().last { it.isNotBlank() },
-                ),
+                if (wasInstalled == true) {
+                    "原应用已卸载（数据保留），但重装失败：" + failureDetail(output)
+                } else {
+                    "强行覆盖安装失败：" + failureDetail(output)
+                },
             )
         }
     }
 
-    /**
-     * 卸载与安装是两步，卸载成功而安装失败时应用已不在设备上，
-     * 提示必须说明这一点，否则用户会误以为重装一次即可。
-     */
-    private fun failureMessage(uninstallOutput: String?, detail: String): String =
-        if (uninstallOutput?.contains("Success") == true) {
-            "原应用已卸载（数据保留），但重装失败：$detail\n请改用其他签名重新打包后再安装。"
-        } else {
-            "强行覆盖安装失败：$detail"
-        }
+    /** 安装结束后清理 /data/local/tmp 下的临时副本。 */
+    private fun cleanupStaged(source: File) {
+        val path = source.absolutePath
+        if (!path.startsWith("/data/local/tmp/")) return
+        ShizukuBridge.exec("rm -f " + shellQuote(path))
+    }
+
+    /** 当前用户下是否已安装；执行失败返回 null，交由调用方按未知处理。 */
+    private fun installedForCurrentUser(packageName: String): Boolean? {
+        val listed = ShizukuBridge.exec("pm list packages --user current " + shellQuote(packageName))
+            ?: return null
+        return listed.contains(packageName)
+    }
+
+    /** pm 的失败输出混着调用栈，取 Failure / Exception 行才有参考价值。 */
+    private fun failureDetail(output: String?): String {
+        val lines = output.orEmpty()
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .toList()
+        return lines.firstOrNull { it.startsWith("Failure") }
+            ?: lines.firstOrNull { it.contains("Exception", true) || it.contains("Error", true) }
+            ?: lines.firstOrNull()
+            ?: "未知错误"
+    }
 
     fun forceOverwriteReady(): Boolean =
         ShizukuBridge.isAvailable() && ShizukuBridge.hasPermission()
@@ -105,4 +148,6 @@ object ShizukuInstaller {
 
     private fun shellQuote(value: String): String =
         "'" + value.replace("'", "'\\''") + "'"
+
+    private const val PREFIX = "xpinstall-"
 }

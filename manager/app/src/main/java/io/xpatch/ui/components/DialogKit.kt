@@ -59,13 +59,13 @@ internal fun XPatchDialog(
                     Spacer(Modifier.height(20.dp))
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        // 按内容宽度排列，避免三等分把「卸载原应用」这类长标签挤成两行
+                        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                     ) {
                         actions.forEach { action ->
                             top.yukonga.miuix.kmp.basic.TextButton(
                                 text = action.label,
                                 onClick = action.onClick,
-                                modifier = Modifier.weight(1f),
                             )
                         }
                     }
@@ -115,8 +115,8 @@ internal fun XPatchDialog(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.End,
+                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 actions.forEach { action ->
@@ -141,12 +141,14 @@ private fun DialogButton(
         Modifier
             .clip(RoundedCornerShape(14.dp))
             .clickable { onClick() }
-            .padding(horizontal = 16.dp, vertical = 10.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
     ) {
         Text(
             label,
             style = MaterialTheme.typography.labelLarge,
             color = color,
+            maxLines = 1,
+            softWrap = false,
         )
     }
 }
