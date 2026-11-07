@@ -65,6 +65,9 @@ internal fun ConfigScreen(
     busy: Boolean,
     onStart: (PatchOptions) -> Unit,
     onPickSignature: (SignatureStore.Profile) -> Unit,
+    onForceOverwriteChange: (Boolean) -> Unit,
+    forceOverwriteReady: Boolean,
+    forceOverwriteBlockReason: String,
     findReusable: (PatchOptions) -> PatchRecord?,
     onReuse: (PatchRecord) -> Unit,
 ) {
@@ -73,6 +76,12 @@ internal fun ConfigScreen(
     var injectSignature by remember { mutableStateOf(defaults.injectSignature) }
     var fileProvider by remember { mutableStateOf(defaults.fileProvider) }
     var dynamicMode by remember { mutableStateOf(defaults.dynamicMode) }
+    var forceOverwrite by remember { mutableStateOf(defaults.forceOverwrite) }
+    val forceOverwriteNote = when {
+        forceOverwrite && !forceOverwriteReady -> forceOverwriteBlockReason
+        forceOverwrite -> "已启用：签名固定为 XPatch，安装时先保留数据卸载旧包"
+        else -> "用于覆盖安装其他工具签名的应用；关闭时按所选签名正常安装"
+    }
     val installedName = when (target) {
         is PatchTarget.Installed -> target.app.versionName
         is PatchTarget.FromFile -> target.versionName
@@ -97,7 +106,9 @@ internal fun ConfigScreen(
         is PatchTarget.FromFile -> target.icon
     }
 
-    val selectedProfile = if (injectSignature) {
+    val selectedProfile = if (forceOverwrite) {
+        signatures.firstOrNull { it.id == SignatureStore.BUILTIN_XPATCH }
+    } else if (injectSignature) {
         signatures.firstOrNull { it.id == defaultSignatureId }
     } else {
         null
@@ -105,10 +116,11 @@ internal fun ConfigScreen(
     val options = PatchOptions(
         hookCore = hookCore,
         bypassLevel = bypass,
-        injectSignature = injectSignature,
+        injectSignature = if (forceOverwrite) true else injectSignature,
         fileProvider = fileProvider,
         dynamicMode = dynamicMode,
         signatureProfile = selectedProfile,
+        forceOverwrite = forceOverwrite,
         versionName = versionName.trim().ifBlank { null },
         versionCode = versionCode.trim().toIntOrNull(),
     )
@@ -148,6 +160,7 @@ internal fun ConfigScreen(
                     SignatureRow(
                         signatures = signatures,
                         selectedId = if (injectSignature) defaultSignatureId else NO_SIGN_ID,
+                        enabled = !forceOverwrite,
                         onSelect = { profile ->
                             if (profile.id == NO_SIGN_ID) {
                                 injectSignature = false
@@ -190,6 +203,17 @@ internal fun ConfigScreen(
                         checked = dynamicMode,
                         onChange = { dynamicMode = it },
                     )
+                }
+            }
+            item {
+                SettingGroup("实验性") {
+                    SwitchLine(
+                        title = "强行覆盖安装",
+                        subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
+                        checked = forceOverwrite,
+                        onChange = { on -> onForceOverwriteChange(on) },
+                    )
+                    NoteText(forceOverwriteNote)
                 }
             }
             item { NoteText("点「返回」会保留打包结果，不必重新打包。") }
@@ -359,6 +383,7 @@ private fun <T> ChipRow(
 private fun SignatureRow(
     signatures: List<SignatureStore.Profile>,
     selectedId: String,
+    enabled: Boolean,
     onSelect: (SignatureStore.Profile) -> Unit,
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -370,7 +395,7 @@ private fun SignatureRow(
         Row(
             Modifier
                 .fillMaxWidth()
-                .clickable { expanded = true }
+                .clickable(enabled = enabled) { expanded = true }
                 .padding(horizontal = 16.dp, vertical = 14.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {            Column(Modifier.weight(1f)) {

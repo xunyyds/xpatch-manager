@@ -193,6 +193,7 @@ fun MainScaffold(
     var failure by remember { mutableStateOf<String?>(null) }
     var pendingInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var installBlocked by remember { mutableStateOf<InstallBlock?>(null) }
+    var pendingForceOverwrite by remember { mutableStateOf(false) }
 
     var patchedApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var patchableApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
@@ -648,7 +649,13 @@ fun MainScaffold(
             val viaShizuku = ShizukuBridge.isAvailable()
             busyText = if (viaShizuku) "正在通过 Shizuku 安装…" else null
             try {
-                when (val step = ShizukuInstaller.install(context, outcome.apk, outcome.packageName)) {
+                val step = if (pendingForceOverwrite) {
+                    busyText = "正在强行覆盖安装…"
+                    ShizukuInstaller.installForceOverwrite(context, outcome.apk, outcome.packageName)
+                } else {
+                    ShizukuInstaller.install(context, outcome.apk, outcome.packageName)
+                }
+                when (step) {
                     is ShizukuInstaller.Result.Success -> {
                         eventLog.add(step.message)
                         showToast(step.message)
@@ -1166,6 +1173,14 @@ fun MainScaffold(
                     signatures = signatures,
                     defaultSignatureId = defaultSignatureId,
                     busy = busyText != null,
+                    forceOverwriteReady = remember(token) { ShizukuInstaller.forceOverwriteReady() },
+                    forceOverwriteBlockReason = remember(token) { ShizukuInstaller.forceOverwriteBlockReason() },
+                    onForceOverwriteChange = { on ->
+                        settingsStore.setForceOverwrite(on)
+                        settings = settings.copy(forceOverwrite = on)
+                        eventLog.add(if (on) "已开启强行覆盖安装" else "已关闭强行覆盖安装")
+                        logs = eventLog.entries()
+                    },
                     findReusable = { options ->
                         val pkg = patchPackageName(current.target)
                         if (pkg.isBlank()) {
@@ -1194,12 +1209,15 @@ fun MainScaffold(
                         settingsStore.setInjectSignature(options.injectSignature)
                         settingsStore.setFileProvider(options.fileProvider)
                         settingsStore.setDynamicMode(options.dynamicMode)
+                        settingsStore.setForceOverwrite(options.forceOverwrite)
+                        pendingForceOverwrite = options.forceOverwrite
                         settings = settings.copy(
                             hookCore = options.hookCore,
                             signatureBypassLevel = options.bypassLevel,
                             injectSignature = options.injectSignature,
                             fileProvider = options.fileProvider,
                             dynamicMode = options.dynamicMode,
+                            forceOverwrite = options.forceOverwrite,
                         )
                         val sourceKey = patchSourceKey(current.target)
                         val fingerprint = PatchFingerprint.of(sourceKey, options)

@@ -19,6 +19,7 @@ data class PatchOptions(
     val versionName: String? = null,
     val versionCode: Int? = null,
     val embedSource: Boolean = false,
+    val forceOverwrite: Boolean = false,
 )
 
 class PatchService(private val context: Context) {

@@ -16,6 +16,7 @@ object PatchFingerprint {
             "versionName=${options.versionName.orEmpty()}",
             "versionCode=${options.versionCode ?: -1}",
             "embed=${options.embedSource}",
+            "forceOverwrite=${options.forceOverwrite}",
         ).joinToString("|")
         return sha256(raw)
     }
@@ -36,6 +37,7 @@ object PatchFingerprint {
         val provider = if (options.fileProvider) "FileProvider" else "无 FileProvider"
         val mode = if (options.dynamicMode) "动态" else "静态"
         val parts = mutableListOf(core, bypass, sign, provider, mode)
+        if (options.forceOverwrite) parts.add("强行覆盖")
         val name = options.versionName.orEmpty()
         val code = options.versionCode
         if (name.isNotBlank() || code != null) {

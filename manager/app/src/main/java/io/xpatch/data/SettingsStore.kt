@@ -39,6 +39,7 @@ data class ManagerSettings(
     val lastUpdateCheckAt: Long = 0,
     val updateCheckCache: String = "",
     val updateGoodSource: String = "",
+    val forceOverwrite: Boolean = false,
 )
 
 class SettingsStore(context: Context) {
@@ -68,6 +69,7 @@ class SettingsStore(context: Context) {
         lastUpdateCheckAt = prefs.getLong(KEY_UPDATE_CHECK_AT, 0),
         updateCheckCache = prefs.getString(KEY_UPDATE_CACHE, "").orEmpty(),
         updateGoodSource = prefs.getString(KEY_UPDATE_SOURCE, "").orEmpty(),
+        forceOverwrite = prefs.getBoolean(KEY_FORCE_OVERWRITE, false),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -124,6 +126,9 @@ class SettingsStore(context: Context) {
     fun setUpdateGoodSource(prefix: String) =
         prefs.edit().putString(KEY_UPDATE_SOURCE, prefix).apply()
 
+    fun setForceOverwrite(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_FORCE_OVERWRITE, enabled).apply()
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
@@ -153,6 +158,7 @@ class SettingsStore(context: Context) {
         private const val KEY_UPDATE_CHECK_AT = "update_check_at"
         private const val KEY_UPDATE_CACHE = "update_check_cache"
         private const val KEY_UPDATE_SOURCE = "update_good_source"
+        private const val KEY_FORCE_OVERWRITE = "force_overwrite"
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
     }
