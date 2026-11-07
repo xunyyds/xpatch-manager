@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -69,6 +70,9 @@ import io.xpatch.data.ConfigBackup
 import io.xpatch.data.EventLog
 import io.xpatch.data.ManagerRepository
 import io.xpatch.data.ModuleApiStore
+import io.xpatch.data.PatchExportRef
+import io.xpatch.data.PatchHistoryStore
+import io.xpatch.data.PatchRecord
 import io.xpatch.data.RepoStore
 import io.xpatch.data.RuntimeLogStore
 import io.xpatch.data.ScopeFileWriter
@@ -77,6 +81,7 @@ import io.xpatch.data.SignatureStore
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.InstallHelper
+import io.xpatch.patch.PatchFingerprint
 import io.xpatch.patch.PatchOptions
 import io.xpatch.patch.PatchService
 import io.xpatch.patch.ShizukuBridge
@@ -118,8 +123,20 @@ fun MainScaffold(
     val patchService = remember { PatchService(context) }
     val signatureStore = remember { SignatureStore(context) }
     val moduleApiStore = remember { ModuleApiStore(context) }
+    val historyStore = remember { PatchHistoryStore(context) }
     var signatures by remember { mutableStateOf(emptyList<SignatureStore.Profile>()) }
     var defaultSignatureId by remember { mutableStateOf(SignatureStore.BUILTIN_XPATCH) }
+    var historyTick by remember { mutableIntStateOf(0) }
+    var currentRecordId by remember { mutableStateOf<String?>(null) }
+    val historyState = produceState(
+        initialValue = HistorySnapshot(),
+        historyTick,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val records = runCatching { historyStore.list() }.getOrDefault(emptyList())
+            HistorySnapshot(records = records, totalSize = runCatching { historyStore.totalSize() }.getOrDefault(0L))
+        }
+    }
     val scope = rememberCoroutineScope()
 
     val nav = rememberNavigator()
@@ -470,6 +487,7 @@ fun MainScaffold(
         is Page.Repo -> "模块仓库"
         is Page.RepoDownloads -> "下载管理"
         is Page.RepoDetail -> current.module.name
+        is Page.PatchHistory -> "打包历史"
         is Page.LogModule -> if (current.framework) LogLayer.Framework.label
         else labelOf(current.module)
     }
@@ -532,6 +550,53 @@ fun MainScaffold(
         }
     }
 
+    val fallbackInstall: (PatchService.Outcome) -> Unit = fallback@{ outcome ->
+        if (!InstallHelper.canInstall(context)) {
+            eventLog.add("缺少「安装未知应用」权限，已停止安装 " + outcome.packageName)
+            showToast("需要安装权限，请授权后重试")
+            installBlocked = InstallBlock(outcome.packageName, false)
+            logs = eventLog.entries()
+            return@fallback
+        }
+        val launched = runCatching { InstallHelper.openWith(context, outcome.apk) }.getOrDefault(false)
+        if (launched) {
+            eventLog.add("已调起系统安装器 " + outcome.packageName + "，请在弹窗中确认安装")
+            showToast("已调起系统安装器，请在弹窗中确认")
+        } else {
+            eventLog.add("没有可用的安装器 " + outcome.packageName)
+            showToast("没有可用的安装器")
+        }
+        logs = eventLog.entries()
+    }
+
+    val installOutcome: (PatchService.Outcome) -> Unit = { outcome ->
+        scope.launch {
+            val viaShizuku = ShizukuBridge.isAvailable()
+            busyText = if (viaShizuku) "正在通过 Shizuku 安装…" else null
+            try {
+                when (val step = ShizukuInstaller.install(context, outcome.apk, outcome.packageName)) {
+                    is ShizukuInstaller.Result.Success -> {
+                        eventLog.add(step.message)
+                        showToast(step.message)
+                    }
+                    is ShizukuInstaller.Result.Failure -> {
+                        eventLog.add(step.message)
+                        showToast(step.message)
+                        fallbackInstall(outcome)
+                    }
+                    ShizukuInstaller.Result.Unavailable -> {
+                        eventLog.add("Shizuku 不可用，改用系统安装器 " + outcome.packageName)
+                        fallbackInstall(outcome)
+                    }
+                }
+            } finally {
+                busyText = null
+            }
+            logs = eventLog.entries()
+            token++
+        }
+    }
+
     val repoSnapshot = produceState(
         initialValue = RepoInstallSnapshot.Empty,
         token,
@@ -568,7 +633,15 @@ fun MainScaffold(
                         }
                     },
                     actions = {
-                        Unit
+                        if (nav.page is Page.Home && nav.tab == Tab.Home) {
+                            MiuixIconButton(onClick = { nav.navigate(Page.PatchHistory) }) {
+                                MiuixIcon(
+                                    imageVector = Icons.Rounded.History,
+                                    contentDescription = "打包历史",
+                                    tint = MiuixTheme.colorScheme.onSurface,
+                                )
+                            }
+                        }
                     },
                 )
             } else {
@@ -591,7 +664,11 @@ fun MainScaffold(
                         }
                     },
                     actions = {
-                        Unit
+                        if (nav.page is Page.Home && nav.tab == Tab.Home) {
+                            IconButton(onClick = { nav.navigate(Page.PatchHistory) }) {
+                                Icon(Icons.Rounded.History, contentDescription = "打包历史")
+                            }
+                        }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
                         containerColor = MaterialTheme.colorScheme.background,
@@ -813,6 +890,19 @@ fun MainScaffold(
                         },
                         onExportConfig = { exportConfigLauncher.launch("xpatch-backup.json") },
                         onImportConfig = { importConfigLauncher.launch(arrayOf("application/json", "*/*")) },
+                        onHistoryLimitChange = { limit ->
+                            settingsStore.setPatchHistoryLimit(limit)
+                            settings = settings.copy(patchHistoryLimit = limit)
+                            historyTick++
+                        },
+                        onDeleteArtifactChange = { delete ->
+                            settingsStore.setDeleteArtifactOnRemove(delete)
+                            settings = settings.copy(deleteArtifactOnRemove = delete)
+                        },
+                        onSkipDeletePromptChange = { skip ->
+                            settingsStore.setSkipArtifactDeletePrompt(skip)
+                            settings = settings.copy(skipArtifactDeletePrompt = skip)
+                        },
                     )
                 }
 
@@ -984,6 +1074,28 @@ fun MainScaffold(
                     signatures = signatures,
                     defaultSignatureId = defaultSignatureId,
                     busy = busyText != null,
+                    findReusable = { options ->
+                        val pkg = patchPackageName(current.target)
+                        if (pkg.isBlank()) {
+                            null
+                        } else {
+                            val fingerprint = PatchFingerprint.of(patchSourceKey(current.target), options)
+                            historyState.value.records.firstOrNull {
+                                it.packageName == pkg && it.fingerprint == fingerprint && it.hasArtifact()
+                            }
+                        }
+                    },
+                    onReuse = { record ->
+                        patchLog.clear()
+                        patchLog.add("复用已打包产物：" + record.apkPath)
+                        patchProgress = 100
+                        patchFailure = null
+                        patchRunning = false
+                        result = patchService.outcomeOf(record)
+                        currentRecordId = record.id
+                        eventLog.add("复用打包产物 " + record.label + " " + record.versionName)
+                        logs = eventLog.entries()
+                    },
                     onStart = { options ->
                         settingsStore.setHookCore(options.hookCore)
                         settingsStore.setSignatureBypassLevel(options.bypassLevel)
@@ -997,6 +1109,11 @@ fun MainScaffold(
                             fileProvider = options.fileProvider,
                             dynamicMode = options.dynamicMode,
                         )
+                        val sourceKey = patchSourceKey(current.target)
+                        val fingerprint = PatchFingerprint.of(sourceKey, options)
+                        val summary = PatchFingerprint.summary(options)
+                        val recordVersionName = options.versionName ?: patchVersionName(current.target)
+                        val recordVersionCode = options.versionCode?.toLong() ?: patchVersionCode(current.target)
                         scope.launch {
                             busyText = null
                             patchLog.clear()
@@ -1020,10 +1137,30 @@ fun MainScaffold(
                                         onProgress = { patchProgress = it },
                                     )
                                 }
-                            }.onSuccess {
-                                eventLog.add("打包完成 ${it.packageName} · ${it.bootDex}")
+                            }.onSuccess { outcome ->
+                                eventLog.add("打包完成 ${outcome.packageName} · ${outcome.bootDex}")
                                 patchProgress = 100
-                                result = it
+                                result = outcome
+                                val record = PatchRecord(
+                                    id = historyStore.newId(),
+                                    time = System.currentTimeMillis(),
+                                    packageName = outcome.packageName,
+                                    label = outcome.label,
+                                    versionName = recordVersionName,
+                                    versionCode = recordVersionCode,
+                                    sourceKey = sourceKey,
+                                    fingerprint = fingerprint,
+                                    optionSummary = summary,
+                                    apkPath = outcome.apk.absolutePath,
+                                    apkSize = outcome.apk.length(),
+                                    apkModified = outcome.apk.lastModified(),
+                                    bootDex = outcome.bootDex,
+                                    originalFactory = outcome.originalFactory,
+                                    config = outcome.config,
+                                )
+                                withContext(Dispatchers.IO) { historyStore.record(record) }
+                                currentRecordId = record.id
+                                historyTick++
                                 token++
                             }.onFailure {
                                 eventLog.add("打包失败 ${it.message}")
@@ -1039,6 +1176,76 @@ fun MainScaffold(
                         defaultSignatureId = profile.id
                         token++
                     },
+                )
+
+                is Page.PatchHistory -> PatchHistoryScreen(
+                    records = historyState.value.records,
+                    totalSize = historyState.value.totalSize,
+                    limit = settings.patchHistoryLimit,
+                    refreshing = false,
+                    deletePromptRequired = !settings.skipArtifactDeletePrompt,
+                    defaultDeleteArtifact = settings.deleteArtifactOnRemove,
+                    onRefresh = { historyTick++ },
+                    onInstall = { record ->
+                        installOutcome(patchService.outcomeOf(record))
+                    },
+                    onShare = { record ->
+                        val shared = runCatching {
+                            InstallHelper.shareApk(context, patchService.outcomeOf(record).apk)
+                        }.getOrDefault(false)
+                        showToast(if (shared) "已调起系统分享" else "没有可分享安装包的应用")
+                    },
+                    onExport = { record ->
+                        scope.launch {
+                            val outcome = patchService.outcomeOf(record)
+                            val saved = withContext(Dispatchers.IO) {
+                                runCatching { patchService.export(outcome).absolutePath }
+                            }
+                            saved.onSuccess { path ->
+                                withContext(Dispatchers.IO) {
+                                    historyStore.addExport(
+                                        record.id,
+                                        PatchExportRef(path = path, name = File(path).name, time = System.currentTimeMillis()),
+                                    )
+                                }
+                                historyTick++
+                                showToast("已导出 " + File(path).name)
+                            }.onFailure {
+                                showToast("导出失败：" + (it.message ?: "未知错误"))
+                            }
+                        }
+                    },
+                    onDeleteExport = { record, ref ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) { historyStore.removeExport(record.id, ref.path, true) }
+                            historyTick++
+                            showToast("已删除导出文件")
+                        }
+                    },
+                    onDelete = { record, deleteArtifact, rememberChoice ->
+                        scope.launch {
+                            withContext(Dispatchers.IO) { historyStore.remove(record.id, deleteArtifact) }
+                            if (rememberChoice) {
+                                settingsStore.setDeleteArtifactOnRemove(deleteArtifact)
+                                settingsStore.setSkipArtifactDeletePrompt(true)
+                                settings = settings.copy(
+                                    deleteArtifactOnRemove = deleteArtifact,
+                                    skipArtifactDeletePrompt = true,
+                                )
+                            }
+                            if (currentRecordId == record.id) currentRecordId = null
+                            historyTick++
+                            showToast(if (deleteArtifact) "已删除记录与产物" else "已删除记录")
+                        }
+                    },
+                    onClearMissing = {
+                        scope.launch {
+                            val removed = withContext(Dispatchers.IO) { historyStore.clearMissing() }
+                            historyTick++
+                            showToast(if (removed > 0) "已清理 " + removed + " 条无效记录" else "没有需要清理的记录")
+                        }
+                    },
+                    onOpenSettings = { nav.select(Tab.Settings) },
                 )
 
                 is Page.Signatures -> SignaturesScreen(
@@ -1130,21 +1337,52 @@ fun MainScaffold(
                                 patchProgress = 0
                                 patchFailure = null
                                 patchRunning = true
+                                val coreOptions = PatchOptions(
+                                    hookCore = settings.hookCore,
+                                    bypassLevel = settings.signatureBypassLevel,
+                                    injectSignature = settings.injectSignature,
+                                    fileProvider = settings.fileProvider,
+                                    dynamicMode = settings.dynamicMode,
+                                )
+                                val coreSourceKey = listOf(
+                                    "core",
+                                    src.absolutePath,
+                                    src.length().toString(),
+                                    src.lastModified().toString(),
+                                ).joinToString("|")
+                                val coreFingerprint = PatchFingerprint.of(coreSourceKey, coreOptions)
+                                val coreSummary = PatchFingerprint.summary(coreOptions)
                                 runCatching {
                                     patchService.buildFromFile(
                                         src,
                                         current.app.label,
-                                        PatchOptions(
-                                            hookCore = settings.hookCore,
-                                            bypassLevel = settings.signatureBypassLevel,
-                                            injectSignature = settings.injectSignature,
-                                            fileProvider = settings.fileProvider,
-                                            dynamicMode = settings.dynamicMode,
-                                        ),
+                                        coreOptions,
                                         onLog = { line -> patchLog.add(line) },
                                         onProgress = { patchProgress = it },
                                     )
-                                }.onSuccess { result = it }
+                                }.onSuccess { outcome ->
+                                    result = outcome
+                                    val record = PatchRecord(
+                                        id = historyStore.newId(),
+                                        time = System.currentTimeMillis(),
+                                        packageName = outcome.packageName,
+                                        label = outcome.label,
+                                        versionName = current.app.versionName,
+                                        versionCode = current.app.versionCode,
+                                        sourceKey = coreSourceKey,
+                                        fingerprint = coreFingerprint,
+                                        optionSummary = coreSummary,
+                                        apkPath = outcome.apk.absolutePath,
+                                        apkSize = outcome.apk.length(),
+                                        apkModified = outcome.apk.lastModified(),
+                                        bootDex = outcome.bootDex,
+                                        originalFactory = outcome.originalFactory,
+                                        config = outcome.config,
+                                    )
+                                    withContext(Dispatchers.IO) { historyStore.record(record) }
+                                    currentRecordId = record.id
+                                    historyTick++
+                                }
                                     .onFailure {
                                         val msg = "该应用没有内嵌原始包，无法更新核心：" + (it.message ?: "")
                                         patchLog.add("失败：$msg")
@@ -1259,53 +1497,6 @@ fun MainScaffold(
         }
     }
 
-    val fallbackInstall: (PatchService.Outcome) -> Unit = fallback@{ outcome ->
-        if (!InstallHelper.canInstall(context)) {
-            eventLog.add("缺少「安装未知应用」权限，已停止安装 " + outcome.packageName)
-            showToast("需要安装权限，请授权后重试")
-            installBlocked = InstallBlock(outcome.packageName, false)
-            logs = eventLog.entries()
-            return@fallback
-        }
-        val launched = runCatching { InstallHelper.openWith(context, outcome.apk) }.getOrDefault(false)
-        if (launched) {
-            eventLog.add("已调起系统安装器 " + outcome.packageName + "，请在弹窗中确认安装")
-            showToast("已调起系统安装器，请在弹窗中确认")
-        } else {
-            eventLog.add("没有可用的安装器 " + outcome.packageName)
-            showToast("没有可用的安装器")
-        }
-        logs = eventLog.entries()
-    }
-
-    val installOutcome: (PatchService.Outcome) -> Unit = { outcome ->
-        scope.launch {
-            val viaShizuku = ShizukuBridge.isAvailable()
-            busyText = if (viaShizuku) "正在通过 Shizuku 安装…" else null
-            try {
-                when (val step = ShizukuInstaller.install(context, outcome.apk, outcome.packageName)) {
-                    is ShizukuInstaller.Result.Success -> {
-                        eventLog.add(step.message)
-                        showToast(step.message)
-                    }
-                    is ShizukuInstaller.Result.Failure -> {
-                        eventLog.add(step.message)
-                        showToast(step.message)
-                        fallbackInstall(outcome)
-                    }
-                    ShizukuInstaller.Result.Unavailable -> {
-                        eventLog.add("Shizuku 不可用，改用系统安装器 " + outcome.packageName)
-                        fallbackInstall(outcome)
-                    }
-                }
-            } finally {
-                busyText = null
-            }
-            logs = eventLog.entries()
-            token++
-        }
-    }
-
     if (patchRunning || result != null || patchFailure != null) {
         PatchProgressDialog(
             state = PatchProgress(
@@ -1323,6 +1514,16 @@ fun MainScaffold(
                         runCatching { patchService.export(outcome).absolutePath }
                     }
                     saved.onSuccess { path ->
+                        val recordId = currentRecordId
+                        if (recordId != null) {
+                            withContext(Dispatchers.IO) {
+                                historyStore.addExport(
+                                    recordId,
+                                    PatchExportRef(path = path, name = File(path).name, time = System.currentTimeMillis()),
+                                )
+                            }
+                            historyTick++
+                        }
                         patchLog.add("已导出到 " + path)
                         eventLog.add("已导出到 " + path)
                         showToast("已导出 " + path.substringAfterLast('/'))
@@ -1491,4 +1692,41 @@ private fun openAllFilesSettings(context: android.content.Context) {
             )
         }
     }
+}
+
+private data class HistorySnapshot(
+    val records: List<PatchRecord> = emptyList(),
+    val totalSize: Long = 0L,
+)
+
+private fun patchPackageName(target: PatchTarget): String = when (target) {
+    is PatchTarget.Installed -> target.app.packageName
+    is PatchTarget.FromFile -> target.packageName.orEmpty()
+}
+
+private fun patchVersionName(target: PatchTarget): String = when (target) {
+    is PatchTarget.Installed -> target.app.versionName
+    is PatchTarget.FromFile -> target.versionName.orEmpty()
+}
+
+private fun patchVersionCode(target: PatchTarget): Long = when (target) {
+    is PatchTarget.Installed -> target.app.versionCode
+    is PatchTarget.FromFile -> target.versionCode ?: 0L
+}
+
+private fun patchSourceKey(target: PatchTarget): String = when (target) {
+    is PatchTarget.Installed -> listOf(
+        "installed",
+        target.app.packageName,
+        target.app.versionCode.toString(),
+        target.app.versionName,
+        target.app.apkPath.orEmpty(),
+    ).joinToString("|")
+
+    is PatchTarget.FromFile -> listOf(
+        "file",
+        target.file.absolutePath,
+        target.file.length().toString(),
+        target.file.lastModified().toString(),
+    ).joinToString("|")
 }

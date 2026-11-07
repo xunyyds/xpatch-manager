@@ -31,12 +31,21 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.HookCore
+import io.xpatch.data.PatchRecord
 import io.xpatch.data.SignatureStore
 import io.xpatch.patch.PatchOptions
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.Chip
+import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SettingGroup
+import io.xpatch.ui.components.XPatchDialog
+import io.xpatch.ui.format.formatDateTime
+import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.material3.TextButton
+import androidx.compose.ui.draw.clip
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
@@ -56,6 +65,8 @@ internal fun ConfigScreen(
     busy: Boolean,
     onStart: (PatchOptions) -> Unit,
     onPickSignature: (SignatureStore.Profile) -> Unit,
+    findReusable: (PatchOptions) -> PatchRecord?,
+    onReuse: (PatchRecord) -> Unit,
 ) {
     var hookCore by remember { mutableStateOf(defaults.hookCore) }
     var bypass by remember { mutableStateOf(defaults.signatureBypassLevel) }
@@ -85,6 +96,24 @@ internal fun ConfigScreen(
         is PatchTarget.Installed -> target.app.icon
         is PatchTarget.FromFile -> target.icon
     }
+
+    val selectedProfile = if (injectSignature) {
+        signatures.firstOrNull { it.id == defaultSignatureId }
+    } else {
+        null
+    }
+    val options = PatchOptions(
+        hookCore = hookCore,
+        bypassLevel = bypass,
+        injectSignature = injectSignature,
+        fileProvider = fileProvider,
+        dynamicMode = dynamicMode,
+        signatureProfile = selectedProfile,
+        versionName = versionName.trim().ifBlank { null },
+        versionCode = versionCode.trim().toIntOrNull(),
+    )
+    val reusable = findReusable(options)
+    var reuseConfirm by remember { mutableStateOf<PatchRecord?>(null) }
 
     Column(Modifier.fillMaxSize()) {
         AppHeaderCard(icon, name, packageName)
@@ -165,24 +194,80 @@ internal fun ConfigScreen(
             }
             item { NoteText("点「返回」会保留打包结果，不必重新打包。") }
         }
-        StartButton(busy) {
-            val selectedProfile = if (injectSignature) {
-                signatures.firstOrNull { it.id == defaultSignatureId }
-            } else {
-                null
+        if (reusable != null) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp)
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                    .padding(horizontal = 14.dp, vertical = 10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        "已打包过相同配置",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Text(
+                        formatDateTime(reusable.time) + " · " + readableSize(reusable.apkSize) + " · " + reusable.optionSummary,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                TextButton(onClick = { onReuse(reusable) }) {
+                    Text("直接复用")
+                }
             }
-            onStart(
-                PatchOptions(
-                    hookCore = hookCore,
-                    bypassLevel = bypass,
-                    injectSignature = injectSignature,
-                    fileProvider = fileProvider,
-                    dynamicMode = dynamicMode,
-                    signatureProfile = selectedProfile,
-                    versionName = versionName.trim().ifBlank { null },
-                    versionCode = versionCode.trim().toIntOrNull(),
-                ),
-            )
+        }
+        StartButton(busy) {
+            if (reusable != null) {
+                reuseConfirm = reusable
+            } else {
+                onStart(options)
+            }
+        }
+    }
+
+    reuseConfirm?.let { record ->
+        XPatchDialog(
+            onDismiss = { reuseConfirm = null },
+            title = "已打包过相同配置",
+            actions = listOf(
+                DialogAction("取消") { reuseConfirm = null },
+                DialogAction("重新打包") {
+                    reuseConfirm = null
+                    onStart(options)
+                },
+                DialogAction("复用产物") {
+                    reuseConfirm = null
+                    onReuse(record)
+                },
+            ),
+        ) {
+            Column {
+                Text(
+                    "检测到同配置的打包产物，可直接复用，省去重新打包的时间。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    formatDateTime(record.time) + " · " + readableSize(record.apkSize) + " · " + record.optionSummary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    record.apkPath,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
     }
 }

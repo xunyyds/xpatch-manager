@@ -46,6 +46,7 @@ internal sealed interface Page {
     data object Repo : Page
     data object RepoDownloads : Page
     data class RepoDetail(val module: RepoStore.RepoModule) : Page
+    data object PatchHistory : Page
     data class LogModule(
         val groupKey: String,
         val module: String,

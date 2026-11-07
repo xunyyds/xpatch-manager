@@ -12,3 +12,8 @@ internal fun formatTime(millis: Long): String {
     if (millis <= 0L) return ""
     return java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date(millis))
 }
+
+internal fun formatDateTime(millis: Long): String {
+    if (millis <= 0L) return ""
+    return java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.getDefault()).format(java.util.Date(millis))
+}

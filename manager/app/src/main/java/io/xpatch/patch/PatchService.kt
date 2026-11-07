@@ -2,6 +2,7 @@ package io.xpatch.patch
 
 import android.content.Context
 import io.xpatch.data.HookCore
+import io.xpatch.data.PatchRecord
 import io.xpatch.data.SignatureStore
 import io.xpatch.model.AppInfo
 import kotlinx.coroutines.Dispatchers
@@ -170,6 +171,15 @@ class PatchService(private val context: Context) {
         }
         return target
     }
+
+    fun outcomeOf(record: PatchRecord): Outcome = Outcome(
+        apk = File(record.apkPath),
+        packageName = record.packageName,
+        label = record.label,
+        bootDex = record.bootDex,
+        originalFactory = record.originalFactory,
+        config = record.config,
+    )
 
     private fun uniqueTarget(dir: File, fileName: String): File {
         var candidate = File(dir, fileName)

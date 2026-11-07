@@ -30,6 +30,9 @@ data class ManagerSettings(
     val uiStyle: UiStyle = UiStyle.MATERIAL3,
     val exportTreeUri: String = "",
     val exportTreeLabel: String = "",
+    val patchHistoryLimit: Int = SettingsStore.HISTORY_LIMIT_DEFAULT,
+    val deleteArtifactOnRemove: Boolean = true,
+    val skipArtifactDeletePrompt: Boolean = false,
 )
 
 class SettingsStore(context: Context) {
@@ -49,6 +52,10 @@ class SettingsStore(context: Context) {
         uiStyle = UiStyle.of(prefs.getInt(KEY_UI_STYLE, UiStyle.MATERIAL3.index)),
         exportTreeUri = prefs.getString(KEY_EXPORT_TREE, "").orEmpty(),
         exportTreeLabel = prefs.getString(KEY_EXPORT_LABEL, "").orEmpty(),
+        patchHistoryLimit = prefs.getInt(KEY_HISTORY_LIMIT, HISTORY_LIMIT_DEFAULT)
+            .coerceIn(HISTORY_LIMIT_MIN, HISTORY_LIMIT_MAX),
+        deleteArtifactOnRemove = prefs.getBoolean(KEY_DELETE_ARTIFACT, true),
+        skipArtifactDeletePrompt = prefs.getBoolean(KEY_SKIP_DELETE_PROMPT, false),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -81,10 +88,23 @@ class SettingsStore(context: Context) {
     fun clearExportTree() =
         prefs.edit().remove(KEY_EXPORT_TREE).remove(KEY_EXPORT_LABEL).apply()
 
+    fun setPatchHistoryLimit(limit: Int) =
+        prefs.edit().putInt(KEY_HISTORY_LIMIT, limit.coerceIn(HISTORY_LIMIT_MIN, HISTORY_LIMIT_MAX)).apply()
+
+    fun setDeleteArtifactOnRemove(delete: Boolean) =
+        prefs.edit().putBoolean(KEY_DELETE_ARTIFACT, delete).apply()
+
+    fun setSkipArtifactDeletePrompt(skip: Boolean) =
+        prefs.edit().putBoolean(KEY_SKIP_DELETE_PROMPT, skip).apply()
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
         const val THEME_DARK = 2
+
+        const val HISTORY_LIMIT_DEFAULT = 50
+        const val HISTORY_LIMIT_MIN = 1
+        const val HISTORY_LIMIT_MAX = 500
 
         private const val KEY_THEME = "theme_mode"
         private const val KEY_BYPASS_LEVEL = "bypass_level"
@@ -97,6 +117,9 @@ class SettingsStore(context: Context) {
         private const val KEY_UI_STYLE = "ui_style"
         private const val KEY_EXPORT_TREE = "export_tree_uri"
         private const val KEY_EXPORT_LABEL = "export_tree_label"
+        private const val KEY_HISTORY_LIMIT = "patch_history_limit"
+        private const val KEY_DELETE_ARTIFACT = "patch_history_delete_artifact"
+        private const val KEY_SKIP_DELETE_PROMPT = "patch_history_skip_delete_prompt"
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
     }

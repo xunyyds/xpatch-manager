@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
@@ -23,6 +24,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -33,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.xpatch.BuildConfig
@@ -40,12 +43,15 @@ import io.xpatch.data.ManagerSettings
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.UiStyle
 import io.xpatch.model.ModuleInfo
+import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SettingChoiceRow
 import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.SettingItem
 import io.xpatch.ui.components.SettingSwitchItem
+import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.DropdownItem
+import top.yukonga.miuix.kmp.basic.TextField as MiuixTextField
 import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -67,8 +73,22 @@ internal fun SettingsScreen(
     onClearExportDir: () -> Unit,
     onExportConfig: () -> Unit,
     onImportConfig: () -> Unit,
+    onHistoryLimitChange: (Int) -> Unit,
+    onDeleteArtifactChange: (Boolean) -> Unit,
+    onSkipDeletePromptChange: (Boolean) -> Unit,
 ) {
     val miuix = LocalMiuix.current
+    var showLimitDialog by remember { mutableStateOf(false) }
+    if (showLimitDialog) {
+        HistoryLimitDialog(
+            current = settings.patchHistoryLimit,
+            onDismiss = { showLimitDialog = false },
+            onConfirm = { limit ->
+                showLimitDialog = false
+                onHistoryLimitChange(limit)
+            },
+        )
+    }
     LazyColumn(
         contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
         verticalArrangement = Arrangement.spacedBy(if (miuix) 0.dp else 14.dp),
@@ -123,6 +143,29 @@ internal fun SettingsScreen(
                         "作用域列表中包含系统应用",
                         settings.showSystemApps,
                         onShowSystemChange,
+                    )
+                }
+            }
+            item {
+                SettingGroup("打包历史") {
+                    SettingItem(
+                        "记录上限",
+                        "超出后自动清理最早的打包记录",
+                        settings.patchHistoryLimit.toString() + " 条",
+                        arrow = true,
+                        onClick = { showLimitDialog = true },
+                    )
+                    SettingSwitchItem(
+                        "删除记录时同时删除产物",
+                        "删除历史记录时一并删除 APK 产物文件",
+                        settings.deleteArtifactOnRemove,
+                        onDeleteArtifactChange,
+                    )
+                    SettingSwitchItem(
+                        "删除时不再询问",
+                        "删除记录时按当前策略直接执行，不再弹窗确认",
+                        settings.skipArtifactDeletePrompt,
+                        onSkipDeletePromptChange,
                     )
                 }
             }
@@ -201,6 +244,29 @@ internal fun SettingsScreen(
                         "作用域列表中包含系统应用",
                         settings.showSystemApps,
                         onShowSystemChange,
+                    )
+                }
+            }
+            item {
+                SettingGroup("打包历史") {
+                    SettingItem(
+                        "记录上限",
+                        "超出后自动清理最早的打包记录",
+                        settings.patchHistoryLimit.toString() + " 条",
+                        arrow = true,
+                        onClick = { showLimitDialog = true },
+                    )
+                    SettingSwitchItem(
+                        "删除记录时同时删除产物",
+                        "删除历史记录时一并删除 APK 产物文件",
+                        settings.deleteArtifactOnRemove,
+                        onDeleteArtifactChange,
+                    )
+                    SettingSwitchItem(
+                        "删除时不再询问",
+                        "删除记录时按当前策略直接执行，不再弹窗确认",
+                        settings.skipArtifactDeletePrompt,
+                        onSkipDeletePromptChange,
                     )
                 }
             }
@@ -357,3 +423,60 @@ internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Un
         }
     }
 }
+
+@Composable
+private fun HistoryLimitDialog(
+    current: Int,
+    onDismiss: () -> Unit,
+    onConfirm: (Int) -> Unit,
+) {
+    val miuix = LocalMiuix.current
+    var text by remember { mutableStateOf(current.toString()) }
+    val parsed = text.trim().toIntOrNull()
+    val valid = parsed != null && parsed in 1..500
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = "记录上限",
+        actions = listOf(
+            DialogAction("取消", onClick = onDismiss),
+            DialogAction("确定") { onConfirm(if (valid) parsed!! else 50) },
+        ),
+    ) {
+        Text("超出上限时会自动清理最早的打包记录", style = MaterialTheme.typography.bodySmall)
+        Spacer(Modifier.height(10.dp))
+        if (miuix) {
+            MiuixTextField(
+                value = text,
+                onValueChange = { text = limitDigits(it) },
+                modifier = Modifier.fillMaxWidth(),
+                label = "1 - 500",
+                useLabelAsPlaceholder = true,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+        } else {
+            OutlinedTextField(
+                value = text,
+                onValueChange = { text = limitDigits(it) },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                label = { Text("保留条数") },
+                placeholder = { Text("1 - 500") },
+                shape = RoundedCornerShape(12.dp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            )
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (valid) {
+                "将保留最近 " + parsed + " 条记录"
+            } else {
+                "请输入 1 - 500 之间的整数，留空或非法值将回退为 50"
+            },
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+private fun limitDigits(input: String): String = input.filter { it.isDigit() }.take(3)
