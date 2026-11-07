@@ -1,7 +1,11 @@
 package io.xpatch.ui.screens
 
+import android.content.Context
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -34,6 +38,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -41,8 +46,10 @@ import androidx.compose.ui.unit.dp
 import io.xpatch.BuildConfig
 import io.xpatch.data.ManagerSettings
 import io.xpatch.data.ModuleApiStore
+import io.xpatch.data.PermissionCenter
 import io.xpatch.data.UiStyle
 import io.xpatch.model.ModuleInfo
+import io.xpatch.patch.ShizukuBridge
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SettingChoiceRow
 import io.xpatch.ui.components.SettingGroup
@@ -76,9 +83,15 @@ internal fun SettingsScreen(
     onHistoryLimitChange: (Int) -> Unit,
     onDeleteArtifactChange: (Boolean) -> Unit,
     onSkipDeletePromptChange: (Boolean) -> Unit,
+    onOpenDisclaimer: () -> Unit,
+    onOpenAbout: () -> Unit,
 ) {
     val miuix = LocalMiuix.current
     var showLimitDialog by remember { mutableStateOf(false) }
+    var showPermissionDialog by remember { mutableStateOf(false) }
+    if (showPermissionDialog) {
+        PermissionCenterDialog(onDismiss = { showPermissionDialog = false })
+    }
     if (showLimitDialog) {
         HistoryLimitDialog(
             current = settings.patchHistoryLimit,
@@ -90,7 +103,8 @@ internal fun SettingsScreen(
         )
     }
     LazyColumn(
-        contentPadding = PaddingValues(top = 12.dp, bottom = 96.dp),
+        state = io.xpatch.ui.util.rememberPageScrollState(),
+        contentPadding = PaddingValues(top = 12.dp, bottom = io.xpatch.ui.util.rememberListBottomPadding(true)),
         verticalArrangement = Arrangement.spacedBy(if (miuix) 0.dp else 14.dp),
     ) {
         if (!miuix) {
@@ -123,6 +137,9 @@ internal fun SettingsScreen(
                         onRequest = onRequestShizuku,
                         onRecheck = onRecheckShizuku,
                     )
+                    SettingItem("权限管理", "查看与统一管理所需权限", arrow = true, onClick = {
+                        showPermissionDialog = true
+                    })
                 }
             }
             item {
@@ -191,7 +208,7 @@ internal fun SettingsScreen(
                     )
                 }
             }
-            item { AboutSection() }
+            item { MoreSection(onOpenDisclaimer = onOpenDisclaimer, onOpenAbout = onOpenAbout) }
         } else {
             item { Spacer(Modifier.size(12.dp)) }
             item {
@@ -224,6 +241,9 @@ internal fun SettingsScreen(
                         onRequest = onRequestShizuku,
                         onRecheck = onRecheckShizuku,
                     )
+                    SettingItem("权限管理", "查看与统一管理所需权限", arrow = true, onClick = {
+                        showPermissionDialog = true
+                    })
                 }
             }
             item {
@@ -288,7 +308,7 @@ internal fun SettingsScreen(
                     )
                 }
             }
-            item { AboutSection() }
+            item { MoreSection(onOpenDisclaimer = onOpenDisclaimer, onOpenAbout = onOpenAbout) }
             item { Spacer(Modifier.size(24.dp)) }
         }
     }
@@ -310,70 +330,132 @@ private fun MiuixSpinnerRow(
 }
 
 @Composable
-private fun AboutSection() {
-    val miuix = LocalMiuix.current
-    val secondary = if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
-    else MaterialTheme.colorScheme.onSurfaceVariant
-    val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
-    if (miuix) {
-        top.yukonga.miuix.kmp.basic.SmallTitle("关于")
+private fun MoreSection(
+    onOpenDisclaimer: () -> Unit,
+    onOpenAbout: () -> Unit,
+) {
+    val versionSummary = "XPatch v" + BuildConfig.VERSION_NAME + " · 免 Root LSP 管理器"
+    if (LocalMiuix.current) {
+        top.yukonga.miuix.kmp.basic.SmallTitle("其他")
         top.yukonga.miuix.kmp.basic.Card(
             modifier = Modifier
                 .padding(horizontal = 12.dp)
                 .padding(bottom = 12.dp),
         ) {
             top.yukonga.miuix.kmp.basic.BasicComponent(
-                title = "XPatch",
-                summary = "免 Root LSP 管理器 · v" + BuildConfig.VERSION_NAME,
+                title = "免责声明",
+                summary = "使用前请阅读并理解全部条款",
+                interactionSource = remember { MutableInteractionSource() },
+                modifier = Modifier.clickable { onOpenDisclaimer() },
+            )
+            top.yukonga.miuix.kmp.basic.BasicComponent(
+                title = "关于",
+                summary = versionSummary,
+                interactionSource = remember { MutableInteractionSource() },
+                modifier = Modifier.clickable { onOpenAbout() },
             )
         }
         return
     }
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(20.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainer)
-            .padding(horizontal = 20.dp, vertical = 22.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        Text("XPatch", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(4.dp))
-        Text("免 Root LSP 管理器", style = MaterialTheme.typography.bodySmall, color = secondary)
-        Spacer(Modifier.height(14.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            AboutPill("v" + BuildConfig.VERSION_NAME, primary)
-            AboutPill("Android 17", primary)
-            AboutPill("免 Root", primary)
-        }
-        Spacer(Modifier.height(16.dp))
-        Text(
-            "免 Root 的 LSP 模块管理器，兼容 Android 17。",
-            style = MaterialTheme.typography.labelSmall,
-            color = secondary,
-            textAlign = TextAlign.Center,
-        )
+    SettingGroup("其他") {
+        SettingItem("免责声明", "使用前请阅读并理解全部条款", arrow = true, onClick = {
+            onOpenDisclaimer()
+        })
+        SettingItem("关于", versionSummary, arrow = true, onClick = {
+            onOpenAbout()
+        })
     }
 }
 
 @Composable
-private fun AboutPill(text: String, color: androidx.compose.ui.graphics.Color) {
-    Text(
-        text,
-        style = MaterialTheme.typography.labelMedium,
-        color = color,
-        modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
-            .background(color.copy(alpha = 0.12f))
-            .padding(horizontal = 10.dp, vertical = 4.dp),
-    )
+private fun PermissionCenterDialog(onDismiss: () -> Unit) {
+    val context = LocalContext.current
+    val items = remember {
+        PermissionCenter.required(
+            context,
+            shizukuAvailable = ShizukuBridge.isAvailable(),
+            shizukuGranted = ShizukuBridge.hasPermission(),
+        )
+    }
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = "权限管理",
+        actions = listOf(DialogAction("知道了", onClick = onDismiss)),
+    ) {
+        items.forEach { item ->
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        item.title,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.Medium,
+                    )
+                    Text(
+                        item.reason,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (item.granted) {
+                    Text(
+                        "已授权",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else {
+                    TextButton(onClick = { openPermission(context, item) }) {
+                        Text(
+                            when (item.kind) {
+                                PermissionCenter.Kind.RUNTIME -> "申请"
+                                PermissionCenter.Kind.SHIZUKU -> "去授权"
+                                else -> "去设置"
+                            },
+                        )
+                    }
+                }
+            }
+        }
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "拒绝后如需再次授权，可前往系统设置统一开启，应用内不再逐项弹窗。",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Spacer(Modifier.height(8.dp))
+        TextButton(onClick = { PermissionCenter.openAppDetails(context) }) {
+            Text("前往系统设置")
+        }
+    }
+}
+
+private fun openPermission(context: Context, item: PermissionCenter.Item) {
+    when (item.kind) {
+        PermissionCenter.Kind.RUNTIME -> PermissionCenter.openAppDetails(context)
+
+        PermissionCenter.Kind.SHIZUKU -> if (ShizukuBridge.isAvailable()) {
+            ShizukuBridge.requestPermission { }
+        } else {
+            Toast.makeText(context, "未检测到 Shizuku", Toast.LENGTH_SHORT).show()
+        }
+
+        else -> when (item.id) {
+            PermissionCenter.Id.ALL_FILES -> PermissionCenter.openAllFiles(context)
+            PermissionCenter.Id.INSTALL -> PermissionCenter.openInstall(context)
+            else -> PermissionCenter.openAppDetails(context)
+        }
+    }
 }
 
 @Composable
 internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Unit) {
-    var expanded by remember(module.packageName, module.availableApiLevels) { mutableStateOf(false) }
-    val levels = ModuleApiStore.supportedLevels(module.availableApiLevels)
-    val selected = ModuleApiStore.resolveApi(current, levels, module.autoApiLevel)
+    var expanded by remember(module.packageName) { mutableStateOf(false) }
+    val levels = ModuleApiStore.ALL_LEVELS
+    val selected = ModuleApiStore.resolveApi(current, module.availableApiLevels, module.autoApiLevel)
     val miuix = LocalMiuix.current
     val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
     val surface = if (miuix) MiuixTheme.colorScheme.surface else MaterialTheme.colorScheme.surfaceContainer
@@ -381,7 +463,7 @@ internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Un
     Box {
         TextButton(
             onClick = { expanded = true },
-            enabled = levels.isNotEmpty(),
+            enabled = true,
             shape = RoundedCornerShape(10.dp),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
         ) {
@@ -460,7 +542,6 @@ private fun HistoryLimitDialog(
                 onValueChange = { text = limitDigits(it) },
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
-                label = { Text("保留条数") },
                 placeholder = { Text("1 - 500") },
                 shape = RoundedCornerShape(12.dp),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
