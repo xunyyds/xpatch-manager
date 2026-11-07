@@ -78,6 +78,7 @@ public class ModuleLoader {
             }
         }
         WrapperLoadPlan wrapperLoadPlanCreateWrapperLoadPlan = createWrapperLoadPlan(iResolveApiLevel);
+        String[] plannedWrappers = wrapperLoadPlanCreateWrapperLoadPlan.wrapperNames;
         StringBuilder sb = new StringBuilder("Loading module from ");
         sb.append(str);
         if (TextUtils.isEmpty(str2)) {
@@ -89,11 +90,10 @@ public class ModuleLoader {
         sb.append(", apiLevel=");
         sb.append(iResolveApiLevel);
         sb.append(", wrappers=");
-        sb.append(Arrays.toString(wrapperLoadPlanCreateWrapperLoadPlan.wrapperNames));
+        sb.append(Arrays.toString(plannedWrappers));
         XpHook.log0(TAG, sb.toString());
         try {
-            ClassLoader classLoaderCreateModuleClassLoader = createModuleClassLoader(str);
-            String[] unused = wrapperLoadPlanCreateWrapperLoadPlan.wrapperNames;
+            ClassLoader classLoaderCreateModuleClassLoader = createModuleClassLoader(str, plannedWrappers);
             XpHelper.setClassLoaderTrusted(classLoaderCreateModuleClassLoader);
             Method declaredMethod = classLoaderCreateModuleClassLoader.loadClass(WRAPPER_ENTRY_CLASS).getDeclaredMethod(WRAPPER_ENTRY_METHOD, String.class, ClassLoader.class);
             declaredMethod.setAccessible(true);
@@ -103,7 +103,7 @@ public class ModuleLoader {
             sb2.append(", apiLevel=");
             sb2.append(iResolveApiLevel);
             sb2.append(", wrappers=");
-            sb2.append(Arrays.toString(wrapperLoadPlanCreateWrapperLoadPlan.wrapperNames));
+            sb2.append(Arrays.toString(plannedWrappers));
             sb2.append(i > 0 ? ", source=request" : ", source=auto");
             XpHook.log0(TAG, sb2.toString());
         } catch (Throwable th) {
@@ -170,7 +170,7 @@ public class ModuleLoader {
         throw new NoSuchFieldException(str);
     }
 
-    private static ClassLoader createModuleClassLoader(String str) throws Exception {
+    private static ClassLoader createModuleClassLoader(String str, String[] wrapperNames) throws Exception {
         ArrayList arrayList = new ArrayList();
         ZipFile zipFile = new ZipFile(str);
         int i = 1;
@@ -215,7 +215,11 @@ public class ModuleLoader {
             byteBufferArr[i2] = ByteBuffer.wrap((byte[]) arrayList.get(i2));
         }
         String str2 = str + "!/lib/arm64-v8a/";
-        return new PathClassLoader(str, str2, new InMemoryDexClassLoader(new ByteBuffer[]{ByteBuffer.wrap(getWrapperDexBytes("xp89")), ByteBuffer.wrap(getWrapperDexBytes("xp100")), ByteBuffer.wrap(getWrapperDexBytes("xp101")), ByteBuffer.wrap(getWrapperDexBytes("xp102"))}, str2, ModuleLoader.class.getClassLoader()));
+        ByteBuffer[] wrapperBuffers = new ByteBuffer[wrapperNames.length];
+        for (int w = 0; w < wrapperNames.length; w++) {
+            wrapperBuffers[w] = ByteBuffer.wrap(getWrapperDexBytes(wrapperNames[w]));
+        }
+        return new PathClassLoader(str, str2, new InMemoryDexClassLoader(wrapperBuffers, str2, ModuleLoader.class.getClassLoader()));
     }
 
     private static byte[] readSelfEntryBytes(String str) throws Exception {
@@ -262,16 +266,18 @@ public class ModuleLoader {
     }
 
     private static WrapperLoadPlan createWrapperLoadPlan(int i) {
+        // 四个 wrapper dex 都声明同名类 io.xpatch.wrapper.WrapperBase，
+        // 同一 ClassLoader 内只能存在一个，因此必须按选择精确注入单个 wrapper。
         if (i < 100) {
             return new WrapperLoadPlan(new String[]{"xp89"});
         }
-        if (i == 100) {
-            return new WrapperLoadPlan(new String[]{"xp100", "xp89"});
-        }
         if (i == 101) {
-            return new WrapperLoadPlan(new String[]{"xp101", "xp89"});
+            return new WrapperLoadPlan(new String[]{"xp101"});
         }
-        return new WrapperLoadPlan(new String[]{"xp102"});
+        if (i > 101) {
+            return new WrapperLoadPlan(new String[]{"xp102"});
+        }
+        return new WrapperLoadPlan(new String[]{"xp100"});
     }
 
     private static ModuleApiInfo inspectModuleApiInfo(String str, String str2) {
