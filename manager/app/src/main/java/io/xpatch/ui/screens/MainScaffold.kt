@@ -819,6 +819,7 @@ fun MainScaffold(
                         onRefresh = {
                             scope.launch {
                                 homeRefreshing = true
+                                repository.invalidate()
                                 patchedApps = repository.loadPatchedApps()
                                 homeRefreshing = false
                                 token++
@@ -836,6 +837,7 @@ fun MainScaffold(
                         onRefresh = {
                             scope.launch {
                                 modulesRefreshing = true
+                                repository.invalidate()
                                 modules = repository.loadModules()
                                 modulesRefreshing = false
                                 token++
