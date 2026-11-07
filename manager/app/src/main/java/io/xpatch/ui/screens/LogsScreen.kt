@@ -119,13 +119,9 @@ internal fun LogsScreen(
         }
     }
 
-    // 应用名映射：只在出现新应用时才重新解析，集合没变就沿用旧表。
-    // 旧实现用 produceState(runtime.entries) 作为 key，key 一变表就回到空 Map，
-    // 等于每次刷新日志都要多跑一整轮 filterLogs（而且此时 labels 是空的）。
     var labels by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
     LaunchedEffect(runtime.entries) {
         val targets = runtime.entries.mapTo(LinkedHashSet()) { it.target }
-        // 结果一样时 mutableStateOf 的结构相等策略不会再触发重组。
         labels = withContext(Dispatchers.IO) {
             val cache = HashMap<String, String>(targets.size)
             targets.forEach { target -> cache[target] = labelOf(target) }
@@ -133,8 +129,6 @@ internal fun LogsScreen(
         }
     }
 
-    // 筛选 + 分组放到 Dispatchers.Default；组合期只读不写。
-    // 旧实现在组合体里回写 state.cachedBase，每得到一次新结果就要多走一遍整页重组。
     val computed by produceState(
         initialValue = state.cachedBase,
         runtime.entries,
@@ -156,14 +150,12 @@ internal fun LogsScreen(
                 timeOrder = state.timeOrder,
             )
         }
-        // 结果留在 LogsState 里，二次进入本页时可立即复用，不必等重新计算。
         if (state.cachedBase !== base) state.cachedBase = base
         value = base
     }
     val ready = computed ?: state.cachedBase
     val computing = computed == null && ready != null
 
-    // rows 只在筛选结果或视图模式变化时重建；buildRows 不再依赖整个 LogsState。
     val rows = remember(ready, state.view) {
         ready?.let { buildRows(it, state.view) }.orEmpty()
     }
@@ -174,8 +166,6 @@ internal fun LogsScreen(
     }
 
     val listState = if (state.tab == LogsTab.Runtime) state.runtimeList else state.operationsList
-    // 滚动时每帧都会重算这段判断，用 derivedStateOf 取代 snapshotFlow + 协程收集：
-    // 只有布尔结果翻转时才让上层重组，不再每帧唤醒一次收集协程。
     val atLatest by remember(listState) {
         derivedStateOf {
             val info = listState.layoutInfo
@@ -234,8 +224,6 @@ internal fun LogsScreen(
                 onOpenFilter = { filterOpen = true },
                 onExport = { option ->
                     menuOpen = false
-                    // 导出文本可能有上万行，build() 里的 joinToString 放后台线程算，
-                    // 避免点下菜单项时在主线程卡住一帧以上。
                     scope.launch {
                         val text = withContext(Dispatchers.Default) { option.build() }
                         onExport(option.fileName, text)
@@ -376,8 +364,6 @@ internal fun LogsScreen(
             )
         }
         clearTarget?.let { tab ->
-            // 清空范围文案要全量扫三遍日志做 distinct；记忆化后，
-            // 对话框开着期间的重组不再重复扫描上万条记录。
             val clearModel = remember(tab, runtime.entries, ready, operations) {
                 clearScope(tab, runtime, operations, ready)
             }
@@ -924,17 +910,13 @@ private fun ModuleHeaderRow(
     labelOf: (String) -> String,
     onOpen: () -> Unit,
 ) {
-    // labelOf 会查 PackageManager；模块名几乎都查不到，仍会留下一次失败缓存。
-    // 按分组 key 记忆化，滚动经过表头时不再重复查询。
     val title = if (group.framework) {
         LogLayer.Framework.label
     } else {
         remember(group.key) { labelOf(group.module) }
     }
-    // 副标题同样在组合期拼字符串，随分组一起缓存。
     val subtitle = remember(group.key, showTarget) {
         buildString {
-            // 框架层分组标题已经显示「框架层」，副标题不再重复打印 _framework。
             if (!group.framework) {
                 append(group.module)
                 append(" · ")
@@ -1025,9 +1007,6 @@ internal fun LogEntryItem(
     onToggle: () -> Unit,
     onCopy: () -> Unit,
 ) {
-    // 单行渲染是滚动时最热的一处：把纯派生的结果按条目 id 记忆化。
-    // 旧实现每次重组都要重新数一遍换行、扫一遍正文算截断，并且重建语义描述字符串。
-    // 用 id 而不是整个 entry 作 key，避免 equals 深比较长文本。
     val truncated = remember(entry.id) { summaryTruncated(entry) }
     val description = remember(entry.id, timeline, truncated) {
         buildString {

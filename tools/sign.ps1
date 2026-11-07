@@ -1,4 +1,3 @@
-# 对齐并签名 APK
 param(
     [Parameter(Mandatory = $true)][string]$In,
     [Parameter(Mandatory = $true)][string]$Out,

@@ -68,7 +68,6 @@ internal fun ModuleScopeScreen(
     onToggle: (AppInfo, Boolean) -> Unit,
 ) {
     val scope = scopeOf()
-    // 这里只需要一个计数：直接统计即可，不必每次重组都重建包名 Set 再做一次交集。
     val selectedCount = apps.count { it.packageName in scope }
     val miuix = LocalMiuix.current
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
@@ -154,8 +153,6 @@ internal fun AppScopeScreen(
     val enabledFlags = modules.associate { it.packageName to inScope(it) }
     val recommendedFlags = modules.associate { it.packageName to (app.packageName in it.recommendedApps) }
 
-    // 勾选后等开关动画完全播完（由 JellySwitch 的 onSettled 回调触发），
-    // 再让该行平滑前移并短暂高亮，避免生硬跳位。
     val settledState = remember { mutableStateOf(enabledFlags) }
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
@@ -164,9 +161,6 @@ internal fun AppScopeScreen(
     val onSwitchSettled: (String) -> Unit = { pkg ->
         pendingPackage = pkg
     }
-    // 动画播完后才把最新状态并入排序，触发 animateItem 的平滑位移。
-    // pendingPackage 只负责启动：立即清空并另起协程延时清除高亮，
-    // 避免把它作为本 effect 的 key 导致 effect 自取消、高亮卡住不消失。
     LaunchedEffect(pendingPackage) {
         val pkg = pendingPackage ?: return@LaunchedEffect
         pendingPackage = null
@@ -308,8 +302,6 @@ internal fun AppScopeScreen(
         } else if (listed.isEmpty()) {
             item { EmptyState("没有匹配的模块") }
         } else if (sort == 2) {
-            // 首字母排序：与「选择已安装的应用」一致，按字母分组并吸顶显示分组标题。
-            // 逆序时分组之间的顺序也要反转，与排序标签的 ↓ 保持一致。
             val groups = listed.groupBy { letterOf(it.label) }
                 .toList()
                 .sortedWith(compareBy({ if (it.first == "#") 1 else 0 }, { it.first }))

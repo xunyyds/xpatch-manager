@@ -74,9 +74,6 @@ internal fun LogModuleScreen(
     }
     val days = remember(entries) { daysOf(entries) }
     val counts = remember(entries) { levelCounts(entries) }
-    // 标题与副标题由 ModuleSummaryCard 自己渲染：原先这里算出来的 title/subtitle
-    // 从未被使用，其中 title 每次重组都会触发一次 labelOf（PackageManager 查询），
-    // 已直接去掉。labelOf 参数保留是为了不动 MainScaffold 的调用点。
 
     Column(Modifier.fillMaxSize()) {
         ModuleSummaryCard(
@@ -247,9 +244,6 @@ private fun ModuleLogList(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 120.dp),
     ) {
-        // 旧实现用 forEachIndexed + item(...) 注册条目：每次重组都要为全部日志
-        // 重新创建 LazyListScope 记录（上千条时是实打实的组合期开销），
-        // 而且条目本身无法复用。itemsIndexed 只注册一个区间，真正惰性化。
         itemsIndexed(entries, key = { _, entry -> entry.id }) { index, entry ->
             val previousDay = entries.getOrNull(index - 1)?.day
             if (entry.day != previousDay) {

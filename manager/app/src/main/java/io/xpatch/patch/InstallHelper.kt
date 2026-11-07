@@ -12,11 +12,9 @@ import java.security.cert.X509Certificate
 
 object InstallHelper {
 
-    /** 是否已获得「安装未知应用」权限。 */
     fun canInstall(context: Context): Boolean =
         context.packageManager.canRequestPackageInstalls()
 
-    /** 跳转到本应用的「安装未知应用」授权页。 */
     fun openInstallPermission(context: Context) {
         val intent = Intent(
             android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
@@ -25,7 +23,6 @@ object InstallHelper {
         runCatching { context.startActivity(intent) }
     }
 
-    /** 已安装应用的签名是否与内置证书一致；未安装返回 null。 */
     fun signatureMatches(context: Context, packageName: String, certDer: ByteArray? = null): Boolean? {
         val installed = runCatching {
             @Suppress("DEPRECATION")
@@ -44,7 +41,6 @@ object InstallHelper {
         }
     }
 
-    /** 调起系统安装器安装，会弹出安装确认界面。 */
     fun installWithSystem(context: Context, apk: File): Boolean {
         val uri = FileProvider.getUriForFile(context, "io.xpatch.files", apk)
         val intent = Intent(Intent.ACTION_VIEW)
@@ -56,10 +52,6 @@ object InstallHelper {
         return runCatching { context.startActivity(intent) }.isSuccess
     }
 
-    /**
-     * 调起系统「打开方式」选择器，交给用户选择用什么应用处理产物 APK。
-     * 与分享面板一致：列出所有能处理该 APK 的应用，而不是直接进安装器。
-     */
     fun openWith(context: Context, apk: File): Boolean {
         val uri = FileProvider.getUriForFile(context, "io.xpatch.files", apk)
         val intent = Intent(Intent.ACTION_VIEW)
@@ -76,9 +68,6 @@ object InstallHelper {
         }.isSuccess
     }
 
-    /**
-     * 以系统分享面板分享产物 APK，等价于「分享文件」。
-     */
     fun shareApk(context: Context, apk: File): Boolean {
         val uri = FileProvider.getUriForFile(context, "io.xpatch.files", apk)
         val intent = Intent(Intent.ACTION_SEND)
@@ -96,7 +85,6 @@ object InstallHelper {
         }.isSuccess
     }
 
-    /** 用"打开方式"选择器处理 SAF 文档。 */
     fun openDocument(context: Context, uri: String): Boolean {
         val intent = Intent(Intent.ACTION_VIEW)
             .setDataAndType(android.net.Uri.parse(uri), APK_MIME)

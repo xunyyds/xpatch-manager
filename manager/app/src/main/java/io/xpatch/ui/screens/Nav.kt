@@ -20,10 +20,6 @@ import java.io.File
 internal sealed interface PatchTarget {
     data class Installed(val app: AppInfo) : PatchTarget
 
-    /**
-     * 用户显式选择的外部安装包。必须直接使用该文件打包，
-     * 不允许回退到已安装应用的 APK（即使包名已安装）。
-     */
     data class FromFile(
         val file: File,
         val label: String,
@@ -116,4 +112,3 @@ internal class Navigator {
 
 @Composable
 internal fun rememberNavigator(): Navigator = remember { Navigator() }
-

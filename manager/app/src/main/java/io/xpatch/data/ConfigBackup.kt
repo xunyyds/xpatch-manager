@@ -4,10 +4,6 @@ import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 
-/**
- * 配置备份与迁移：作用域、模块 API 选择、签名默认项与基本设置导出为 JSON，
- * 便于换机或重装后恢复。
- */
 class ConfigBackup(private val context: Context) {
 
     private val scopeStore = ScopeStore(context)

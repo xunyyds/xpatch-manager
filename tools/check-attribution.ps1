@@ -6,12 +6,10 @@ param(
 $ErrorActionPreference = 'Stop'
 $warn = @()
 
-# 1) 必备文件
 foreach ($p in 'LICENSE', 'ACKNOWLEDGEMENTS.md') {
     if (-not (Test-Path (Join-Path $Root $p))) { $warn += "缺失: $p" }
 }
 
-# 2) 致谢清单必须覆盖的关键上游
 $ack = Join-Path $Root 'ACKNOWLEDGEMENTS.md'
 if (Test-Path $ack) {
     $text = Get-Content $ack -Raw
@@ -22,12 +20,10 @@ if (Test-Path $ack) {
     }
 }
 
-# 3) 不允许再出现"清痕"式脚本（来源问题用署名解决，不用改名解决）
 $scrubbers = Get-ChildItem (Join-Path $Root 'tools') -File -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match 'check-namespace|verify-assets' }
 foreach ($s in $scrubbers) { $warn += "存在清痕脚本（应删除）: tools/$($s.Name)" }
 
-# 4) 源码中不允许出现用于规避扫描的字符串拼接
 $src = Get-ChildItem $Root -Recurse -File -Include *.kt, *.java, *.ps1 |
     Where-Object { $_.FullName -notmatch '\\build\\|\\.git\\' }
 foreach ($f in $src) {
@@ -36,7 +32,6 @@ foreach ($f in $src) {
     }
 }
 
-# 5) 兼容签名材料：上游本就随包发布，**已声明出处即通过**；未声明才告警
 $sign = Join-Path $Root 'manager/app/src/main/assets/xp/sign'
 if (Test-Path $sign) {
     $ackText = if (Test-Path $ack) { Get-Content $ack -Raw } else { '' }

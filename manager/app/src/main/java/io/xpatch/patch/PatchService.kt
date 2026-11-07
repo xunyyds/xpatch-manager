@@ -44,7 +44,6 @@ class PatchService(private val context: Context) {
         buildFrom(copyInstalledApk(app), app.packageName, app.label, options, onLog, onProgress)
     }
 
-    /** 从已注入的应用包中取出内嵌的原始 APK（更新核心用）。 */
     suspend fun extractOriginalApk(app: AppInfo): File? = withContext(Dispatchers.IO) {
         val installed = copyInstalledApk(app)
         runCatching {
@@ -60,7 +59,6 @@ class PatchService(private val context: Context) {
         }.getOrNull()
     }
 
-    /** 定位已安装应用的 APK 路径，直接使用，不再整体复制。 */
     private fun copyInstalledApk(app: AppInfo): File {
         val currentPath = runCatching {
             @Suppress("DEPRECATION")
@@ -173,7 +171,6 @@ class PatchService(private val context: Context) {
         return target
     }
 
-    /** 输出目录内取不重名的目标文件：重名自动追加 (1)、(2)…，绝不覆盖旧产物。 */
     private fun uniqueTarget(dir: File, fileName: String): File {
         var candidate = File(dir, fileName)
         if (!candidate.exists()) return candidate
@@ -188,10 +185,6 @@ class PatchService(private val context: Context) {
         return candidate
     }
 
-    /**
-     * 产物目录：优先 Android/data/<pkg>/files/输出（所有文件管理器和第三方 App
-     * 都能直接读写），不可用时退回应用私有外部目录。
-     */
     fun outputDir(): File {
         val preferred = File(
             android.os.Environment.getExternalStorageDirectory(),
@@ -204,8 +197,6 @@ class PatchService(private val context: Context) {
     }
 
     private companion object {
-        // 顺序：本项目优先，其次历史命名空间，最后第三方补丁工具（NPatch / LSPatch）
-        // 的内嵌原始包布局，保证「更新核心」从任意来源产物都能取到原始 APK。
         val SOURCE_ENTRIES = listOf(
             "xp/source.apk",
             "fpa/source.apk",
@@ -216,5 +207,3 @@ class PatchService(private val context: Context) {
         )
     }
 }
-
-

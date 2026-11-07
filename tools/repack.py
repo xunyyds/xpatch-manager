@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """把构建好的 dex 原位写回目标 APK。
 
 原位替换：只改动目标条目的压缩数据与头部 CRC/长度，不重建整个 zip。
@@ -14,7 +13,6 @@ import sys
 import zlib
 from pathlib import Path
 
-
 def uleb(n: int) -> bytes:
     out = bytearray()
     while True:
@@ -25,7 +23,6 @@ def uleb(n: int) -> bytes:
         else:
             out.append(b)
             return bytes(out)
-
 
 def find_local_header(data: bytes, name: str):
     """在中央目录里定位条目，返回 (cd_pos, lho, 字段字典)。"""
@@ -44,7 +41,6 @@ def find_local_header(data: bytes, name: str):
                                     method=f[4], flags=f[3], name_len=name_len)
         pos += 46 + name_len + extra_len + comment_len
     raise SystemExit(f'APK 中找不到条目 {name}')
-
 
 def main() -> int:
     ap = argparse.ArgumentParser()
@@ -87,7 +83,6 @@ def main() -> int:
     dst.write_bytes(bytes(data))
     print(f'写入 {dst}（{len(data)} 字节，条目 {args.entry}: {len(payload)} 字节）')
     return 0
-
 
 if __name__ == '__main__':
     raise SystemExit(main())

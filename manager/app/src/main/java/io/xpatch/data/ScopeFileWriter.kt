@@ -8,15 +8,6 @@ import org.json.JSONObject
 import java.io.File
 import java.security.MessageDigest
 
-/**
- * 作用域同步：只以 Android/media/<pkg>/<sha1> 为唯一来源。
- *
- * media 目录在「所有文件访问」权限下可直接读写，无需特权通道；
- * Android/data 为应用私有目录，历史版本可能遗留旧作用域文件，
- * 而运行时按 media 优先、data 兜底读取，因此关闭全部模块时
- * 若发现遗留 data 份会一并清理（直删失败则以空作用域覆盖），
- * 避免已取消的模块经 data 兜底"复活"。
- */
 class ScopeFileWriter(private val context: Context) {
 
     data class Result(
@@ -47,17 +38,11 @@ class ScopeFileWriter(private val context: Context) {
             }
     }
 
-    /**
-     * [onEvent]：可选的进度/失败回调（由 UI 层传入，用于把结果写进操作日志）。
-     * sweep 失败常因 Shizuku UserService 冷启动未就绪，此处重试等待。
-     */
     fun syncAll(onEvent: (String) -> Unit = {}) {
         val scopeStore = ScopeStore(context)
         val targets = LinkedHashSet<String>()
         scopeStore.exportAll().values.forEach { targets.addAll(it) }
         val results = targets.map { target -> sync(target, scopeStore) }.toMutableList()
-        // 遗留清理：旧版本可能在 Android/data 留下作用域文件，而对应应用已无任何作用域，
-        // 不在 exportAll 的 targets 里会被跳过；这里对常见残留路径做一次全量清扫。
         runCatching { sweepLegacyScopes(results, onEvent) }
     }
 
@@ -68,7 +53,6 @@ class ScopeFileWriter(private val context: Context) {
             if (!dir.isDirectory) continue
             val legacy = File(dir, sha1(dir.name + ".scope"))
             if (!legacy.isFile) continue
-            // 与当前作用域一致的残留由 targets 路径处理；这里只处理"已无作用域"的应用。
             val hasScope = results.any { it.appPackage == dir.name && it.hasScope }
             if (hasScope) continue
             val staging = File(
@@ -79,7 +63,6 @@ class ScopeFileWriter(private val context: Context) {
             runCatching {
                 staging.parentFile?.mkdirs()
                 staging.writeText(JSONObject().put("scopes", JSONArray()).toString())
-                // Shizuku UserService 冷启动可能落后于本线程，重试等待最多 ~8 秒。
                 repeat(4) { attempt ->
                     if (!viaShizuku) {
                         viaShizuku = copyDataViaShizuku(staging, legacy)
@@ -110,8 +93,6 @@ class ScopeFileWriter(private val context: Context) {
     fun sync(appPackage: String): Result = sync(appPackage, ScopeStore(context))
 
     private fun sync(appPackage: String, scopeStore: ScopeStore): Result {
-        // 无感迁移：旧版把作用域写在 Android/media/<pkg>/ 根下，
-        // 新版统一放到 <pkg>/XPatch/，这里先迁移再按新路径读写。
         runCatching { migrateLegacyMedia(appPackage) }
         val modules = scopeStore.modulesOf(appPackage)
         val mediaFile = mediaScopeFile(appPackage)
@@ -126,10 +107,6 @@ class ScopeFileWriter(private val context: Context) {
             if (legacyDataFile.isFile) {
                 runCatching { legacyDataFile.delete() }
                 if (legacyDataFile.isFile) {
-                    // 直删失败（FUSE 权限限制），改走实测可靠的 cp 通道写入空作用域。
-                    // 注意：cp 源必须放在 media 下（shell uid 可读），
-                    // 应用私有 cacheDir 的文件 UserService 读不到，会导致整条命令失败。
-                    // UserService 冷启动可能超过绑定超时，这里重试最多 3 次。
                     val staging = File(mediaFile.parentFile, mediaFile.name + ".empty")
                     runCatching {
                         staging.parentFile?.mkdirs()
@@ -218,7 +195,6 @@ class ScopeFileWriter(private val context: Context) {
         return File(dir, sha1("$appPackage.scope"))
     }
 
-    /** 新位置：<pkg>/XPatch/<sha1>，与管理器自己的配置同目录，避免与其他工具混放。 */
     private fun mediaScopeFile(appPackage: String): File {
         val dir = File(
             File(Environment.getExternalStorageDirectory(), "Android/media/$appPackage"),
@@ -227,10 +203,6 @@ class ScopeFileWriter(private val context: Context) {
         return File(dir, sha1("$appPackage.scope"))
     }
 
-    /**
-     * 旧位置（历史版本写入）：Android/media/<pkg>/<sha1>。
-     * 检测到就迁移到 XPatch/ 子目录，迁移后删除旧文件，实现无感升级。
-     */
     private fun legacyMediaScopeFile(appPackage: String): File {
         val dir = File(Environment.getExternalStorageDirectory(), "Android/media/$appPackage")
         return File(dir, sha1("$appPackage.scope"))
@@ -246,7 +218,6 @@ class ScopeFileWriter(private val context: Context) {
                 legacy.copyTo(target, overwrite = true)
             }
         }
-        // 迁移完成（或目标已存在）后清理旧文件，避免两份并存导致状态歧义。
         if (target.isFile) runCatching { legacy.delete() }
     }
 

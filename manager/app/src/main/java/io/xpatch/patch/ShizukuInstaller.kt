@@ -7,10 +7,6 @@ import kotlinx.coroutines.withContext
 import java.io.File
 import kotlin.coroutines.resume
 
-/**
- * 基于 Shizuku 用户服务的静默安装（默认安装路径）。
- * 返回明确结果，由调用方负责反馈并兜底到系统安装器，绝不静默。
- */
 object ShizukuInstaller {
 
     sealed interface Result {
@@ -44,7 +40,6 @@ object ShizukuInstaller {
         ShizukuBridge.requestPermission { granted -> cont.resume(granted) }
     }
 
-    /** shell 读取不到应用私有目录，必要时把安装包复制到外部 files 目录。 */
     private fun readableByShell(context: Context, apk: File): File? {
         if (!apk.isFile) return null
         val private = apk.absolutePath.startsWith(context.cacheDir.absolutePath) ||

@@ -42,7 +42,6 @@ class ModuleApiStore(context: Context) {
 
         fun resolveApi(current: Int, available: List<Int>, autoLevel: Int): Int {
             val levels = supportedLevels(available)
-            // 自动选择及已失效的手动选择统一回退到当前支持的最高版本。
             return current.takeIf { it in levels } ?: levels.firstOrNull() ?: autoLevel
         }
 

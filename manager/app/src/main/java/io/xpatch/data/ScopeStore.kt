@@ -31,12 +31,9 @@ class ScopeStore(context: Context) {
         val all = scope()
         val current = all.getOrPut(modulePackage) { mutableSetOf() }
         val changed = if (inScope) current.add(appPackage) else current.remove(appPackage)
-        // 只在真正变化时写盘；取消勾选一个本来就不存在的项不落盘，
-        // 避免把该模块的作用域覆盖成空数组（等于清空配置）。
         if (changed) {
             reverseCache = null
             if (current.isEmpty()) {
-                // 没有剩余应用时移除该模块的键，而不是写一个空数组。
                 all.remove(modulePackage)
                 prefs.edit().remove(prefix(modulePackage)).apply()
             } else {
@@ -57,7 +54,6 @@ class ScopeStore(context: Context) {
         scope().mapValues { it.value.toSet() }
     }
 
-    /** 丢弃内存缓存，强制下次读取从 prefs 重新加载（跨进程或外部修改后调用）。 */
     fun invalidate() = synchronized(LOCK) {
         enabledCache = null
         scopeCache = null

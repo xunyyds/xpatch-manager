@@ -940,9 +940,6 @@ class ApkPatcher(private val context: Context) {
             LEGACY_DIR + "core.dex",
         )
 
-        // 本项目的早期命名空间。保留字面量以便识别并剥离旧版的注入层。
-        // 注意 NPatch / LSPatch 的实际布局把条目放在 assets/ 之下，必须一并识别，
-        // 否则已注入检测（isInjectedEntry）会漏判，剥离循环不会启动。
         const val LEGACY_DIR = "xpt/"
 
         val LEGACY_PREFIXES = listOf(

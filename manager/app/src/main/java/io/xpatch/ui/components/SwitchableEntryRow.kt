@@ -25,10 +25,6 @@ import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/**
- * 可开关的列表行：点击行本体触发 [onClick]（进入详情），
- * 只有点击右侧开关才会切换开关，两者互不干扰。
- */
 @Composable
 fun SwitchableEntryRow(
     icon: Drawable?,
@@ -122,8 +118,6 @@ fun SwitchableEntryRow(
             endExtra()
         }
         Spacer(Modifier.width(8.dp))
-        // 开关自带点击，事件在此被消费，不会冒泡到整行的 onClick。
-        // onSettled 在整段动画播完后回调，让调用方可以"先播动画、后移动"。
         JellySwitch(
             checked = checked,
             onCheckedChange = onCheckedChange,

@@ -57,8 +57,6 @@ import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-// 分段控件的选项是常量：提到文件级只分配一次，
-// 也让 SegmentedControl 在面板重组时可以直接跳过。
 private val LOG_LAYER_LABELS = LogLayer.entries.map { it.label }
 private val LOG_VIEW_LABELS = LogViewMode.entries.map { it.label }
 private val GROUP_ORDER_SHORTS = GroupOrder.entries.map { it.short }

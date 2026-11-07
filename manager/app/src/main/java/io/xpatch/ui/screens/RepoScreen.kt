@@ -101,27 +101,15 @@ private val RepoSortLabels = listOf(
     "创建时间", "版本号", "作用域数量", "包名 A-Z",
 )
 
-/**
- * 某个包在本机的安装信息。
- * 由 MainScaffold 在 IO 线程一次性批量取出，组合期只做 Map 查表。
- */
 internal data class RepoInstalledApp(
     val versionName: String?,
     val versionCode: Long?,
     val lastUpdateTime: Long,
 )
 
-/**
- * 仓库页的安装态快照：包名 → 安装信息 + 下载缓存命中情况 + 角标数量。
- *
- * 0.1.3 的卡顿主要来自组合期逐行调用 PackageManager / 解析 repo-cache.json：
- * 1290 个模块 × 每行多次 IPC + 磁盘解析，每次重组都要重跑一遍。
- * 现在快照在 IO 线程构建，页面只做不可变数据查表。
- */
 internal data class RepoInstallSnapshot(
     val installed: Map<String, RepoInstalledApp> = emptyMap(),
     val cache: RepoStore.CacheSnapshot = RepoStore.CacheSnapshot.Empty,
-    /** 已下载但本机未安装同版本的模块数（下载图标角标）。 */
     val badge: Int = 0,
 ) {
     fun versionNameOf(pkg: String): String? = installed[pkg]?.versionName
@@ -137,7 +125,6 @@ internal data class RepoInstallSnapshot(
     }
 }
 
-/** 模块状态：0 已安装 · 1 可更新 · 2 已下载 · 3 未安装（与筛选面板的口径一致）。 */
 private fun statusOf(module: RepoStore.RepoModule, snapshot: RepoInstallSnapshot): Int {
     val installed = snapshot.versionNameOf(module.packageName)
     if (installed == null) return if (snapshot.isCached(module)) 2 else 3
@@ -146,10 +133,6 @@ private fun statusOf(module: RepoStore.RepoModule, snapshot: RepoInstallSnapshot
     return if (installed == module.version) 0 else 1
 }
 
-/**
- * 过滤 + 排序的全部输入。
- * 作为 produceState 的 key：任一输入变化才重算，纯重组不会重复计算。
- */
 private data class RepoQuery(
     val modules: List<RepoStore.RepoModule>,
     val query: String,
@@ -165,10 +148,6 @@ private data class RepoQuery(
     val snapshot: RepoInstallSnapshot,
 )
 
-/**
- * README 全文搜索缓存（容量 300，LRU）。
- * 只在后台协程里访问并加锁，绝不在组合期读取。
- */
 private class ReadmeTextCache(private val maxSize: Int = 300) {
     private val map = object : LinkedHashMap<String, String>(64, 0.75f, true) {
         override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean =
@@ -184,21 +163,12 @@ private class ReadmeTextCache(private val maxSize: Int = 300) {
     }
 }
 
-/**
- * 过滤 + 排序。纯计算，调用方必须在后台线程执行。
- *
- * 分三步，避免主线程任何重活：
- *  1. Default 线程：非文本筛选 + 基本信息匹配；
- *  2. IO 线程：仅对「基本信息没命中、开了全文搜索」的模块读 README，逐条检查取消信号；
- *  3. Default 线程：合并 + 排序。
- */
 private suspend fun computeOrdered(
     input: RepoQuery,
     readmeCache: ReadmeTextCache,
     readmeText: (String) -> String?,
 ): List<RepoStore.RepoModule> {
     val lowered = input.query.trim().lowercase()
-    // 时间截点提到循环外：原来每个模块都算一次 System.currentTimeMillis()。
     val cutoff = if (input.recentDays > 0) {
         System.currentTimeMillis() - input.recentDays * 86_400_000L
     } else {
@@ -236,8 +206,6 @@ private suspend fun computeOrdered(
     }
 
     if (readmeCandidates.isNotEmpty()) {
-        // README 读盘放 IO 线程；输入变化时 produceState 会取消上一次计算，
-        // 这里逐条 ensureActive() 让取消立刻生效（原实现是主线程逐条读盘 + lowercase）。
         val hits = withContext(Dispatchers.IO) {
             val out = ArrayList<RepoStore.RepoModule>(readmeCandidates.size)
             for (module in readmeCandidates) {
@@ -258,7 +226,6 @@ private fun sortModules(
     input: RepoQuery,
 ): List<RepoStore.RepoModule> {
     if (list.size < 2) return list
-    // 预先把小写名算一次：比较次数是 O(n log n)，逐次 lowercase 会产生上万次临时字符串。
     val lowerNames = HashMap<String, String>(list.size * 2)
     for (module in list) lowerNames[module.packageName] = module.name.lowercase()
     fun nameOf(module: RepoStore.RepoModule): String = lowerNames[module.packageName] ?: module.name
@@ -327,7 +294,6 @@ internal fun RepoPageScreen(
         }
     }
 
-    // 收纳动画：飞行物从点击位置沿弧线飞入右上角下载图标，落地时图标弹跳。
     LaunchedEffect(flyStart) {
         val start = flyStart ?: return@LaunchedEffect
         val end = downloadIconCenter ?: return@LaunchedEffect
@@ -338,18 +304,13 @@ internal fun RepoPageScreen(
         iconPulse.animateTo(1f, tween(200, easing = FastOutSlowInEasing))
     }
 
-    // 输入防抖：搜索框每次击键都会写 query，延迟 160ms 后再参与过滤/排序，
-    // 避免逐键对 1000+ 模块重算（README 全文模式下每次重算还要读盘）。
     val debouncedQuery by produceState(initialValue = query, query) {
         delay(160)
         value = query
     }
 
-    // README 全文搜索缓存：只在后台协程里访问（内部加锁），组合期不读盘。
     val readmeCache = remember { ReadmeTextCache() }
 
-    // 过滤 + 排序：key 覆盖全部筛选输入，输入不变就完全跳过；
-    // 计算在 Default 线程，README 读盘在 IO 线程，输入变化时上一次计算会被取消。
     val repoQuery = RepoQuery(
         modules = modules,
         query = debouncedQuery,
@@ -364,7 +325,6 @@ internal fun RepoPageScreen(
         scopeTarget = scopeTarget,
         snapshot = snapshot,
     )
-    // 首帧先用未过滤列表占位，避免页面刚进入时闪一下「没有符合筛选条件的模块」。
     val ordered by produceState(initialValue = modules, repoQuery) {
         value = withContext(Dispatchers.Default) {
             computeOrdered(repoQuery, readmeCache, readmeText)
@@ -398,8 +358,6 @@ internal fun RepoPageScreen(
                     },
             ) {
                 if (downloadingPkg != null) {
-                    // 进度只在独立的绘制作用域里读取：进度变化只重绘进度圈，
-                    // 不会让 RepoPageScreen（含整个列表）重组。
                     DownloadProgressRing(downloadProgress)
                 }
                 IconButton(onClick = onOpenDownloads) {
@@ -555,7 +513,6 @@ internal fun RepoPageScreen(
                     else -> items(ordered, key = { it.packageName }) { module ->
                         RepoModuleRow(
                             module = module,
-                            // 安装态全部来自快照（不可变数据），组合期不再查 PackageManager。
                             installedVersion = snapshot.versionNameOf(module.packageName),
                             cached = snapshot.isCached(module),
                             downloading = downloadingPkg == module.packageName,
@@ -572,7 +529,6 @@ internal fun RepoPageScreen(
         }
     }
 
-    // 飞行物层：从点击位置沿弧线飞向右上角下载图标
     Box(
         Modifier
             .fillMaxSize()
@@ -607,11 +563,6 @@ internal fun RepoPageScreen(
     }
 }
 
-/**
- * 下载进度圈。
- * progress 用 lambda 传入，读取发生在 CircularProgressIndicator 的绘制阶段：
- * 下载进度变化只重绘这个圈，不会连带整个仓库列表重组。
- */
 @Composable
 private fun DownloadProgressRing(progress: () -> Int) {
     CircularProgressIndicator(
@@ -632,7 +583,6 @@ private fun ScopePickerDialog(
     var options by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        // 枚举已安装应用（几百个 + loadLabel）开销不小，放 IO 线程，别卡住打开面板的点击。
         options = withContext(Dispatchers.IO) {
             runCatching {
                 @Suppress("DEPRECATION")
@@ -936,7 +886,6 @@ internal fun DownloadsScreen(
     onOpenRepo: () -> Unit,
     onOpenDetail: (RepoStore.RepoModule) -> Unit,
 ) {
-    // 包名 → 模块：避免每行都对 1290 条模块做一次线性查找。
     val modulesByPackage = remember(modules) { modules.associateBy { it.packageName } }
     var confirmClear by remember { mutableStateOf(false) }
     if (confirmClear) {
@@ -989,7 +938,6 @@ internal fun DownloadsScreen(
             } else {
                 items(entries, key = { it.packageName }) { entry ->
                     val module = modulesByPackage[entry.packageName]
-                    // 安装态来自快照，不再逐行调 PackageManager。
                     val installed = snapshot.versionNameOf(entry.packageName)
                     val code = snapshot.versionCodeOf(entry.packageName)
                     val outdated = module != null && when {
@@ -1161,14 +1109,11 @@ internal fun RepoDetailScreen(
                             settings.loadsImagesAutomatically = true
                             isVerticalScrollBarEnabled = false
                             setBackgroundColor(Color.Transparent.toArgb())
-                            // 首次加载交给 factory；tag 记住已加载内容，update 里据此判断是否需要重载。
                             tag = html
                             loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
                         }
                     },
                     update = { webView ->
-                        // 原来的 update 每次重组都 loadDataWithBaseURL：重新解析 HTML + 重新布局，
-                        // 在 verticalScroll 里会反复触发测量，是详情页卡顿的来源。
                         if (webView.tag != html) {
                             webView.tag = html
                             webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
@@ -1177,8 +1122,6 @@ internal fun RepoDetailScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 20.dp)
-                        // 外层是 verticalScroll，无界高度会让 WebView 反复测量/布局：
-                        // 给一个下限 + 上限，超出部分由 WebView 内部滚动（JS 关闭，无法用 evaluateJavascript 测高）。
                         .heightIn(min = 96.dp, max = 520.dp),
                 )
             }

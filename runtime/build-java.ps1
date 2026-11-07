@@ -1,12 +1,3 @@
-# 构建 Java 版运行时 dex：javac 编译 java/（stub 免入 dex），apktool 组装 smali 桥接类，d8 合并
-#
-# 依赖环境变量：
-#   APKTOOL_JAR            apktool 3.x 的 jar 路径
-#   ANDROID_JAR            SDK 平台里的 android.jar
-#   ANDROID_BUILD_TOOLS    build-tools 目录（提供 aapt2 / d8）
-#
-# java/ 里无法编译的类（依赖 android.jar 隐藏签名）保留为 smali/ 中的桥接类：
-#   io/xpatch/bridge/XResourcesSuperClass、XTypedArraySuperClass、FUtils
 param(
     [string]$SmaliRoot = (Join-Path $PSScriptRoot 'smali')
 )

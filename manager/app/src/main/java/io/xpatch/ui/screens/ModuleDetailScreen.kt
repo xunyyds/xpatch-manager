@@ -25,9 +25,6 @@ import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
-/**
- * 模块详情：展示模块简介、全部元信息，并可直接切换该模块对该应用的作用域开关。
- */
 @Composable
 internal fun ModuleDetailScreen(
     module: ModuleInfo,

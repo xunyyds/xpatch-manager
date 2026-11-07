@@ -72,10 +72,6 @@ internal fun PickerScreen(
         )
     }
 
-    // 过滤 / 排序 / 分组只在条件变化时算一次。
-    // 原实现在组合体里每帧都跑一遍，而下面的字母索引条又直接读了
-    // listState.firstVisibleItemIndex —— 滚动每经过一项都会让整个 PickerScreen
-    // 重组，等于把几百个应用重新过滤+排序+分组一次。
     val ordered = remember(apps, includeSystem, query, sortId, reversed) {
         apps
             .filter { includeSystem || !it.isSystem }
@@ -180,8 +176,6 @@ internal fun PickerScreen(
                     }
                 }
                 if (letterHeaders.isNotEmpty()) {
-                    // 派生当前高亮字母：只有字母真的换了才让上层重组，
-                    // 不再依赖 firstVisibleItemIndex 的每一次变化。
                     val activeLetter by remember(letterHeaders) {
                         derivedStateOf {
                             letterHeaders.lastOrNull { it.second <= listState.firstVisibleItemIndex }?.first

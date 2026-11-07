@@ -382,10 +382,6 @@ fun PulsingDots(
         ),
         label = "phase",
     )
-    // 三个点画在同一张 Canvas 里，phase 在绘制期读取：
-    // 原来的写法在组合期读 phase.value，每帧都会重组 PulsingDots 并重新测量/布局 3 个 Box
-    // （点动画时实测每帧 4 个组合节点 + 1 次测量），放在列表行/BusyRow 里会持续吃掉帧预算。
-    // 改成绘制期读取后只剩一次 draw 失效，视觉（三个点、间距、透明度曲线）完全一致。
     Canvas(
         modifier = modifier.size(width = dotSize * 3 + spacing * 2, height = dotSize),
     ) {

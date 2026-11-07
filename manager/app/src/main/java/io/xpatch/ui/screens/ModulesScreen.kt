@@ -40,7 +40,6 @@ internal fun ModulesScreen(
     onRefresh: () -> Unit,
 ) {
     val miuix = LocalMiuix.current
-    // 搜索过滤只在输入或模块列表变化时算一次，避免无关重组时重复遍历。
     val filtered = remember(modules, query) {
         if (query.isBlank()) modules else modules.filter {
             it.label.contains(query, true) || it.packageName.contains(query, true)

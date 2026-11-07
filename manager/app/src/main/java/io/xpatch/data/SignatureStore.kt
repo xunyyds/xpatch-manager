@@ -5,11 +5,6 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
-/**
- * 签名配置：内置 XPatch（默认）与 FPA / NPatch（LSPatch）兼容签名及用户自定义。
- * 兼容签名的密钥随应用打包在 assets/xp/sign/<id>/ 下（key.pk8 + cert.der），
- * 用于对旧框架签过的目标做覆盖安装；自定义配置把用户选择的密钥库复制到 filesDir 并保存口令。
- */
 class SignatureStore(private val context: Context) {
 
     enum class Kind { BUILTIN, CUSTOM }
@@ -63,7 +58,6 @@ class SignatureStore(private val context: Context) {
 
     fun setDefaultProfile(id: String) = prefs.edit().putString(KEY_DEFAULT, id).apply()
 
-    /** 读取该签名配置的证书（DER），用于安装前比对。自定义配置返回 null。 */
     fun certificateBytes(profile: Profile): ByteArray? = runCatching {
         if (profile.kind != Kind.BUILTIN) return null
         context.assets.open(certAssetPath(profile)).use { it.readBytes() }
@@ -79,7 +73,6 @@ class SignatureStore(private val context: Context) {
         return if (id == BUILTIN_XPATCH) "xp/key.pk8" else "xp/sign/$id/key.pk8"
     }
 
-    /** 该内置签名的密钥与证书是否都在 assets 中存在，缺失的配置不出现在列表里。 */
     private fun isBuiltinAvailable(id: String): Boolean = runCatching {
         val profile = Profile(id = id, name = id, kind = Kind.BUILTIN, builtinId = id)
         context.assets.open(keyAssetPath(profile)).close()
@@ -156,7 +149,6 @@ class SignatureStore(private val context: Context) {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_DEFAULT = "default"
 
-        /** 内置 XPatch 签名的 id：首帧默认值需要它，故对外可见。 */
         const val BUILTIN_XPATCH = "xpatch"
     }
 }
