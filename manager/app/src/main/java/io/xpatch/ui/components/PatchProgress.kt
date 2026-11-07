@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -38,6 +39,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.LocalMiuix
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -242,7 +244,12 @@ private fun TypewriterLogs(
         state = listState,
         modifier = Modifier
             .fillMaxWidth()
-            .height(188.dp)
+            .heightIn(
+                min = 140.dp,
+                max = (androidx.compose.ui.platform.LocalConfiguration.current.screenHeightDp * 0.4f)
+                    .roundToInt()
+                    .dp,
+            )
             .clip(RoundedCornerShape(10.dp))
             .background(secondary.copy(alpha = 0.08f)),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),

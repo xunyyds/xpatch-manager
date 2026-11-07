@@ -23,11 +23,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.LocalMiuix
+import kotlin.math.roundToInt
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal data class DialogAction(
@@ -74,6 +76,9 @@ internal fun XPatchDialog(
     }
     val primary = MaterialTheme.colorScheme.primary
     val error = MaterialTheme.colorScheme.error
+    val configuration = LocalConfiguration.current
+    val dialogMaxWidth = (configuration.screenWidthDp * 0.92f).roundToInt().coerceAtMost(480)
+    val dialogMaxContentHeight = (configuration.screenHeightDp * 0.6f).roundToInt()
 
     Dialog(
         onDismissRequest = { if (dismissible) onDismiss() },
@@ -85,9 +90,9 @@ internal fun XPatchDialog(
     ) {
         Column(
             Modifier
-                .widthIn(max = 360.dp)
+                .widthIn(max = dialogMaxWidth.dp)
                 .fillMaxWidth()
-                .padding(horizontal = 28.dp)
+                .padding(horizontal = 20.dp)
                 .clip(RoundedCornerShape(28.dp))
                 .background(MaterialTheme.colorScheme.surface),
         ) {
@@ -100,7 +105,7 @@ internal fun XPatchDialog(
             )
             Column(
                 Modifier
-                    .heightIn(max = 420.dp)
+                    .heightIn(max = dialogMaxContentHeight.dp)
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 24.dp),
             ) {
