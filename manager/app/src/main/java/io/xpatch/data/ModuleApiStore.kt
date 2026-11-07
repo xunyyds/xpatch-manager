@@ -41,15 +41,12 @@ class ModuleApiStore(context: Context) {
             available.filter { it in ModuleApiInspector.WRAPPER_LEVELS }.distinct().sortedDescending()
 
         fun resolveApi(current: Int, available: List<Int>, autoLevel: Int): Int {
-            if (current != AUTO && current in ModuleApiInspector.WRAPPER_LEVELS) return current
             val levels = supportedLevels(available)
-            return levels.firstOrNull() ?: autoLevel
+            return current.takeIf { levels.contains(it) } ?: levels.firstOrNull() ?: autoLevel
         }
-
-        val ALL_LEVELS: List<Int> = ModuleApiInspector.WRAPPER_LEVELS.sortedDescending()
 
         fun optionsFor(available: List<Int>, autoLevel: Int): List<Pair<Int, String>> =
             listOf(AUTO to label(AUTO, resolveApi(AUTO, available, autoLevel))) +
-                ALL_LEVELS.map { it to ModuleApiInspector.label(it) }
+                supportedLevels(available).map { it to ModuleApiInspector.label(it) }
     }
 }

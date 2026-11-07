@@ -453,8 +453,8 @@ private fun openPermission(context: Context, item: PermissionCenter.Item) {
 
 @Composable
 internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Unit) {
-    var expanded by remember(module.packageName) { mutableStateOf(false) }
-    val levels = ModuleApiStore.ALL_LEVELS
+    var expanded by remember(module.packageName, module.availableApiLevels) { mutableStateOf(false) }
+    val levels = ModuleApiStore.supportedLevels(module.availableApiLevels)
     val selected = ModuleApiStore.resolveApi(current, module.availableApiLevels, module.autoApiLevel)
     val miuix = LocalMiuix.current
     val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
@@ -463,7 +463,7 @@ internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Un
     Box {
         TextButton(
             onClick = { expanded = true },
-            enabled = true,
+            enabled = levels.isNotEmpty(),
             shape = RoundedCornerShape(10.dp),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
         ) {

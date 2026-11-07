@@ -77,7 +77,17 @@ internal fun ModuleScopeScreen(
         )
     }
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { ModuleScopeHeader(module, selectedCount) }
+        item {
+            ModuleHeader(
+                module = module,
+                metaLine = moduleMetaLine(
+                    "v" + module.versionName,
+                    moduleTypeText(module),
+                    "API " + module.apiLevel,
+                    "已选择 $selectedCount 个应用",
+                ),
+            )
+        }
         item { GroupHeader("应用") }
         if (apps.isEmpty()) {
             item { EmptyState("还没有已打包的应用\n先到首页「添加应用」完成一次打包\n模块只能作用于已打包应用") }
@@ -109,6 +119,10 @@ internal fun ModuleScopeScreen(
                 )
                 RowDivider()
             }
+        }
+        item { ModuleInfoCard(module) }
+        if (module.description.isNotBlank()) {
+            item { ModuleIntro(module) }
         }
     }
 }
@@ -550,64 +564,5 @@ internal fun ScopeHeader(title: String, subtitle: String, countText: String) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
         )
-    }
-}
-
-@Composable
-private fun ModuleScopeHeader(module: ModuleInfo, selectedCount: Int) {
-    val miuix = LocalMiuix.current
-    val hint = if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
-    else MaterialTheme.colorScheme.onSurfaceVariant
-    val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
-    val typeText = when {
-        module.modernModule && module.legacyModule -> "新版 + 旧版模块"
-        module.modernModule -> "新版模块"
-        module.legacyModule -> "旧版模块"
-        else -> "未知类型"
-    }
-    val metaLine = buildList {
-        if (module.versionName.isNotBlank()) add("v" + module.versionName)
-        add(typeText)
-        if (module.apiLevel > 0) add("API " + module.apiLevel)
-        add("已选择 " + selectedCount + " 个应用")
-    }.joinToString(" · ")
-    Column(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 20.dp, vertical = 12.dp),
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AppIcon(module.icon, size = 54)
-            Spacer(Modifier.width(14.dp))
-            Column(Modifier.weight(1f)) {
-                Text(
-                    module.label,
-                    style = if (miuix) MiuixTheme.textStyles.title3 else MaterialTheme.typography.headlineSmall,
-                    fontWeight = FontWeight.SemiBold,
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    module.packageName,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = hint,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-        Spacer(Modifier.height(8.dp))
-        Text(
-            metaLine,
-            style = MaterialTheme.typography.labelMedium,
-            color = primary,
-        )
-        if (module.description.isNotBlank()) {
-            Spacer(Modifier.height(10.dp))
-            Text(
-                module.description,
-                style = if (miuix) MiuixTheme.textStyles.footnote1 else MaterialTheme.typography.bodySmall,
-                color = hint,
-            )
-        }
     }
 }

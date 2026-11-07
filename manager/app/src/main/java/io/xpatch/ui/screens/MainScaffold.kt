@@ -518,6 +518,14 @@ fun MainScaffold(
                 if (access && (logsRuntime.snapshot == null || !hadAccess) && !logsRefreshing) {
                     scope.launch { loadRuntimeLogs() }
                 }
+                // 安装/卸载发生在系统侧，回到前台时重建快照，内核版本徽标才会实时刷新
+                scope.launch {
+                    repository.invalidate()
+                    val refreshed = repository.loadPatchedApps()
+                    withContext(Dispatchers.Main) {
+                        patchedApps = refreshed
+                    }
+                }
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
