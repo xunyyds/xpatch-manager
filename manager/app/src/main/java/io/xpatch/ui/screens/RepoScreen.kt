@@ -2,11 +2,15 @@ package io.xpatch.ui.screens
 
 import android.content.pm.PackageManager
 import android.webkit.WebView
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -17,7 +21,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -26,6 +29,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.Sort
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
@@ -35,6 +39,7 @@ import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
@@ -51,18 +56,22 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import io.xpatch.data.RepoStore
+import io.xpatch.ui.components.BottomSheet
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.PulsingDots
 import io.xpatch.ui.components.SearchField
+import io.xpatch.ui.components.SegmentedControl
+import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatTime
 
@@ -74,10 +83,13 @@ internal fun RepoPageScreen(
     modules: List<RepoStore.RepoModule>,
     busy: Boolean,
     installedVersion: (String) -> String?,
+    installedVersionCode: (String) -> Long?,
     installedTime: (String) -> Long?,
     isCached: (RepoStore.RepoModule) -> Boolean,
     readmeText: (String) -> String?,
     downloadedBadge: Int,
+    downloadingPkg: String?,
+    downloadProgress: Int,
     onOpenDownloads: () -> Unit,
     onRefresh: () -> Unit,
     onOpenDetail: (RepoStore.RepoModule) -> Unit,
@@ -96,6 +108,7 @@ internal fun RepoPageScreen(
     var statuses by rememberSaveable { mutableStateOf(emptySet<Int>()) }
     var authorFilter by rememberSaveable { mutableStateOf<String?>(null) }
     var scopeTarget by rememberSaveable { mutableStateOf<String?>(null) }
+    var filterSheet by remember { mutableStateOf(false) }
     var scopePicker by remember { mutableStateOf(false) }
 
     val readmeCache = remember {
@@ -106,12 +119,10 @@ internal fun RepoPageScreen(
 
     fun statusOf(module: RepoStore.RepoModule): Int {
         val installed = installedVersion(module.packageName)
-        return when {
-            installed != null && installed == module.version -> 0
-            installed != null -> 1
-            isCached(module) -> 2
-            else -> 3
-        }
+        if (installed == null) return if (isCached(module)) 2 else 3
+        val code = installedVersionCode(module.packageName)
+        if (code != null && module.versionCode > 0) return if (code == module.versionCode) 0 else 1
+        return if (installed == module.version) 0 else 1
     }
 
     val lowered = query.trim().lowercase()
@@ -162,12 +173,12 @@ internal fun RepoPageScreen(
         7 -> filtered.sortedByDescending { it.scope89.size + it.scope100.size }
         8 -> filtered.sortedBy { it.packageName }
         else -> filtered.sortedWith(
-            compareByDescending<RepoStore.RepoModule> {
-                val installed = installedVersion(it.packageName)
-                installed != null && installed != it.version
-            }.thenBy { it.name.lowercase() },
+            compareByDescending<RepoStore.RepoModule> { statusOf(it) == 1 }.thenBy { it.name.lowercase() },
         )
     }
+
+    val filtersActive = chip89 || chip100 || chipLsp || recentDays > 0 || statuses.isNotEmpty() ||
+        authorFilter != null || scopeTarget != null || broadSearch
 
     Column(Modifier.fillMaxSize()) {
         Row(
@@ -200,88 +211,46 @@ internal fun RepoPageScreen(
         }
         SearchField(query, { query = it }, "搜索 模块 / 包名 / 作者 / 简介")
 
-        LazyRow(
+        Row(
             Modifier
                 .fillMaxWidth()
-                .padding(vertical = 4.dp),
-            contentPadding = PaddingValues(horizontal = 16.dp),
+                .padding(horizontal = 16.dp, vertical = 4.dp),
             horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
-            item {
-                FilterChip(selected = chip89, onClick = { chip89 = !chip89 }, label = { Text("XP89") })
-            }
-            item {
-                FilterChip(selected = chip100, onClick = { chip100 = !chip100 }, label = { Text("XP100") })
-            }
-            item {
-                FilterChip(selected = chipLsp, onClick = { chipLsp = !chipLsp }, label = { Text("LSPatch") })
-            }
-            item {
-                FilterChip(
-                    selected = recentDays == 7,
-                    onClick = { recentDays = if (recentDays == 7) 0 else 7 },
-                    label = { Text("近7天更新") },
-                )
-            }
-            item {
-                FilterChip(
-                    selected = recentDays == 30,
-                    onClick = { recentDays = if (recentDays == 30) 0 else 30 },
-                    label = { Text("近30天更新") },
-                )
-            }
-            listOf(0 to "已安装", 1 to "可更新", 2 to "已下载", 3 to "未安装").forEach { (code, label) ->
-                item(key = "status$code") {
-                    FilterChip(
-                        selected = code in statuses,
-                        onClick = {
-                            statuses = if (code in statuses) statuses - code else statuses + code
-                        },
-                        label = { Text(label) },
+            Box {
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(12.dp))
+                        .clickable { filterSheet = true }
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Rounded.Tune,
+                        "筛选",
+                        Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.primary,
                     )
+                    Spacer(Modifier.width(5.dp))
+                    Text(
+                        "筛选",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.primary,
+                        maxLines = 1,
+                        softWrap = false,
+                    )
+                    if (filtersActive) {
+                        Spacer(Modifier.width(4.dp))
+                        Box(
+                            Modifier
+                                .size(6.dp)
+                                .background(MaterialTheme.colorScheme.primary, CircleShape),
+                        )
+                    }
                 }
             }
-            item(key = "scope") {
-                FilterChip(
-                    selected = scopeTarget != null,
-                    onClick = {
-                        if (scopeTarget != null) scopeTarget = null else scopePicker = true
-                    },
-                    label = { Text(scopeTarget?.let { "作用域: " + scopeLabel(it) + " ✕" } ?: "作用于应用") },
-                )
-            }
-            item(key = "broad") {
-                FilterChip(
-                    selected = broadSearch,
-                    onClick = { broadSearch = !broadSearch },
-                    label = { Text("全文检索") },
-                )
-            }
-        }
-
-        if (authorFilter != null) {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 2.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                FilterChip(
-                    selected = true,
-                    onClick = { authorFilter = null },
-                    label = { Text("作者: " + authorFilter + " ✕", maxLines = 1, softWrap = false) },
-                )
-            }
-        }
-
-        Box {
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 4.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
+            Box {
                 Row(
                     Modifier
                         .clip(RoundedCornerShape(12.dp))
@@ -304,19 +273,38 @@ internal fun RepoPageScreen(
                         softWrap = false,
                     )
                 }
-                Spacer(Modifier.weight(1f))
-            }
-            DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                sortLabels.forEachIndexed { index, label ->
-                    DropdownMenuItem(
-                        text = { Text(label) },
-                        onClick = {
-                            sort = index
-                            sortMenu = false
-                        },
-                    )
+                DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
+                    sortLabels.forEachIndexed { index, label ->
+                        DropdownMenuItem(
+                            text = { Text(label) },
+                            onClick = {
+                                sort = index
+                                sortMenu = false
+                            },
+                        )
+                    }
                 }
             }
+            Spacer(Modifier.weight(1f))
+        }
+
+        if (filterSheet) {
+            RepoFilterSheet(
+                chip89 = chip89, onChip89 = { chip89 = it },
+                chip100 = chip100, onChip100 = { chip100 = it },
+                chipLsp = chipLsp, onChipLsp = { chipLsp = it },
+                recentDays = recentDays, onRecentDays = { recentDays = it },
+                statuses = statuses, onStatuses = { statuses = it },
+                authorFilter = authorFilter, onClearAuthor = { authorFilter = null },
+                scopeTarget = scopeTarget, onClearScope = { scopeTarget = null }, onPickScope = { scopePicker = true },
+                broadSearch = broadSearch, onBroadSearch = { broadSearch = it },
+                onDismiss = { filterSheet = false },
+                onReset = {
+                    chip89 = false; chip100 = false; chipLsp = false
+                    recentDays = 0; statuses = emptySet()
+                    authorFilter = null; scopeTarget = null; broadSearch = false
+                },
+            )
         }
 
         if (scopePicker) {
@@ -352,6 +340,8 @@ internal fun RepoPageScreen(
                             module = module,
                             installedVersion = installedVersion(module.packageName),
                             cached = isCached(module),
+                            downloading = downloadingPkg == module.packageName,
+                            downloadProgress = downloadProgress,
                             onOpen = { onOpenDetail(module) },
                             onAction = { onAction(module) },
                             onAuthor = { authorFilter = module.author },
@@ -442,11 +432,14 @@ internal fun RepoModuleRow(
     module: RepoStore.RepoModule,
     installedVersion: String?,
     cached: Boolean,
+    downloading: Boolean,
+    downloadProgress: Int,
     onOpen: () -> Unit,
     onAction: () -> Unit,
     onAuthor: (() -> Unit)? = null,
 ) {
     val state = when {
+        downloading -> "下载中"
         installedVersion != null && installedVersion == module.version -> "已安装"
         cached -> "已下载"
         installedVersion != null -> "可更新"
@@ -471,33 +464,51 @@ internal fun RepoModuleRow(
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            val parts = mutableListOf<String>()
-            if (module.author.isNotBlank()) parts.add(module.author)
-            if (module.updateTime > 0L) parts.add(formatTime(module.updateTime))
-            if (state.isNotBlank()) parts.add(state)
-            if (parts.isNotEmpty()) {
-                Text(
-                    parts.joinToString(" · "),
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (module.author.isNotBlank()) {
+                    Text(
+                        module.author,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (onAuthor != null) {
+                            MaterialTheme.colorScheme.primary
+                        } else {
+                            MaterialTheme.colorScheme.onSurfaceVariant
+                        },
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.clickable(enabled = onAuthor != null) { onAuthor?.invoke() },
+                    )
+                    Text(
+                        " · ",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                val parts = mutableListOf<String>()
+                if (module.updateTime > 0L) parts.add(formatTime(module.updateTime))
+                if (state.isNotBlank()) parts.add(state)
+                if (parts.isNotEmpty()) {
+                    Text(
+                        parts.joinToString(" · "),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
             }
         }
         Spacer(Modifier.width(8.dp))
-        TextButton(onClick = onAction) {
-            Text(if (cached) "安装" else "下载")
+        if (downloading) {
+            LinearProgressIndicator(
+                progress = { downloadProgress / 100f },
+                modifier = Modifier.width(72.dp),
+            )
+        } else {
+            TextButton(onClick = onAction) {
+                Text(if (cached) "安装" else "下载")
+            }
         }
-    }
-    if (onAuthor != null && module.author.isNotBlank()) {
-        Text(
-            "作者: " + module.author,
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
-                .clickable { onAuthor() }
-                .padding(horizontal = 8.dp, vertical = 4.dp),
-        )
     }
     HorizontalDivider(
         modifier = Modifier.padding(start = 20.dp),
@@ -505,11 +516,146 @@ internal fun RepoModuleRow(
     )
 }
 
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun RepoFilterSheet(
+    chip89: Boolean,
+    onChip89: (Boolean) -> Unit,
+    chip100: Boolean,
+    onChip100: (Boolean) -> Unit,
+    chipLsp: Boolean,
+    onChipLsp: (Boolean) -> Unit,
+    recentDays: Int,
+    onRecentDays: (Int) -> Unit,
+    statuses: Set<Int>,
+    onStatuses: (Set<Int>) -> Unit,
+    authorFilter: String?,
+    onClearAuthor: () -> Unit,
+    scopeTarget: String?,
+    onClearScope: () -> Unit,
+    onPickScope: () -> Unit,
+    broadSearch: Boolean,
+    onBroadSearch: (Boolean) -> Unit,
+    onDismiss: () -> Unit,
+    onReset: () -> Unit,
+) {
+    BackHandler(enabled = true) { onDismiss() }
+    BottomSheet(onDismiss = onDismiss) {
+        SheetHeader(title = "筛选", onReset = onReset, onDismiss = onDismiss)
+        Spacer(Modifier.height(12.dp))
+        PanelRow("框架支持") {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                FilterChip(selected = chip89, onClick = { onChip89(!chip89) }, label = { Text("XP89") })
+                FilterChip(selected = chip100, onClick = { onChip100(!chip100) }, label = { Text("XP100") })
+                FilterChip(selected = chipLsp, onClick = { onChipLsp(!chipLsp) }, label = { Text("LSPatch") })
+            }
+        }
+        PanelRow("更新时间") {
+            SegmentedControl(
+                options = listOf("不限", "近7天", "近30天"),
+                selectedIndex = when (recentDays) {
+                    7 -> 1
+                    30 -> 2
+                    else -> 0
+                },
+                modifier = Modifier.fillMaxWidth(),
+            ) { index -> onRecentDays(listOf(0, 7, 30)[index]) }
+        }
+        PanelRow("安装状态") {
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(0 to "已安装", 1 to "可更新", 2 to "已下载", 3 to "未安装").forEach { (code, label) ->
+                    FilterChip(
+                        selected = code in statuses,
+                        onClick = {
+                            onStatuses(if (code in statuses) statuses - code else statuses + code)
+                        },
+                        label = { Text(label) },
+                    )
+                }
+            }
+        }
+        PanelRow("作用域") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    scopeTarget?.let { "作用目标：" + scopeLabel(it) } ?: "未选择",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (scopeTarget != null) {
+                    Text(
+                        "清除",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onClearScope() }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
+                }
+                Text(
+                    "选择",
+                    style = MaterialTheme.typography.labelLarge,
+                    color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .clickable { onPickScope() }
+                        .padding(horizontal = 8.dp, vertical = 6.dp),
+                )
+            }
+        }
+        PanelRow("作者") {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    authorFilter ?: "未筛选（点击列表中的作者名可筛选）",
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f),
+                )
+                if (authorFilter != null) {
+                    Text(
+                        "清除",
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable { onClearAuthor() }
+                            .padding(horizontal = 8.dp, vertical = 6.dp),
+                    )
+                }
+            }
+        }
+        PanelRow("搜索范围") {
+            SegmentedControl(
+                options = listOf("基本信息", "含 README 全文"),
+                selectedIndex = if (broadSearch) 1 else 0,
+                modifier = Modifier.fillMaxWidth(),
+            ) { index -> onBroadSearch(index == 1) }
+        }
+    }
+}
+
+@Composable
+private fun PanelRow(label: String, content: @Composable () -> Unit) {
+    Column(Modifier.padding(vertical = 5.dp)) {
+        Text(
+            label,
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 5.dp),
+        )
+        content()
+    }
+}
+
 @Composable
 internal fun DownloadsScreen(
     modules: List<RepoStore.RepoModule>,
     entries: List<RepoStore.DownloadEntry>,
     installedVersion: (String) -> String?,
+    installedVersionCode: (String) -> Long?,
     busy: Boolean,
     onInstall: (RepoStore.DownloadEntry) -> Unit,
     onDelete: (RepoStore.DownloadEntry) -> Unit,
@@ -569,7 +715,11 @@ internal fun DownloadsScreen(
                 items(entries, key = { it.packageName }) { entry ->
                     val module = modules.firstOrNull { it.packageName == entry.packageName }
                     val installed = installedVersion(entry.packageName)
-                    val outdated = module != null && module.version != entry.version
+                    val code = installedVersionCode(entry.packageName)
+                    val outdated = module != null && when {
+                        module.versionCode > 0 && code != null -> code != module.versionCode
+                        else -> module.version != entry.version
+                    }
                     Column(
                         Modifier
                             .fillMaxWidth()
@@ -624,14 +774,19 @@ internal fun DownloadsScreen(
 internal fun RepoDetailScreen(
     module: RepoStore.RepoModule,
     installed: String?,
+    installedVersionCode: Long?,
     cached: Boolean,
     busy: Boolean,
     readme: String?,
     onAction: () -> Unit,
     onOpenStore: () -> Unit,
 ) {
+    val installedMatch = when {
+        installedVersionCode != null && module.versionCode > 0 -> installedVersionCode == module.versionCode
+        else -> installed != null && installed == module.version
+    }
     val actionLabel = when {
-        installed != null && installed == module.version -> "已安装"
+        installed != null && installedMatch -> "已安装"
         cached -> "安装模块"
         else -> "下载并安装"
     }
@@ -672,6 +827,18 @@ internal fun RepoDetailScreen(
                             )
                         }
                     }
+                    if (installed != null) {
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            "已安装 " + installed + if (installedMatch) " · 已是最新" else " · 可更新",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (installedMatch) {
+                                MaterialTheme.colorScheme.onSurfaceVariant
+                            } else {
+                                MaterialTheme.colorScheme.primary
+                            },
+                        )
+                    }
                     val times = mutableListOf<String>()
                     if (module.createTime > 0L) times.add("创建 " + formatTime(module.createTime))
                     if (module.updateTime > 0L) times.add("更新 " + formatTime(module.updateTime))
@@ -703,26 +870,30 @@ internal fun RepoDetailScreen(
             if (!readme.isNullOrBlank()) {
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "说明（README）",
+                    "说明",
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.padding(horizontal = 20.dp),
                 )
                 Spacer(Modifier.height(6.dp))
-                val html = remember(readme) { readmeBody(readme) }
+                val dark = isSystemInDarkTheme()
+                val html = remember(readme, dark) { readmeBody(readme, dark) }
                 AndroidView(
                     factory = { ctx ->
                         WebView(ctx).apply {
                             settings.javaScriptEnabled = false
                             settings.loadsImagesAutomatically = true
-                            isVerticalScrollBarEnabled = true
+                            isVerticalScrollBarEnabled = false
+                            setBackgroundColor(Color.Transparent.toArgb())
                         }
                     },
-                    update = { it.loadDataWithBaseURL(null, html, "text/html", "utf-8", null) },
+                    update = {
+                        it.setBackgroundColor(Color.Transparent.toArgb())
+                        it.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                    },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(460.dp)
-                        .padding(horizontal = 16.dp),
+                        .padding(horizontal = 20.dp),
                 )
             }
             Spacer(Modifier.height(16.dp))
@@ -799,11 +970,13 @@ private fun TagBadge(text: String, enabled: Boolean) {
     )
 }
 
-private fun readmeBody(body: String): String =
+private fun readmeBody(body: String, dark: Boolean): String =
     "<html><head><meta charset='utf-8'>" +
         "<meta name='viewport' content='width=device-width, initial-scale=1'>" +
-        "<style>body{font-family:sans-serif;font-size:15px;line-height:1.6;padding:12px;}" +
-        "img{max-width:100%;height:auto;}pre{white-space:pre-wrap;}</style></head>" +
+        "<style>body{font-family:sans-serif;font-size:15px;line-height:1.6;padding:4px 0;" +
+        "background:transparent;color:" + (if (dark) "#e2e2e6" else "#1c1b1f") + ";}" +
+        "img{max-width:100%;height:auto;}pre{white-space:pre-wrap;}" +
+        "a{color:" + (if (dark) "#9ecbff" else "#1a73e8") + ";}</style></head>" +
         "<body>" + body + "</body></html>"
 
 private fun formatSize(bytes: Long): String = when {
