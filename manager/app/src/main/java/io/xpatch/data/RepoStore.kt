@@ -19,6 +19,9 @@ import java.net.URL
  * 列表体积 ~9.5 MB / 1290 条：readme_text 在解析时落盘到 readmes/<pkg>.txt，
  * 内存模型不持有；全文搜索与详情渲染均读磁盘。
  * 下载结果记录在 repo-cache.json，同版本不重复下载。
+ *
+ * 性能约定：UI 组合期不要直接调用 [downloads] / [cachedApk] / [readmeText]。
+ * 下载索引有内存缓存（写操作后整体替换），列表页用 [cacheSnapshot] 一次取全。
  */
 class RepoStore(private val context: Context) {
 
@@ -49,12 +52,47 @@ class RepoStore(private val context: Context) {
         val time: Long,
     )
 
+    /** repo-cache.json 里的一条记录，解析一次后常驻内存。 */
+    private data class IndexRecord(
+        val version: String,
+        val tag: String,
+        val fileName: String,
+        val path: String,
+        val size: Long,
+        val time: Long,
+    )
+
+    /**
+     * 下载缓存的一次性快照：列表页一次读盘就能拿到「包名 → 命中版本」与可展示条目，
+     * 不必对每个模块各调一次 [cachedApk]（那会反复解析 repo-cache.json）。
+     */
+    data class CacheSnapshot(
+        /** 已下载且文件完整（大小一致）的 包名 → 版本。 */
+        val versions: Map<String, String>,
+        /** 已下载且文件完整的条目，按下载时间倒序。 */
+        val entries: List<DownloadEntry>,
+    ) {
+        fun isCached(module: RepoModule): Boolean = versions[module.packageName] == module.version
+
+        companion object {
+            val Empty = CacheSnapshot(emptyMap(), emptyList())
+        }
+    }
+
     private val prefs = context.getSharedPreferences("repo", Context.MODE_PRIVATE)
     private val indexFile: File
         get() = File(context.filesDir, "repo-cache.json")
 
-    private val readmeDir: File
-        get() = File(context.filesDir, "repo/readmes").apply { mkdirs() }
+    // 注意：这里不 mkdirs()。readmeText() 在「含 README 全文」搜索时会被调用上千次，
+    // 每次建目录是纯浪费；目录只在 fetch() 落盘前创建一次。
+    private val readmeDir: File = File(context.filesDir, "repo/readmes")
+
+    // 下载索引内存缓存：避免 downloads()/cachedApk() 每次调用都解析一遍 repo-cache.json。
+    // 写操作成功后整体替换，写失败则失效，保证与磁盘一致。
+    private val indexLock = Any()
+
+    @Volatile
+    private var indexCache: Map<String, IndexRecord>? = null
 
     fun readmeText(pkg: String): String? {
         val file = File(readmeDir, "$pkg.txt")
@@ -65,6 +103,7 @@ class RepoStore(private val context: Context) {
     suspend fun fetch(): List<RepoModule> = withContext(Dispatchers.IO) {
         val root = JSONObject(request(MODULES_URL))
         val array = root.optJSONArray("modules") ?: JSONArray()
+        runCatching { readmeDir.mkdirs() }
 
         buildList {
             for (i in 0 until array.length()) {
@@ -74,7 +113,13 @@ class RepoStore(private val context: Context) {
 
                 val readme = item.optString("readme_text")
                 if (readme.isNotBlank()) {
-                    runCatching { File(readmeDir, "$pkg.txt").writeText(readme) }
+                    // 内容没变就不写盘：一次刷新约 1290 条 readme（~9.5 MB），
+                    // 全量重写会带来持续的 IO 与 GC 压力（文件系统还要回写）。
+                    val file = File(readmeDir, "$pkg.txt")
+                    val existing = runCatching { if (file.isFile) file.readText() else null }.getOrNull()
+                    if (existing != readme) {
+                        runCatching { file.writeText(readme) }
+                    }
                 }
 
                 add(
@@ -102,44 +147,72 @@ class RepoStore(private val context: Context) {
 
     /** 已下载且文件仍完整（大小一致）的缓存条目，按下载时间倒序。 */
     fun downloads(): List<DownloadEntry> {
-        val index = readIndex()
-        return buildList {
-            for (key in index.keys()) {
-                val record = index.optJSONObject(key) ?: continue
-                val path = record.optString("path")
-                if (path.isBlank()) continue
-                val file = File(path)
-                if (!file.isFile || file.length() != record.optLong("size")) continue
-                add(
-                    DownloadEntry(
-                        packageName = key,
-                        version = record.optString("version"),
-                        tag = record.optString("tag"),
-                        fileName = record.optString("file"),
-                        path = path,
-                        size = record.optLong("size"),
-                        time = record.optLong("time"),
-                    ),
-                )
-            }
-        }.sortedByDescending { it.time }
+        val records = readIndex()
+        if (records.isEmpty()) return emptyList()
+        val entries = ArrayList<DownloadEntry>(records.size)
+        for ((pkg, record) in records) {
+            val path = record.path
+            if (path.isBlank()) continue
+            val file = File(path)
+            if (!file.isFile || file.length() != record.size) continue
+            entries.add(
+                DownloadEntry(
+                    packageName = pkg,
+                    version = record.version,
+                    tag = record.tag,
+                    fileName = record.fileName,
+                    path = path,
+                    size = record.size,
+                    time = record.time,
+                ),
+            )
+        }
+        return entries.sortedByDescending { it.time }
+    }
+
+    /**
+     * 一次遍历同时得到「可命中缓存的版本表」与「可展示条目」。
+     * UI 列表页应当用它替代逐条 [cachedApk] / [downloads]。
+     */
+    fun cacheSnapshot(): CacheSnapshot {
+        val records = readIndex()
+        if (records.isEmpty()) return CacheSnapshot.Empty
+        val versions = HashMap<String, String>(records.size * 2)
+        val entries = ArrayList<DownloadEntry>(records.size)
+        for ((pkg, record) in records) {
+            if (record.path.isBlank()) continue
+            val file = File(record.path)
+            if (!file.isFile || file.length() != record.size) continue
+            versions[pkg] = record.version
+            entries.add(
+                DownloadEntry(
+                    packageName = pkg,
+                    version = record.version,
+                    tag = record.tag,
+                    fileName = record.fileName,
+                    path = record.path,
+                    size = record.size,
+                    time = record.time,
+                ),
+            )
+        }
+        return CacheSnapshot(versions, entries.sortedByDescending { it.time })
     }
 
     /** 删除单个下载缓存（文件 + 索引项）。 */
     fun removeDownload(packageName: String): Boolean {
-        val index = readIndex()
-        val record = index.optJSONObject(packageName) ?: return false
-        runCatching { File(record.optString("path")).delete() }
-        index.remove(packageName)
-        return runCatching { indexFile.writeText(index.toString()) }.isSuccess
+        val current = readIndex()
+        val record = current[packageName] ?: return false
+        runCatching { File(record.path).delete() }
+        return writeIndex(current - packageName)
     }
 
     /** 已下载且仍可用的缓存文件（版本一致才算命中）。 */
     fun cachedApk(module: RepoModule): File? {
-        val record = readIndex().optJSONObject(module.packageName) ?: return null
-        if (record.optString("version") != module.version) return null
-        val file = File(record.optString("path"))
-        return if (file.exists() && file.length() == record.optLong("size")) file else null
+        val record = readIndex()[module.packageName] ?: return null
+        if (record.version != module.version) return null
+        val file = File(record.path)
+        return if (file.exists() && file.length() == record.size) file else null
     }
 
     suspend fun download(module: RepoModule, onProgress: (Int) -> Unit = {}): File =
@@ -163,6 +236,9 @@ class RepoStore(private val context: Context) {
             val connection = open(url)
             try {
                 val total = connection.contentLength
+                // 只在百分比真正变化时回调：64KB 分块对 10MB 文件有上千次循环，
+                // 每次都写 Compose 状态会触发整页重组（0.1.3 卡顿的直接原因）。
+                var lastPercent = -1
                 connection.inputStream.use { input ->
                     target.outputStream().use { output ->
                         val buffer = ByteArray(64 * 1024)
@@ -171,10 +247,17 @@ class RepoStore(private val context: Context) {
                         while (input.read(buffer).also { read = it } > 0) {
                             output.write(buffer, 0, read)
                             done += read
-                            if (total > 0) onProgress(done * 100 / total)
+                            if (total > 0) {
+                                val percent = (done * 100 / total).coerceIn(0, 100)
+                                if (percent != lastPercent) {
+                                    lastPercent = percent
+                                    onProgress(percent)
+                                }
+                            }
                         }
                     }
                 }
+                if (total > 0 && lastPercent != 100) onProgress(100)
             } finally {
                 connection.disconnect()
             }
@@ -188,6 +271,8 @@ class RepoStore(private val context: Context) {
             File(context.cacheDir, "repo").deleteRecursively()
             indexFile.delete()
         }
+        // 索引文件已删除：直接置为空表，避免下次调用又去读一个不存在的文件。
+        synchronized(indexLock) { indexCache = emptyMap() }
     }
 
     fun cacheSize(): Long = runCatching {
@@ -201,24 +286,72 @@ class RepoStore(private val context: Context) {
         fileName: String,
         file: File,
     ) {
-        val index = readIndex()
-        index.put(
-            packageName,
-            JSONObject().apply {
-                put("version", version)
-                put("tag", tag)
-                put("file", fileName)
-                put("path", file.absolutePath)
-                put("size", file.length())
-                put("time", System.currentTimeMillis())
-            },
+        val next = readIndex().toMutableMap()
+        next[packageName] = IndexRecord(
+            version = version,
+            tag = tag,
+            fileName = fileName,
+            path = file.absolutePath,
+            size = file.length(),
+            time = System.currentTimeMillis(),
         )
-        runCatching { indexFile.writeText(index.toString()) }
+        writeIndex(next)
     }
 
-    private fun readIndex(): JSONObject = runCatching {
-        if (!indexFile.exists()) JSONObject() else JSONObject(indexFile.readText())
-    }.getOrDefault(JSONObject())
+    /** 读下载索引：优先内存缓存，避免每次调用都解析一遍 repo-cache.json。 */
+    private fun readIndex(): Map<String, IndexRecord> {
+        indexCache?.let { return it }
+        val parsed = runCatching {
+            if (!indexFile.exists()) {
+                emptyMap<String, IndexRecord>()
+            } else {
+                parseIndex(JSONObject(indexFile.readText()))
+            }
+        }.getOrDefault(emptyMap())
+        synchronized(indexLock) {
+            indexCache?.let { return it }
+            indexCache = parsed
+        }
+        return parsed
+    }
+
+    private fun parseIndex(json: JSONObject): Map<String, IndexRecord> {
+        if (json.length() == 0) return emptyMap()
+        val out = HashMap<String, IndexRecord>(json.length() * 2)
+        for (key in json.keys()) {
+            val record = json.optJSONObject(key) ?: continue
+            out[key] = IndexRecord(
+                version = record.optString("version"),
+                tag = record.optString("tag"),
+                fileName = record.optString("file"),
+                path = record.optString("path"),
+                size = record.optLong("size"),
+                time = record.optLong("time"),
+            )
+        }
+        return out
+    }
+
+    private fun writeIndex(records: Map<String, IndexRecord>): Boolean {
+        val json = JSONObject()
+        for ((pkg, record) in records) {
+            json.put(
+                pkg,
+                JSONObject().apply {
+                    put("version", record.version)
+                    put("tag", record.tag)
+                    put("file", record.fileName)
+                    put("path", record.path)
+                    put("size", record.size)
+                    put("time", record.time)
+                },
+            )
+        }
+        val ok = runCatching { indexFile.writeText(json.toString()) }.isSuccess
+        // 写失败则丢弃缓存，下次重新读盘，避免内存与磁盘不一致。
+        synchronized(indexLock) { indexCache = if (ok) records else null }
+        return ok
+    }
 
     private fun request(url: String): String {
         val connection = open(url)

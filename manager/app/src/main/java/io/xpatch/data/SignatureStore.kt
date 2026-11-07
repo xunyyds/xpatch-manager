@@ -152,9 +152,11 @@ class SignatureStore(private val context: Context) {
         prefs.edit().putString(KEY_PROFILES, array.toString()).apply()
     }
 
-    private companion object {
-        const val KEY_PROFILES = "profiles"
-        const val KEY_DEFAULT = "default"
+    companion object {
+        private const val KEY_PROFILES = "profiles"
+        private const val KEY_DEFAULT = "default"
+
+        /** 内置 XPatch 签名的 id：首帧默认值需要它，故对外可见。 */
         const val BUILTIN_XPATCH = "xpatch"
     }
 }

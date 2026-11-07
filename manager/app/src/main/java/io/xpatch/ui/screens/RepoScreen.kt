@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -60,6 +61,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -85,23 +87,209 @@ import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatTime
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.withContext
 
 private const val SCOPE_SYSTEM = "system"
 private const val SCOPE_FRAMEWORK = "android"
+
+private val RepoSortLabels = listOf(
+    "可更新优先", "更新时间", "安装时间", "应用名", "已下载优先",
+    "创建时间", "版本号", "作用域数量", "包名 A-Z",
+)
+
+/**
+ * 某个包在本机的安装信息。
+ * 由 MainScaffold 在 IO 线程一次性批量取出，组合期只做 Map 查表。
+ */
+internal data class RepoInstalledApp(
+    val versionName: String?,
+    val versionCode: Long?,
+    val lastUpdateTime: Long,
+)
+
+/**
+ * 仓库页的安装态快照：包名 → 安装信息 + 下载缓存命中情况 + 角标数量。
+ *
+ * 0.1.3 的卡顿主要来自组合期逐行调用 PackageManager / 解析 repo-cache.json：
+ * 1290 个模块 × 每行多次 IPC + 磁盘解析，每次重组都要重跑一遍。
+ * 现在快照在 IO 线程构建，页面只做不可变数据查表。
+ */
+internal data class RepoInstallSnapshot(
+    val installed: Map<String, RepoInstalledApp> = emptyMap(),
+    val cache: RepoStore.CacheSnapshot = RepoStore.CacheSnapshot.Empty,
+    /** 已下载但本机未安装同版本的模块数（下载图标角标）。 */
+    val badge: Int = 0,
+) {
+    fun versionNameOf(pkg: String): String? = installed[pkg]?.versionName
+
+    fun versionCodeOf(pkg: String): Long? = installed[pkg]?.versionCode
+
+    fun lastUpdateTimeOf(pkg: String): Long = installed[pkg]?.lastUpdateTime ?: 0L
+
+    fun isCached(module: RepoStore.RepoModule): Boolean = cache.isCached(module)
+
+    companion object {
+        val Empty = RepoInstallSnapshot()
+    }
+}
+
+/** 模块状态：0 已安装 · 1 可更新 · 2 已下载 · 3 未安装（与筛选面板的口径一致）。 */
+private fun statusOf(module: RepoStore.RepoModule, snapshot: RepoInstallSnapshot): Int {
+    val installed = snapshot.versionNameOf(module.packageName)
+    if (installed == null) return if (snapshot.isCached(module)) 2 else 3
+    val code = snapshot.versionCodeOf(module.packageName)
+    if (code != null && module.versionCode > 0) return if (code == module.versionCode) 0 else 1
+    return if (installed == module.version) 0 else 1
+}
+
+/**
+ * 过滤 + 排序的全部输入。
+ * 作为 produceState 的 key：任一输入变化才重算，纯重组不会重复计算。
+ */
+private data class RepoQuery(
+    val modules: List<RepoStore.RepoModule>,
+    val query: String,
+    val broadSearch: Boolean,
+    val sort: Int,
+    val chip89: Boolean,
+    val chip100: Boolean,
+    val chipLsp: Boolean,
+    val recentDays: Int,
+    val statuses: Set<Int>,
+    val authorFilter: String?,
+    val scopeTarget: String?,
+    val snapshot: RepoInstallSnapshot,
+)
+
+/**
+ * README 全文搜索缓存（容量 300，LRU）。
+ * 只在后台协程里访问并加锁，绝不在组合期读取。
+ */
+private class ReadmeTextCache(private val maxSize: Int = 300) {
+    private val map = object : LinkedHashMap<String, String>(64, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean =
+            size > maxSize
+    }
+
+    @Synchronized
+    fun textOf(pkg: String, load: (String) -> String?): String {
+        map[pkg]?.let { return it }
+        val text = load(pkg) ?: ""
+        map[pkg] = text
+        return text
+    }
+}
+
+/**
+ * 过滤 + 排序。纯计算，调用方必须在后台线程执行。
+ *
+ * 分三步，避免主线程任何重活：
+ *  1. Default 线程：非文本筛选 + 基本信息匹配；
+ *  2. IO 线程：仅对「基本信息没命中、开了全文搜索」的模块读 README，逐条检查取消信号；
+ *  3. Default 线程：合并 + 排序。
+ */
+private suspend fun computeOrdered(
+    input: RepoQuery,
+    readmeCache: ReadmeTextCache,
+    readmeText: (String) -> String?,
+): List<RepoStore.RepoModule> {
+    val lowered = input.query.trim().lowercase()
+    // 时间截点提到循环外：原来每个模块都算一次 System.currentTimeMillis()。
+    val cutoff = if (input.recentDays > 0) {
+        System.currentTimeMillis() - input.recentDays * 86_400_000L
+    } else {
+        0L
+    }
+    val matched = ArrayList<RepoStore.RepoModule>(input.modules.size)
+    val readmeCandidates = ArrayList<RepoStore.RepoModule>()
+
+    for (module in input.modules) {
+        if (input.chip89 && !module.supports89) continue
+        if (input.chip100 && !module.supports100) continue
+        if (input.chipLsp && module.lspMax <= 0) continue
+        if (cutoff > 0L && module.updateTime < cutoff) continue
+        if (input.statuses.isNotEmpty() && statusOf(module, input.snapshot) !in input.statuses) continue
+        if (input.authorFilter != null && module.author != input.authorFilter) continue
+        if (input.scopeTarget != null &&
+            !(module.scope89.contains(input.scopeTarget) || module.scope100.contains(input.scopeTarget))
+        ) {
+            continue
+        }
+        if (lowered.isEmpty()) {
+            matched.add(module)
+            continue
+        }
+        if (module.name.contains(lowered, true) ||
+            module.packageName.contains(lowered, true) ||
+            module.author.contains(lowered, true) ||
+            module.summary.contains(lowered, true)
+        ) {
+            matched.add(module)
+            continue
+        }
+        if (!input.broadSearch || lowered.length < 2) continue
+        readmeCandidates.add(module)
+    }
+
+    if (readmeCandidates.isNotEmpty()) {
+        // README 读盘放 IO 线程；输入变化时 produceState 会取消上一次计算，
+        // 这里逐条 ensureActive() 让取消立刻生效（原实现是主线程逐条读盘 + lowercase）。
+        val hits = withContext(Dispatchers.IO) {
+            val out = ArrayList<RepoStore.RepoModule>(readmeCandidates.size)
+            for (module in readmeCandidates) {
+                currentCoroutineContext().ensureActive()
+                val text = readmeCache.textOf(module.packageName, readmeText)
+                if (text.lowercase().contains(lowered)) out.add(module)
+            }
+            out
+        }
+        matched.addAll(hits)
+    }
+
+    return sortModules(matched, input)
+}
+
+private fun sortModules(
+    list: List<RepoStore.RepoModule>,
+    input: RepoQuery,
+): List<RepoStore.RepoModule> {
+    if (list.size < 2) return list
+    // 预先把小写名算一次：比较次数是 O(n log n)，逐次 lowercase 会产生上万次临时字符串。
+    val lowerNames = HashMap<String, String>(list.size * 2)
+    for (module in list) lowerNames[module.packageName] = module.name.lowercase()
+    fun nameOf(module: RepoStore.RepoModule): String = lowerNames[module.packageName] ?: module.name
+
+    return when (input.sort) {
+        1 -> list.sortedByDescending { it.updateTime }
+        2 -> list.sortedByDescending { input.snapshot.lastUpdateTimeOf(it.packageName) }
+        3 -> list.sortedBy { nameOf(it) }
+        4 -> list.sortedWith(
+            compareByDescending<RepoStore.RepoModule> { input.snapshot.isCached(it) }
+                .thenBy { nameOf(it) },
+        )
+        5 -> list.sortedByDescending { it.createTime }
+        6 -> list.sortedByDescending { it.versionCode }
+        7 -> list.sortedByDescending { it.scope89.size + it.scope100.size }
+        8 -> list.sortedBy { it.packageName }
+        else -> list.sortedWith(
+            compareByDescending<RepoStore.RepoModule> { statusOf(it, input.snapshot) == 1 }
+                .thenBy { nameOf(it) },
+        )
+    }
+}
 
 @Composable
 internal fun RepoPageScreen(
     modules: List<RepoStore.RepoModule>,
     busy: Boolean,
-    installedVersion: (String) -> String?,
-    installedVersionCode: (String) -> Long?,
-    installedTime: (String) -> Long?,
-    isCached: (RepoStore.RepoModule) -> Boolean,
+    snapshot: RepoInstallSnapshot,
     readmeText: (String) -> String?,
-    downloadedBadge: Int,
     downloadingPkg: String?,
-    downloadProgress: Int,
+    downloadProgress: () -> Int,
     downloadDoneTick: Int,
     onOpenDownloads: () -> Unit,
     onRefresh: () -> Unit,
@@ -150,70 +338,37 @@ internal fun RepoPageScreen(
         iconPulse.animateTo(1f, tween(200, easing = FastOutSlowInEasing))
     }
 
-    val readmeCache = remember {
-        object : LinkedHashMap<String, String>(64, 0.75f, true) {
-            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, String>): Boolean = size > 300
-        }
+    // 输入防抖：搜索框每次击键都会写 query，延迟 160ms 后再参与过滤/排序，
+    // 避免逐键对 1000+ 模块重算（README 全文模式下每次重算还要读盘）。
+    val debouncedQuery by produceState(initialValue = query, query) {
+        delay(160)
+        value = query
     }
 
-    fun statusOf(module: RepoStore.RepoModule): Int {
-        val installed = installedVersion(module.packageName)
-        if (installed == null) return if (isCached(module)) 2 else 3
-        val code = installedVersionCode(module.packageName)
-        if (code != null && module.versionCode > 0) return if (code == module.versionCode) 0 else 1
-        return if (installed == module.version) 0 else 1
-    }
+    // README 全文搜索缓存：只在后台协程里访问（内部加锁），组合期不读盘。
+    val readmeCache = remember { ReadmeTextCache() }
 
-    val lowered = query.trim().lowercase()
-    val filtered = modules.asSequence()
-        .filter { m ->
-            if (chip89 && !m.supports89) return@filter false
-            if (chip100 && !m.supports100) return@filter false
-            if (chipLsp && m.lspMax <= 0) return@filter false
-            if (recentDays > 0) {
-                val cutoff = System.currentTimeMillis() - recentDays * 86_400_000L
-                if (m.updateTime < cutoff) return@filter false
-            }
-            if (statuses.isNotEmpty() && statusOf(m) !in statuses) return@filter false
-            if (authorFilter != null && m.author != authorFilter) return@filter false
-            if (scopeTarget != null && !(m.scope89.contains(scopeTarget) || m.scope100.contains(scopeTarget))) {
-                return@filter false
-            }
-            true
-        }
-        .filter { m ->
-            if (lowered.isEmpty()) return@filter true
-            if (m.name.contains(lowered, true) ||
-                m.packageName.contains(lowered, true) ||
-                m.author.contains(lowered, true) ||
-                m.summary.contains(lowered, true)
-            ) {
-                return@filter true
-            }
-            if (!broadSearch || lowered.length < 2) return@filter false
-            val text = readmeCache.getOrPut(m.packageName) { readmeText(m.packageName) ?: "" }
-            text.lowercase().contains(lowered)
-        }
-        .toList()
-
-    val sortLabels = listOf(
-        "可更新优先", "更新时间", "安装时间", "应用名", "已下载优先",
-        "创建时间", "版本号", "作用域数量", "包名 A-Z",
+    // 过滤 + 排序：key 覆盖全部筛选输入，输入不变就完全跳过；
+    // 计算在 Default 线程，README 读盘在 IO 线程，输入变化时上一次计算会被取消。
+    val repoQuery = RepoQuery(
+        modules = modules,
+        query = debouncedQuery,
+        broadSearch = broadSearch,
+        sort = sort,
+        chip89 = chip89,
+        chip100 = chip100,
+        chipLsp = chipLsp,
+        recentDays = recentDays,
+        statuses = statuses,
+        authorFilter = authorFilter,
+        scopeTarget = scopeTarget,
+        snapshot = snapshot,
     )
-    val ordered = when (sort) {
-        1 -> filtered.sortedByDescending { it.updateTime }
-        2 -> filtered.sortedByDescending { installedTime(it.packageName) }
-        3 -> filtered.sortedBy { it.name.lowercase() }
-        4 -> filtered.sortedWith(
-            compareByDescending<RepoStore.RepoModule> { isCached(it) }.thenBy { it.name.lowercase() },
-        )
-        5 -> filtered.sortedByDescending { it.createTime }
-        6 -> filtered.sortedByDescending { it.versionCode }
-        7 -> filtered.sortedByDescending { it.scope89.size + it.scope100.size }
-        8 -> filtered.sortedBy { it.packageName }
-        else -> filtered.sortedWith(
-            compareByDescending<RepoStore.RepoModule> { statusOf(it) == 1 }.thenBy { it.name.lowercase() },
-        )
+    // 首帧先用未过滤列表占位，避免页面刚进入时闪一下「没有符合筛选条件的模块」。
+    val ordered by produceState(initialValue = modules, repoQuery) {
+        value = withContext(Dispatchers.Default) {
+            computeOrdered(repoQuery, readmeCache, readmeText)
+        }
     }
 
     val filtersActive = chip89 || chip100 || chipLsp || recentDays > 0 || statuses.isNotEmpty() ||
@@ -243,12 +398,9 @@ internal fun RepoPageScreen(
                     },
             ) {
                 if (downloadingPkg != null) {
-                    CircularProgressIndicator(
-                        progress = { downloadProgress / 100f },
-                        modifier = Modifier.size(48.dp),
-                        strokeWidth = 2.5.dp,
-                        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
-                    )
+                    // 进度只在独立的绘制作用域里读取：进度变化只重绘进度圈，
+                    // 不会让 RepoPageScreen（含整个列表）重组。
+                    DownloadProgressRing(downloadProgress)
                 }
                 IconButton(onClick = onOpenDownloads) {
                     Icon(
@@ -261,9 +413,9 @@ internal fun RepoPageScreen(
                         },
                     )
                 }
-                if (!showDoneFlash && downloadedBadge > 0) {
+                if (!showDoneFlash && snapshot.badge > 0) {
                     Text(
-                        downloadedBadge.toString(),
+                        snapshot.badge.toString(),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onPrimary,
                         modifier = Modifier
@@ -331,7 +483,7 @@ internal fun RepoPageScreen(
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
-                        sortLabels[sort],
+                        RepoSortLabels[sort],
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
@@ -339,7 +491,7 @@ internal fun RepoPageScreen(
                     )
                 }
                 DropdownMenu(expanded = sortMenu, onDismissRequest = { sortMenu = false }) {
-                    sortLabels.forEachIndexed { index, label ->
+                    RepoSortLabels.forEachIndexed { index, label ->
                         DropdownMenuItem(
                             text = { Text(label) },
                             onClick = {
@@ -403,12 +555,13 @@ internal fun RepoPageScreen(
                     else -> items(ordered, key = { it.packageName }) { module ->
                         RepoModuleRow(
                             module = module,
-                            installedVersion = installedVersion(module.packageName),
-                            cached = isCached(module),
+                            // 安装态全部来自快照（不可变数据），组合期不再查 PackageManager。
+                            installedVersion = snapshot.versionNameOf(module.packageName),
+                            cached = snapshot.isCached(module),
                             downloading = downloadingPkg == module.packageName,
                             onOpen = { onOpenDetail(module) },
                             onAction = { origin ->
-                                if (!isCached(module)) flyStart = origin
+                                if (!snapshot.isCached(module)) flyStart = origin
                                 onAction(module)
                             },
                             onAuthor = { authorFilter = module.author },
@@ -454,6 +607,21 @@ internal fun RepoPageScreen(
     }
 }
 
+/**
+ * 下载进度圈。
+ * progress 用 lambda 传入，读取发生在 CircularProgressIndicator 的绘制阶段：
+ * 下载进度变化只重绘这个圈，不会连带整个仓库列表重组。
+ */
+@Composable
+private fun DownloadProgressRing(progress: () -> Int) {
+    CircularProgressIndicator(
+        progress = { progress() / 100f },
+        modifier = Modifier.size(48.dp),
+        strokeWidth = 2.5.dp,
+        trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+    )
+}
+
 @Composable
 private fun ScopePickerDialog(
     onDismiss: () -> Unit,
@@ -464,16 +632,19 @@ private fun ScopePickerDialog(
     var options by remember { mutableStateOf<List<Pair<String, String>>>(emptyList()) }
 
     LaunchedEffect(Unit) {
-        options = runCatching {
-            @Suppress("DEPRECATION")
-            context.packageManager.getInstalledPackages(0)
-                .mapNotNull { info ->
-                    val label = info.applicationInfo?.loadLabel(context.packageManager)?.toString()
-                        ?: return@mapNotNull null
-                    label to info.packageName
-                }
-                .sortedBy { it.first.lowercase() }
-        }.getOrDefault(emptyList())
+        // 枚举已安装应用（几百个 + loadLabel）开销不小，放 IO 线程，别卡住打开面板的点击。
+        options = withContext(Dispatchers.IO) {
+            runCatching {
+                @Suppress("DEPRECATION")
+                context.packageManager.getInstalledPackages(0)
+                    .mapNotNull { info ->
+                        val label = info.applicationInfo?.loadLabel(context.packageManager)?.toString()
+                            ?: return@mapNotNull null
+                        label to info.packageName
+                    }
+                    .sortedBy { it.first.lowercase() }
+            }.getOrDefault(emptyList<Pair<String, String>>())
+        }
     }
 
     XPatchDialog(
@@ -757,8 +928,7 @@ private fun PanelRow(label: String, content: @Composable () -> Unit) {
 internal fun DownloadsScreen(
     modules: List<RepoStore.RepoModule>,
     entries: List<RepoStore.DownloadEntry>,
-    installedVersion: (String) -> String?,
-    installedVersionCode: (String) -> Long?,
+    snapshot: RepoInstallSnapshot,
     busy: Boolean,
     onInstall: (RepoStore.DownloadEntry) -> Unit,
     onDelete: (RepoStore.DownloadEntry) -> Unit,
@@ -766,6 +936,8 @@ internal fun DownloadsScreen(
     onOpenRepo: () -> Unit,
     onOpenDetail: (RepoStore.RepoModule) -> Unit,
 ) {
+    // 包名 → 模块：避免每行都对 1290 条模块做一次线性查找。
+    val modulesByPackage = remember(modules) { modules.associateBy { it.packageName } }
     var confirmClear by remember { mutableStateOf(false) }
     if (confirmClear) {
         XPatchDialog(
@@ -816,9 +988,10 @@ internal fun DownloadsScreen(
                 }
             } else {
                 items(entries, key = { it.packageName }) { entry ->
-                    val module = modules.firstOrNull { it.packageName == entry.packageName }
-                    val installed = installedVersion(entry.packageName)
-                    val code = installedVersionCode(entry.packageName)
+                    val module = modulesByPackage[entry.packageName]
+                    // 安装态来自快照，不再逐行调 PackageManager。
+                    val installed = snapshot.versionNameOf(entry.packageName)
+                    val code = snapshot.versionCodeOf(entry.packageName)
                     val outdated = module != null && when {
                         module.versionCode > 0 && code != null -> code != module.versionCode
                         else -> module.version != entry.version
@@ -988,15 +1161,25 @@ internal fun RepoDetailScreen(
                             settings.loadsImagesAutomatically = true
                             isVerticalScrollBarEnabled = false
                             setBackgroundColor(Color.Transparent.toArgb())
+                            // 首次加载交给 factory；tag 记住已加载内容，update 里据此判断是否需要重载。
+                            tag = html
+                            loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
                         }
                     },
-                    update = {
-                        it.setBackgroundColor(Color.Transparent.toArgb())
-                        it.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                    update = { webView ->
+                        // 原来的 update 每次重组都 loadDataWithBaseURL：重新解析 HTML + 重新布局，
+                        // 在 verticalScroll 里会反复触发测量，是详情页卡顿的来源。
+                        if (webView.tag != html) {
+                            webView.tag = html
+                            webView.loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                        }
                     },
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(horizontal = 20.dp),
+                        .padding(horizontal = 20.dp)
+                        // 外层是 verticalScroll，无界高度会让 WebView 反复测量/布局：
+                        // 给一个下限 + 上限，超出部分由 WebView 内部滚动（JS 关闭，无法用 evaluateJavascript 测高）。
+                        .heightIn(min = 96.dp, max = 520.dp),
                 )
             }
             Spacer(Modifier.height(16.dp))

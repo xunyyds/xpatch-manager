@@ -49,6 +49,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -117,8 +118,9 @@ fun MainScaffold(
     val patchService = remember { PatchService(context) }
     val signatureStore = remember { SignatureStore(context) }
     val moduleApiStore = remember { ModuleApiStore(context) }
-    var signatures by remember { mutableStateOf(signatureStore.allProfiles()) }
-    var defaultSignatureId by remember { mutableStateOf(signatureStore.defaultProfileId()) }
+    // 首帧只给安全的默认值：签名配置要读 assets/prefs，放到 IO 线程加载（见下方 LaunchedEffect）。
+    var signatures by remember { mutableStateOf(emptyList<SignatureStore.Profile>()) }
+    var defaultSignatureId by remember { mutableStateOf(SignatureStore.BUILTIN_XPATCH) }
     val scope = rememberCoroutineScope()
 
     val nav = rememberNavigator()
@@ -129,7 +131,8 @@ fun MainScaffold(
     val logDetailList = androidx.compose.foundation.lazy.rememberLazyListState()
     var logsRefreshing by remember { mutableStateOf(false) }
     var logsRuntime by remember {
-        mutableStateOf(RuntimeLogsState(hasAccess = logStore.hasAccess()))
+        // hasAccess() 是 system_server 的 binder 调用，首帧不同步做；随后的 LaunchedEffect / ON_RESUME 会校正。
+        mutableStateOf(RuntimeLogsState(hasAccess = false))
     }
     var homeRefreshing by remember { mutableStateOf(false) }
     var shizukuAvailable by remember { mutableStateOf(ShizukuBridge.isAvailable()) }
@@ -139,7 +142,9 @@ fun MainScaffold(
     var modulesRefreshing by remember { mutableStateOf(false) }
     var pendingExportFileName by remember { mutableStateOf<String?>(null) }
     var pendingLogText by remember { mutableStateOf<String?>(null) }
-    val labelCache = remember { HashMap<String, String>() }
+    // 主线程（日志表头/详情）与 Dispatchers.IO（日志页批量解析应用名）都会写这张表，
+    // 普通 HashMap 并发 put 可能丢缓存甚至破坏桶结构，改用 ConcurrentHashMap。
+    val labelCache = remember { java.util.concurrent.ConcurrentHashMap<String, String>() }
     val labelOf: (String) -> String = { packageName ->
         labelCache.getOrPut(packageName) {
             runCatching {
@@ -169,7 +174,8 @@ fun MainScaffold(
     var patchableApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var modules by remember { mutableStateOf<List<ModuleInfo>>(emptyList()) }
     var settings by remember { mutableStateOf(settingsStore.load()) }
-    var logs by remember { mutableStateOf(eventLog.entries()) }
+    // 操作日志要先 JSON 解析 prefs，首帧用空列表占位，由 LaunchedEffect(token) 在 IO 线程填充。
+    var logs by remember { mutableStateOf(emptyList<String>()) }
     var repoModules by remember { mutableStateOf<List<RepoStore.RepoModule>>(emptyList()) }
     var repoBusy by remember { mutableStateOf(false) }
     var repoDownloadPkg by remember { mutableStateOf<String?>(null) }
@@ -399,6 +405,17 @@ fun MainScaffold(
         }
     }
 
+    // 首帧的同步开销（签名配置、运行日志权限位）统一挪到 IO：
+    // 加载完成后的状态语义不变，只是晚一帧；避免首帧组合被磁盘 / binder 调用拖住。
+    LaunchedEffect(Unit) {
+        val (loadedProfiles, loadedDefaultId) = withContext(Dispatchers.IO) {
+            signatureStore.allProfiles() to signatureStore.defaultProfileId()
+        }
+        signatures = loadedProfiles
+        defaultSignatureId = loadedDefaultId
+        logsRuntime = logsRuntime.copy(hasAccess = logStore.hasAccess())
+    }
+
     LaunchedEffect(token) {
         val loadedPatched = repository.loadPatchedApps()
         val loadedModules = repository.loadModules()
@@ -416,7 +433,8 @@ fun MainScaffold(
     }
 
     LaunchedEffect(token) {
-        logs = eventLog.entries()
+        // prefs 里的 JSON 解析放 IO，别占首帧。
+        logs = withContext(Dispatchers.IO) { eventLog.entries() }
     }
 
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -527,17 +545,29 @@ fun MainScaffold(
         }
     }
 
-    // 下载管理徽章：已下载且未安装（同版本）的模块数。
-    val downloadedBadge = remember(token) {
-        runCatching { repoStore.downloads() }
-            .getOrDefault(emptyList())
-            .count { entry ->
-                val installed = runCatching {
-                    context.packageManager.getPackageInfo(entry.packageName, 0).versionName
-                }.getOrNull()
-                installed != entry.version
-            }
+    // 下载管理徽章 + 仓库页安装态：一次性在 IO 线程构建快照。
+    // 原来组合期要解析 repo-cache.json、并对每个下载条目调 getPackageInfo；
+    // 列表页更是对 ~1290 个模块逐行查 PackageManager。现在这些都收敛到快照里。
+    val repoSnapshot = produceState(
+        initialValue = RepoInstallSnapshot.Empty,
+        token,
+        repoModules,
+        patchedApps,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            buildRepoSnapshot(context, repoStore, repoModules, patchedApps)
+        }
     }
+
+    // 下载进度回调：RepoStore 已按百分比去重，这里再挡一层，避免无谓的状态写入。
+    val onRepoDownloadProgress: (Int) -> Unit = { percent ->
+        if (percent != repoDownloadProgress) repoDownloadProgress = percent
+    }
+
+    // kyant backdrop 的 LayerBackdropNode 每次 draw 都会把整棵子树录进离屏 GraphicsLayer，
+    // 只有「液体底栏」会消费它。默认标准底栏下这份开销 100% 白费（滚动/进度等任意 draw 失效都会重录整屏），
+    // 所以只在液体底栏时挂 layerBackdrop，视觉不变。
+    val liquidBottomBar = settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -602,8 +632,7 @@ fun MainScaffold(
             if (nav.page is Page.Home) {
                 Box(Modifier.background(androidx.compose.ui.graphics.Color.Transparent)) {
                     when {
-                        settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID ->
-                            LiquidBar(nav.tab, backdrop) { nav.select(it) }
+                        liquidBottomBar -> LiquidBar(nav.tab, backdrop) { nav.select(it) }
 
                         else -> StandardBottomBar(nav.tab) { nav.select(it) }
                     }
@@ -624,14 +653,18 @@ fun MainScaffold(
                 .background(
                     if (miuix) MiuixTheme.colorScheme.background
                     else MaterialTheme.colorScheme.background,
-                )                .layerBackdrop(backdrop),
+                )
+                .then(if (liquidBottomBar) Modifier.layerBackdrop(backdrop) else Modifier),
         ) {
             AnimatedContent(
                 targetState = nav.page,
                 transitionSpec = {
-                    (slideInHorizontally(animationSpec = tween(220)) { it / 4 } + fadeIn(tween(220)))
+                    // 转场期间新旧两页会同时组合/绘制，时长越长叠加越久。
+                    // 这里把时长与位移都收短：视觉上仍是「右侧滑入 + 淡出」，
+                    // 但切到仓库列表这类重页面时，重叠的那一帧开销明显下降。
+                    (slideInHorizontally(animationSpec = tween(160)) { it / 6 } + fadeIn(tween(160)))
                         .togetherWith(
-                            slideOutHorizontally(animationSpec = tween(180)) { -it / 4 } + fadeOut(tween(180)),
+                            slideOutHorizontally(animationSpec = tween(120)) { -it / 6 } + fadeOut(tween(120)),
                         )
                 },
                 label = "pageNav",
@@ -809,23 +842,13 @@ fun MainScaffold(
                 is Page.Repo -> RepoPageScreen(
                     modules = repoModules,
                     busy = repoBusy,
-                    installedVersion = { pkg ->
-                        patchedApps.firstOrNull { it.packageName == pkg }?.versionName
-                            ?: runCatching {
-                                context.packageManager.getPackageInfo(pkg, 0).versionName
-                            }.getOrNull()
-                    },
-                    installedVersionCode = { pkg -> installedVersionCodeOf(context, pkg) },
-                    installedTime = { pkg ->
-                        runCatching {
-                            context.packageManager.getPackageInfo(pkg, 0).lastUpdateTime
-                        }.getOrDefault(0L)
-                    },
-                    isCached = { module -> runCatching { repoStore.cachedApk(module) != null }.getOrDefault(false) },
+                    // 安装态快照：组合期不再有任何 PackageManager / 文件 IO。
+                    snapshot = repoSnapshot.value,
+                    // 仅「含 README 全文」搜索会用到，且由后台协程在 IO 线程读盘。
                     readmeText = { pkg -> repoStore.readmeText(pkg) },
-                    downloadedBadge = downloadedBadge,
                     downloadingPkg = repoDownloadPkg,
-                    downloadProgress = repoDownloadProgress,
+                    // 用 lambda 传进度：进度变化只重绘进度圈，不触发整页/整列表重组。
+                    downloadProgress = { repoDownloadProgress },
                     downloadDoneTick = repoDownloadDoneTick,
                     onOpenDownloads = { nav.navigate(Page.RepoDownloads) },
                     onRefresh = {
@@ -853,9 +876,7 @@ fun MainScaffold(
                                 } else {
                                     repoDownloadPkg = module.packageName
                                     repoDownloadProgress = 0
-                                    val file = repoStore.download(module) { p ->
-                                        repoDownloadProgress = p
-                                    }
+                                    repoStore.download(module, onRepoDownloadProgress)
                                     repoDownloadPkg = null
                                     repoDownloadDoneTick++
                                     eventLog.add("已下载 " + module.name)
@@ -874,16 +895,9 @@ fun MainScaffold(
 
                 is Page.RepoDownloads -> DownloadsScreen(
                     modules = repoModules,
-                    entries = remember(token) {
-                        runCatching { repoStore.downloads() }.getOrDefault(emptyList())
-                    },
-                    installedVersion = { pkg ->
-                        patchedApps.firstOrNull { it.packageName == pkg }?.versionName
-                            ?: runCatching {
-                                context.packageManager.getPackageInfo(pkg, 0).versionName
-                            }.getOrNull()
-                    },
-                    installedVersionCode = { pkg -> installedVersionCodeOf(context, pkg) },
+                    // 条目来自安装态快照（IO 线程构建），组合期不再解析 repo-cache.json。
+                    entries = repoSnapshot.value.cache.entries,
+                    snapshot = repoSnapshot.value,
                     busy = repoBusy,
                     onInstall = { entry ->
                         val module = repoModules.firstOrNull { it.packageName == entry.packageName }
@@ -917,16 +931,17 @@ fun MainScaffold(
                 is Page.RepoDetail -> {
                     var detailReadme by remember(current.module.packageName) { mutableStateOf<String?>(null) }
                     LaunchedEffect(current.module.packageName) {
-                        detailReadme = repoStore.readmeText(current.module.packageName)
+                        // 读盘放 IO 线程：README 可能几百 KB，主线程读会直接卡住转场动画。
+                        detailReadme = withContext(Dispatchers.IO) {
+                            repoStore.readmeText(current.module.packageName)
+                        }
                     }
+                    val detailSnapshot = repoSnapshot.value
                     RepoDetailScreen(
                         module = current.module,
-                        installed = patchedApps.firstOrNull { it.packageName == current.module.packageName }?.versionName
-                            ?: runCatching {
-                                context.packageManager.getPackageInfo(current.module.packageName, 0).versionName
-                            }.getOrNull(),
-                        installedVersionCode = installedVersionCodeOf(context, current.module.packageName),
-                        cached = runCatching { repoStore.cachedApk(current.module) != null }.getOrDefault(false),
+                        installed = detailSnapshot.versionNameOf(current.module.packageName),
+                        installedVersionCode = detailSnapshot.versionCodeOf(current.module.packageName),
+                        cached = detailSnapshot.isCached(current.module),
                         busy = repoBusy,
                         readme = detailReadme,
                         onAction = {
@@ -940,9 +955,7 @@ fun MainScaffold(
                                     } else {
                                         repoDownloadPkg = current.module.packageName
                                         repoDownloadProgress = 0
-                                        val file = repoStore.download(current.module) { p ->
-                                            repoDownloadProgress = p
-                                        }
+                                        repoStore.download(current.module, onRepoDownloadProgress)
                                         repoDownloadPkg = null
                                         repoDownloadDoneTick++
                                         eventLog.add("已下载 " + current.module.name)
@@ -964,10 +977,14 @@ fun MainScaffold(
                 is Page.LogModule -> {
                     // 分组 key 由 target+module 构成，详情页必须沿用同一口径：
                     // 按 targets 过滤，避免同名模块在其他应用里的日志串进来。
-                    val groupEntries = logsRuntime.entries.filter { entry ->
-                        val targetHit = entry.target in current.targets
-                        if (current.framework) targetHit && entry.framework
-                        else targetHit && entry.module == current.module
+                    // 运行日志可达上万条：过滤必须记忆化，否则这个页面每次重组都要全量扫一遍。
+                    val targets = remember(current) { current.targets.toHashSet() }
+                    val groupEntries = remember(logsRuntime, current) {
+                        logsRuntime.entries.filter { entry ->
+                            val targetHit = entry.target in targets
+                            if (current.framework) targetHit && entry.framework
+                            else targetHit && entry.module == current.module
+                        }
                     }
                     LogModuleScreen(
                         module = current.module,
@@ -1450,10 +1467,55 @@ fun MainScaffold(
     }
 }
 
-private fun installedVersionCodeOf(context: android.content.Context, pkg: String): Long? = runCatching {
-    @Suppress("DEPRECATION")
-    context.packageManager.getPackageInfo(pkg, 0).versionCode.toLong()
-}.getOrNull()
+/**
+ * 构建仓库页安装态快照（只在 IO 线程调用）。
+ *
+ * 旧实现是组合期逐行实时查询：每个模块要 2~3 次 getPackageInfo，再加一次 repo-cache.json 解析。
+ * 这里改成「一次批量列出已安装包 + 一次读取下载索引」，之后页面全是 Map 查表。
+ */
+@Suppress("DEPRECATION")
+private fun buildRepoSnapshot(
+    context: android.content.Context,
+    repoStore: RepoStore,
+    repoModules: List<RepoStore.RepoModule>,
+    patchedApps: List<AppInfo>,
+): RepoInstallSnapshot {
+    val cache = runCatching { repoStore.cacheSnapshot() }
+        .getOrDefault(RepoStore.CacheSnapshot.Empty)
+
+    val wanted = HashSet<String>(repoModules.size + patchedApps.size + cache.versions.size)
+    repoModules.forEach { wanted.add(it.packageName) }
+    patchedApps.forEach { wanted.add(it.packageName) }
+    cache.versions.keys.forEach { wanted.add(it) }
+    if (wanted.isEmpty()) return RepoInstallSnapshot.Empty
+
+    val pm = context.packageManager
+    // 一次批量取出（QUERY_ALL_PACKAGES 已在清单声明），避免对 ~1290 个包逐个 IPC。
+    // 若批量接口不可用，退化为逐个查询，行为与旧实现一致。
+    val bulk = runCatching { pm.getInstalledPackages(0).associateBy { it.packageName } }.getOrNull()
+    val installed = HashMap<String, RepoInstalledApp>(wanted.size * 2)
+    for (pkg in wanted) {
+        val info = if (bulk != null) bulk[pkg] else runCatching { pm.getPackageInfo(pkg, 0) }.getOrNull()
+        installed[pkg] = RepoInstalledApp(
+            versionName = info?.versionName,
+            versionCode = info?.versionCode?.toLong(),
+            lastUpdateTime = info?.lastUpdateTime ?: 0L,
+        )
+    }
+    // 与旧 installedVersion() 语义一致：被 Patch 过的应用优先显示其记录的版本名。
+    for (app in patchedApps) {
+        val current = installed[app.packageName] ?: RepoInstalledApp(null, null, 0L)
+        installed[app.packageName] = current.copy(versionName = app.versionName)
+    }
+
+    // 角标口径与旧实现一致（只看 PackageManager）：已下载但未安装同版本。
+    val badge = cache.entries.count { entry ->
+        val name = runCatching { pm.getPackageInfo(entry.packageName, 0).versionName }.getOrNull()
+        name != entry.version
+    }
+
+    return RepoInstallSnapshot(installed = installed, cache = cache, badge = badge)
+}
 
 private fun openAllFilesSettings(context: android.content.Context) {
     runCatching {
