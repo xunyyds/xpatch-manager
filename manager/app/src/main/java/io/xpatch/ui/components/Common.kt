@@ -382,20 +382,25 @@ fun PulsingDots(
         ),
         label = "phase",
     )
-    Row(
-        modifier = modifier,
-        horizontalArrangement = Arrangement.spacedBy(spacing),
-        verticalAlignment = Alignment.CenterVertically,
+    // 三个点画在同一张 Canvas 里，phase 在绘制期读取：
+    // 原来的写法在组合期读 phase.value，每帧都会重组 PulsingDots 并重新测量/布局 3 个 Box
+    // （点动画时实测每帧 4 个组合节点 + 1 次测量），放在列表行/BusyRow 里会持续吃掉帧预算。
+    // 改成绘制期读取后只剩一次 draw 失效，视觉（三个点、间距、透明度曲线）完全一致。
+    Canvas(
+        modifier = modifier.size(width = dotSize * 3 + spacing * 2, height = dotSize),
     ) {
+        val radius = dotSize.toPx() / 2f
+        val step = (dotSize + spacing).toPx()
+        val centerY = size.height / 2f
+        val current = phase.value
         repeat(3) { index ->
-            val distance = ((phase.value - index) % 3f + 3f) % 3f
+            val distance = ((current - index) % 3f + 3f) % 3f
             val lift = (1f - distance).coerceIn(0f, 1f)
             val alpha = 0.24f + 0.76f * lift
-            Box(
-                Modifier
-                    .size(dotSize)
-                    .clip(RoundedCornerShape(dotSize))
-                    .background(color.copy(alpha = alpha)),
+            drawCircle(
+                color = color.copy(alpha = alpha),
+                radius = radius,
+                center = Offset(index * step + radius, centerY),
             )
         }
     }

@@ -30,13 +30,19 @@ class MainActivity : ComponentActivity() {
 
     private var storageGranted by mutableStateOf(true)
 
+    // 作用域清扫线程：避免每次 onResume 都再叠一个 3 秒延迟线程（见 onResume 注释）。
+    private var scopeSyncThread: Thread? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val settingsStore = SettingsStore(this)
+        // 首帧只读一次设置：原来 themeMode / uiStyle 各调一次 settingsStore.load()，
+        // 每次都要走一遍 SharedPreferences 读取 + ManagerSettings 构造，属于组合期的重复工作。
+        val initialSettings = settingsStore.load()
         setContent {
-            var themeMode by remember { mutableIntStateOf(settingsStore.load().themeMode) }
-            var uiStyle by remember { mutableStateOf(settingsStore.load().uiStyle) }
+            var themeMode by remember { mutableIntStateOf(initialSettings.themeMode) }
+            var uiStyle by remember { mutableStateOf(initialSettings.uiStyle) }
             XPatchTheme(themeMode = themeMode, uiStyle = uiStyle) {
                 MainScaffold(
                     onThemeModeChange = { mode ->
@@ -48,12 +54,14 @@ class MainActivity : ComponentActivity() {
                         uiStyle = style
                     },
                 )
-                if (!storageGranted) {
-                    AllFilesAccessDialog(
-                        onOpenSettings = { openAllFilesSettings() },
-                        onDismiss = { storageGranted = true },
-                    )
-                }
+                // storageGranted 的读取收进独立子组合：每次 onResume 更新它时只重组这个门，
+                // 不会连带把 MainScaffold 拖进无谓的重组（此前它在 content lambda 里被读，
+                // 每次 onResume 都会带着新 lambda 重调 MainScaffold）。
+                StorageAccessGate(
+                    granted = { storageGranted },
+                    onOpenSettings = { openAllFilesSettings() },
+                    onDismiss = { storageGranted = true },
+                )
             }
         }
     }
@@ -63,15 +71,21 @@ class MainActivity : ComponentActivity() {
         val granted = Build.VERSION.SDK_INT < Build.VERSION_CODES.R || Environment.isExternalStorageManager()
         storageGranted = granted
         if (granted) {
-            Thread {
-                runCatching {
-                    // 等 Shizuku binder/UserService 就绪再清扫遗留，避免冷启动竞态。
-                    Thread.sleep(3000)
-                    ScopeFileWriter(applicationContext).syncAll { message ->
-                        runCatching { EventLog(applicationContext).add(message) }
+            // 上一轮清扫还在 3 秒等待/写文件时跳过本轮，避免快速切前后台时线程叠加、
+            // 多份 syncAll 并发写同一批作用域文件（既有语义是"每次 resume 尝试一次"，
+            // 只是不再重叠执行）。
+            val running = scopeSyncThread
+            if (running == null || !running.isAlive) {
+                scopeSyncThread = Thread {
+                    runCatching {
+                        // 等 Shizuku binder/UserService 就绪再清扫遗留，避免冷启动竞态。
+                        Thread.sleep(3000)
+                        ScopeFileWriter(applicationContext).syncAll { message ->
+                            runCatching { EventLog(applicationContext).add(message) }
+                        }
                     }
-                }
-            }.start()
+                }.also { it.start() }
+            }
         }
     }
 
@@ -86,6 +100,19 @@ class MainActivity : ComponentActivity() {
         }.onFailure {
             runCatching { startActivity(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
         }
+    }
+}
+
+@Composable
+private fun StorageAccessGate(
+    granted: () -> Boolean,
+    onOpenSettings: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    // granted 用 lambda 传入、在这里读取，让状态订阅落在本组合内部，
+    // 上层的 MainScaffold 不会因为权限检查结果变化而重组。
+    if (!granted()) {
+        AllFilesAccessDialog(onOpenSettings = onOpenSettings, onDismiss = onDismiss)
     }
 }
 

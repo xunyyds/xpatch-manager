@@ -137,13 +137,19 @@ fun XPatchTheme(
 
     val miuix = uiStyle == UiStyle.MIUIX
     val context = LocalContext.current
-    val colors = when {
-        miuix -> if (dark) MiuixDark else MiuixLight
-        Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
+    // 动态取色要读系统资源（accent1/2/3 + neutral 四组调色板、几十个 color resource），
+    // 且每次都返回新的 ColorScheme 实例：一旦在组合期重算，LocalColorScheme 的引用变化
+    // 会让整棵订阅 MaterialTheme 的子树全部重组。按 (context, dark, miuix) 缓存即可，
+    // 主题切换本身会改变 key，视觉与之前完全一致。
+    val colors = remember(context, dark, miuix) {
+        when {
+            miuix -> if (dark) MiuixDark else MiuixLight
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
+                if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
 
-        dark -> FallbackDark
-        else -> FallbackLight
+            dark -> FallbackDark
+            else -> FallbackLight
+        }
     }
 
     val view = LocalView.current
