@@ -452,6 +452,7 @@ fun MainScaffold(
         is Page.AppScope -> current.app.label
         is Page.ModuleDetail -> current.module.label
         is Page.Repo -> "模块仓库"
+        is Page.RepoDownloads -> "下载管理"
         is Page.RepoDetail -> current.module.name
         is Page.LogModule -> if (current.framework) LogLayer.Framework.label
         else labelOf(current.module)
@@ -463,6 +464,70 @@ fun MainScaffold(
     val scrollConnection = miuixBehavior?.nestedScrollConnection
         ?: m3Behavior?.nestedScrollConnection
         ?: object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {}
+
+    val showToast: (String) -> Unit = { message ->
+        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    // 模块安装统一管线：Shizuku 静默优先，失败/不可用回退系统安装器，全程反馈。
+    val fallbackModuleInstall: (String, java.io.File, String) -> Unit = { name, file, pkg ->
+        if (!InstallHelper.canInstall(context)) {
+            eventLog.add("缺少「安装未知应用」权限，已停止安装 " + name)
+            showToast("需要安装权限，请授权后重试")
+            installBlocked = InstallBlock(pkg, true)
+            logs = eventLog.entries()
+        } else {
+            val launched = runCatching { InstallHelper.openWith(context, file) }.getOrDefault(false)
+            if (launched) {
+                eventLog.add("已调起系统安装器安装 " + name + "，请在弹窗中确认")
+                showToast("已调起系统安装器，请在弹窗中确认")
+            } else {
+                eventLog.add("没有可用的安装器 " + name)
+                showToast("没有可用的安装器")
+            }
+            logs = eventLog.entries()
+        }
+    }
+
+    val installModuleFile: (String, java.io.File, String) -> Unit = { name, file, pkg ->
+        scope.launch {
+            val viaShizuku = ShizukuBridge.isAvailable()
+            busyText = if (viaShizuku) "正在通过 Shizuku 安装 " + name + "…" else null
+            try {
+                when (val step = ShizukuInstaller.install(context, file, pkg)) {
+                    is ShizukuInstaller.Result.Success -> {
+                        eventLog.add(step.message)
+                        showToast(step.message)
+                    }
+                    is ShizukuInstaller.Result.Failure -> {
+                        eventLog.add(step.message)
+                        showToast(step.message)
+                        fallbackModuleInstall(name, file, pkg)
+                    }
+                    ShizukuInstaller.Result.Unavailable -> {
+                        eventLog.add("Shizuku 不可用，改用系统安装器安装 " + name)
+                        fallbackModuleInstall(name, file, pkg)
+                    }
+                }
+            } finally {
+                busyText = null
+            }
+            logs = eventLog.entries()
+            token++
+        }
+    }
+
+    // 下载管理徽章：已下载且未安装（同版本）的模块数。
+    val downloadedBadge = remember(token) {
+        runCatching { repoStore.downloads() }
+            .getOrDefault(emptyList())
+            .count { entry ->
+                val installed = runCatching {
+                    context.packageManager.getPackageInfo(entry.packageName, 0).versionName
+                }.getOrNull()
+                installed != entry.version
+            }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -551,7 +616,7 @@ fun MainScaffold(
                     else MaterialTheme.colorScheme.background,
                 )                .layerBackdrop(backdrop),
         ) {
-            when (val current = nav.page) {
+    when (val current = nav.page) {
                 is Page.Home -> when (nav.tab) {
                     Tab.Home -> HomeScreen(
                         apps = patchedApps,
@@ -726,6 +791,9 @@ fun MainScaffold(
                     busy = repoBusy,
                     installedVersion = { pkg ->
                         patchedApps.firstOrNull { it.packageName == pkg }?.versionName
+                            ?: runCatching {
+                                context.packageManager.getPackageInfo(pkg, 0).versionName
+                            }.getOrNull()
                     },
                     installedTime = { pkg ->
                         runCatching {
@@ -733,6 +801,9 @@ fun MainScaffold(
                         }.getOrDefault(0L)
                     },
                     isCached = { module -> runCatching { repoStore.cachedApk(module) != null }.getOrDefault(false) },
+                    readmeText = { pkg -> repoStore.readmeText(pkg) },
+                    downloadedBadge = downloadedBadge,
+                    onOpenDownloads = { nav.navigate(Page.RepoDownloads) },
                     onRefresh = {
                         scope.launch {
                             repoBusy = true
@@ -743,22 +814,9 @@ fun MainScaffold(
                             repoBusy = false
                         }
                     },
-                    onClearCache = {
-                        runCatching { repoStore.clearCache() }
-                        eventLog.add("已清空模块下载缓存")
-                        token++
-                    },
                     onOpenDetail = { module ->
                         runCatching { nav.navigate(Page.RepoDetail(module)) }
                             .onFailure { eventLog.add("打开详情失败 " + (it.message ?: "")) }
-                    },
-                    sourceUrl = repoStore.sourceUrl(),
-                    onSourceChange = { url ->
-                        runCatching { repoStore.setSourceUrl(url) }
-                        eventLog.add("仓库地址已更新")
-                        repoModules = emptyList()
-                        repoError = null
-                        token++
                     },
                     onAction = { module ->
                         scope.launch {
@@ -767,10 +825,7 @@ fun MainScaffold(
                             runCatching {
                                 val cached = repoStore.cachedApk(module)
                                 if (cached != null) {
-                                    busyText = "正在安装 " + module.name
-                                    runCatching { patchService.installFromFile(cached, module.packageName) }
-                                        .onSuccess { eventLog.add("已提交安装 " + module.name) }
-                                        .onFailure { eventLog.add("安装失败 " + (it.message ?: "")) }
+                                    installModuleFile(module.name, cached, module.packageName)
                                 } else {
                                     busyText = "正在下载 " + module.name
                                     val file = repoStore.download(module)
@@ -788,45 +843,87 @@ fun MainScaffold(
                     },
                 )
 
-                is Page.RepoDetail -> RepoDetailScreen(
-                    module = current.module,
-                    installed = patchedApps.firstOrNull { it.packageName == current.module.packageName }?.versionName,
-                    cached = runCatching { repoStore.cachedApk(current.module) != null }.getOrDefault(false),
-                    busy = repoBusy,
-                    onAction = {
-                        scope.launch {
-                            repoBusy = true
-                            repoError = null
-                            runCatching {
-                                val cached = repoStore.cachedApk(current.module)
-                                if (cached != null) {
-                                    if (!InstallHelper.canInstall(context)) {
-                                        installBlocked = InstallBlock(current.module.packageName, true)
-                                    } else {
-                                        busyText = "正在安装 " + current.module.name
-                                        runCatching {
-                                            patchService.installFromFile(cached, current.module.packageName)
-                                        }
-                                            .onSuccess { eventLog.add("已提交安装 " + current.module.name) }
-                                            .onFailure { eventLog.add("安装失败 " + (it.message ?: "")) }
-                                    }
-                                } else {
-                                    busyText = "正在下载 " + current.module.name
-                                    val file = repoStore.download(current.module)
-                                    busyText = null
-                                    nav.navigate(Page.Config(PatchTarget.FromFile(file, current.module.name)))
-                                }
-                            }.onFailure {
-                                repoError = it.message ?: "下载失败"
-                                eventLog.add("下载失败 " + (it.message ?: ""))
-                            }
-                            busyText = null
-                            repoBusy = false
-                            token++
-                        }
+                is Page.RepoDownloads -> DownloadsScreen(
+                    modules = repoModules,
+                    entries = remember(token) {
+                        runCatching { repoStore.downloads() }.getOrDefault(emptyList())
                     },
-                    onOpenStore = { nav.navigate(Page.Repo) },
+                    installedVersion = { pkg ->
+                        patchedApps.firstOrNull { it.packageName == pkg }?.versionName
+                            ?: runCatching {
+                                context.packageManager.getPackageInfo(pkg, 0).versionName
+                            }.getOrNull()
+                    },
+                    busy = repoBusy,
+                    onInstall = { entry ->
+                        val module = repoModules.firstOrNull { it.packageName == entry.packageName }
+                        installModuleFile(
+                            module?.name ?: entry.fileName,
+                            java.io.File(entry.path),
+                            entry.packageName,
+                        )
+                    },
+                    onDelete = { entry ->
+                        val ok = runCatching { repoStore.removeDownload(entry.packageName) }.getOrDefault(false)
+                        eventLog.add(if (ok) "已删除 " + entry.packageName + " 的下载缓存" else "删除失败 " + entry.packageName)
+                        showToast(if (ok) "已删除" else "删除失败")
+                        logs = eventLog.entries()
+                        token++
+                    },
+                    onClearAll = {
+                        runCatching { repoStore.clearCache() }
+                        eventLog.add("已清空模块下载缓存")
+                        showToast("已清空模块下载缓存")
+                        logs = eventLog.entries()
+                        token++
+                    },
+                    onOpenRepo = { nav.navigate(Page.Repo) },
+                    onOpenDetail = { module ->
+                        runCatching { nav.navigate(Page.RepoDetail(module)) }
+                            .onFailure { eventLog.add("打开详情失败 " + (it.message ?: "")) }
+                    },
                 )
+
+                is Page.RepoDetail -> {
+                    var detailReadme by remember(current.module.packageName) { mutableStateOf<String?>(null) }
+                    LaunchedEffect(current.module.packageName) {
+                        detailReadme = repoStore.readmeText(current.module.packageName)
+                    }
+                    RepoDetailScreen(
+                        module = current.module,
+                        installed = patchedApps.firstOrNull { it.packageName == current.module.packageName }?.versionName
+                            ?: runCatching {
+                                context.packageManager.getPackageInfo(current.module.packageName, 0).versionName
+                            }.getOrNull(),
+                        cached = runCatching { repoStore.cachedApk(current.module) != null }.getOrDefault(false),
+                        busy = repoBusy,
+                        readme = detailReadme,
+                        onAction = {
+                            scope.launch {
+                                repoBusy = true
+                                repoError = null
+                                runCatching {
+                                    val cached = repoStore.cachedApk(current.module)
+                                    if (cached != null) {
+                                        installModuleFile(current.module.name, cached, current.module.packageName)
+                                    } else {
+                                        busyText = "正在下载 " + current.module.name
+                                        val file = repoStore.download(current.module)
+                                        busyText = null
+                                        nav.navigate(Page.Config(PatchTarget.FromFile(file, current.module.name)))
+                                    }
+                                }.onFailure {
+                                    repoError = it.message ?: "下载失败"
+                                    eventLog.add("下载失败 " + (it.message ?: ""))
+                                }
+                                busyText = null
+                                repoBusy = false
+                                token++
+                            }
+                        },
+                        onOpenStore = { nav.navigate(Page.Repo) },
+                    )
+                }
 
                 is Page.LogModule -> {
                     // 分组 key 由 target+module 构成，详情页必须沿用同一口径：
@@ -1137,10 +1234,6 @@ fun MainScaffold(
                 Text(text)
             }
         }
-    }
-
-    val showToast: (String) -> Unit = { message ->
-        android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
     }
 
     // Shizuku 不可用/失败时的兜底：调起系统安装器（原「打开方式」的调用），全程有反馈。
