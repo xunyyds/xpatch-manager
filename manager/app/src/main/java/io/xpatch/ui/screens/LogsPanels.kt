@@ -57,6 +57,13 @@ import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+// 分段控件的选项是常量：提到文件级只分配一次，
+// 也让 SegmentedControl 在面板重组时可以直接跳过。
+private val LOG_LAYER_LABELS = LogLayer.entries.map { it.label }
+private val LOG_VIEW_LABELS = LogViewMode.entries.map { it.label }
+private val GROUP_ORDER_SHORTS = GroupOrder.entries.map { it.short }
+private val TIME_ORDER_LABELS = TimeOrder.entries.map { it.label }
+
 @Composable
 internal fun FilterPanel(
     state: LogsState,
@@ -75,28 +82,28 @@ internal fun FilterPanel(
         Spacer(Modifier.height(12.dp))
         PanelRow("层级") {
             SegmentedControl(
-                options = LogLayer.entries.map { it.label },
+                options = LOG_LAYER_LABELS,
                 selectedIndex = LogLayer.entries.indexOf(state.layer),
                 modifier = Modifier.fillMaxWidth(),
             ) { index -> state.layer = LogLayer.entries[index] }
         }
         PanelRow("视图") {
             SegmentedControl(
-                options = LogViewMode.entries.map { it.label },
+                options = LOG_VIEW_LABELS,
                 selectedIndex = LogViewMode.entries.indexOf(state.view),
                 modifier = Modifier.fillMaxWidth(),
             ) { index -> state.view = LogViewMode.entries[index] }
         }
         PanelRow("模块先后") {
             SegmentedControl(
-                options = GroupOrder.entries.map { it.short },
+                options = GROUP_ORDER_SHORTS,
                 selectedIndex = GroupOrder.entries.indexOf(state.groupOrder),
                 modifier = Modifier.fillMaxWidth(),
             ) { index -> state.groupOrder = GroupOrder.entries[index] }
         }
         PanelRow("时间顺序") {
             SegmentedControl(
-                options = TimeOrder.entries.map { it.label },
+                options = TIME_ORDER_LABELS,
                 selectedIndex = TimeOrder.entries.indexOf(state.timeOrder),
                 modifier = Modifier.fillMaxWidth(),
             ) { index -> state.timeOrder = TimeOrder.entries[index] }
@@ -503,7 +510,6 @@ internal fun clearScope(
     runtime: RuntimeLogsState,
     operations: List<String>,
     base: LogsBase?,
-    labelOf: (String) -> String,
 ): ClearScope {
     if (tab == LogsTab.Operations) {
         return ClearScope(

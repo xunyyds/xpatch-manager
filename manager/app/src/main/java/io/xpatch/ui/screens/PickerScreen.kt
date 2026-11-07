@@ -23,6 +23,7 @@ import androidx.compose.material3.MaterialTheme
 import io.xpatch.ui.components.JellySwitch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -71,26 +72,36 @@ internal fun PickerScreen(
         )
     }
 
-    val filtered = apps
-        .filter { includeSystem || !it.isSystem }
-        .filter {
-            query.isBlank() ||
-                it.label.contains(query, true) ||
-                it.packageName.contains(query, true)
-        }
-    val sorted = when (sortId) {
-        "letter" -> filtered.sortedBy { it.label.lowercase() }
-        "size" -> filtered.sortedBy { it.size }
-        else -> filtered
-    }
-    val ordered = if (reversed) sorted.reversed() else sorted
-    val groups = if (sortId == "letter") {
-        ordered.groupBy { letterOf(it.label) }
-            .toList()
-            .sortedWith(compareBy({ if (it.first == "#") 1 else 0 }, { it.first }))
+    // 过滤 / 排序 / 分组只在条件变化时算一次。
+    // 原实现在组合体里每帧都跑一遍，而下面的字母索引条又直接读了
+    // listState.firstVisibleItemIndex —— 滚动每经过一项都会让整个 PickerScreen
+    // 重组，等于把几百个应用重新过滤+排序+分组一次。
+    val ordered = remember(apps, includeSystem, query, sortId, reversed) {
+        apps
+            .filter { includeSystem || !it.isSystem }
+            .filter {
+                query.isBlank() ||
+                    it.label.contains(query, true) ||
+                    it.packageName.contains(query, true)
+            }
+            .let { filtered ->
+                when (sortId) {
+                    "letter" -> filtered.sortedBy { it.label.lowercase() }
+                    "size" -> filtered.sortedBy { it.size }
+                    else -> filtered
+                }
+            }
             .let { if (reversed) it.reversed() else it }
-    } else {
-        emptyList()
+    }
+    val groups: List<Pair<String, List<AppInfo>>> = remember(ordered, sortId, reversed) {
+        if (sortId == "letter") {
+            ordered.groupBy { letterOf(it.label) }
+                .toList()
+                .sortedWith(compareBy({ if (it.first == "#") 1 else 0 }, { it.first }))
+                .let { if (reversed) it.reversed() else it }
+        } else {
+            emptyList()
+        }
     }
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -169,8 +180,13 @@ internal fun PickerScreen(
                     }
                 }
                 if (letterHeaders.isNotEmpty()) {
-                    val current = listState.firstVisibleItemIndex
-                    val activeLetter = letterHeaders.lastOrNull { it.second <= current }?.first
+                    // 派生当前高亮字母：只有字母真的换了才让上层重组，
+                    // 不再依赖 firstVisibleItemIndex 的每一次变化。
+                    val activeLetter by remember(letterHeaders) {
+                        derivedStateOf {
+                            letterHeaders.lastOrNull { it.second <= listState.firstVisibleItemIndex }?.first
+                        }
+                    }
                     Column(
                         Modifier
                             .align(Alignment.CenterEnd)

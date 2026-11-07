@@ -11,6 +11,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -39,8 +40,11 @@ internal fun ModulesScreen(
     onRefresh: () -> Unit,
 ) {
     val miuix = LocalMiuix.current
-    val filtered = if (query.isBlank()) modules else modules.filter {
-        it.label.contains(query, true) || it.packageName.contains(query, true)
+    // 搜索过滤只在输入或模块列表变化时算一次，避免无关重组时重复遍历。
+    val filtered = remember(modules, query) {
+        if (query.isBlank()) modules else modules.filter {
+            it.label.contains(query, true) || it.packageName.contains(query, true)
+        }
     }
     PullRefreshBox(
         refreshing = refreshing,

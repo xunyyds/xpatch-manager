@@ -68,10 +68,11 @@ internal fun ModuleScopeScreen(
     onToggle: (AppInfo, Boolean) -> Unit,
 ) {
     val scope = scopeOf()
-    val selected = scope.intersect(apps.map { it.packageName }.toSet())
+    // 这里只需要一个计数：直接统计即可，不必每次重组都重建包名 Set 再做一次交集。
+    val selectedCount = apps.count { it.packageName in scope }
     val miuix = LocalMiuix.current
     LazyColumn(contentPadding = PaddingValues(bottom = 24.dp)) {
-        item { ScopeHeader(module.label, module.packageName, "已选择 ${selected.size} 个应用") }
+        item { ScopeHeader(module.label, module.packageName, "已选择 $selectedCount 个应用") }
         item { GroupHeader("应用") }
         if (apps.isEmpty()) {
             item { EmptyState("没有可作用的应用") }

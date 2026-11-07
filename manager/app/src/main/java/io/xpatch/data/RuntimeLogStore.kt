@@ -235,7 +235,16 @@ class RuntimeLogStore {
         )
     }
 
-    fun export(entries: List<Entry>): String = entries.joinToString("\n") { it.fullText }
+    // 导出通常一次上万条，joinToString 的默认 StringBuilder 会反复扩容复制；
+    // 这里按单条经验长度预估容量。输出与 joinToString("\n") 完全一致。
+    fun export(entries: List<Entry>): String {
+        val builder = StringBuilder(entries.size * 96)
+        entries.forEachIndexed { index, entry ->
+            if (index > 0) builder.append('\n')
+            builder.append(entry.fullText)
+        }
+        return builder.toString()
+    }
 
     private fun logRoots(): List<File> {
         val storage = Environment.getExternalStorageDirectory()

@@ -269,7 +269,9 @@ internal fun filterLogs(
         filtered.sortedWith(comparator)
     }
 
-    val newest = filtered.maxWithOrNull(comparator)
+    // ordered 已经用同一个比较器排好序，最新一条必然落在首/尾，
+    // 不必再对全量 filtered 做一次四字段比较的 maxWithOrNull 扫描。
+    val newest = if (timeOrder == TimeOrder.NewestFirst) ordered.firstOrNull() else ordered.lastOrNull()
     val newestKey = newest?.let { "e:" + it.id }
 
     val buckets = LinkedHashMap<String, MutableList<RuntimeLogStore.Entry>>()
@@ -317,7 +319,6 @@ internal fun filterLogs(
 internal fun buildRows(
     base: LogsBase,
     view: LogViewMode,
-    state: LogsState,
 ): List<LogRow> {
     val rows = ArrayList<LogRow>(base.matched + base.groups.size + 8)
     if (view == LogViewMode.Timeline) {

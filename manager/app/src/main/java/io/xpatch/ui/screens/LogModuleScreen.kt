@@ -20,7 +20,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -49,6 +49,7 @@ import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
+@Suppress("UNUSED_PARAMETER")
 @Composable
 internal fun LogModuleScreen(
     module: String,
@@ -73,8 +74,9 @@ internal fun LogModuleScreen(
     }
     val days = remember(entries) { daysOf(entries) }
     val counts = remember(entries) { levelCounts(entries) }
-    val title = if (framework) LogLayer.Framework.label else labelOf(module)
-    val subtitle = if (targets.size == 1) targets.first() else targets.joinToString("、")
+    // 标题与副标题由 ModuleSummaryCard 自己渲染：原先这里算出来的 title/subtitle
+    // 从未被使用，其中 title 每次重组都会触发一次 labelOf（PackageManager 查询），
+    // 已直接去掉。labelOf 参数保留是为了不动 MainScaffold 的调用点。
 
     Column(Modifier.fillMaxSize()) {
         ModuleSummaryCard(
@@ -245,23 +247,24 @@ private fun ModuleLogList(
         modifier = modifier.fillMaxSize(),
         contentPadding = PaddingValues(start = 4.dp, end = 4.dp, top = 2.dp, bottom = 120.dp),
     ) {
-        entries.forEachIndexed { index, entry ->
-            item(key = entry.id) {
-                val previousDay = entries.getOrNull(index - 1)?.day
-                if (entry.day != previousDay) {
-                    DayRow(entry.day)
-                }
-                LogEntryItem(
-                    entry = entry,
-                    query = state.query,
-                    expanded = state.expanded[entry.id] ?: false,
-                    timeline = false,
-                    modal = true,
-                    last = index == entries.lastIndex,
-                    onToggle = { state.toggleEntry(entry.id) },
-                    onCopy = { onCopy(entry) },
-                )
+        // 旧实现用 forEachIndexed + item(...) 注册条目：每次重组都要为全部日志
+        // 重新创建 LazyListScope 记录（上千条时是实打实的组合期开销），
+        // 而且条目本身无法复用。itemsIndexed 只注册一个区间，真正惰性化。
+        itemsIndexed(entries, key = { _, entry -> entry.id }) { index, entry ->
+            val previousDay = entries.getOrNull(index - 1)?.day
+            if (entry.day != previousDay) {
+                DayRow(entry.day)
             }
+            LogEntryItem(
+                entry = entry,
+                query = state.query,
+                expanded = state.expanded[entry.id] ?: false,
+                timeline = false,
+                modal = true,
+                last = index == entries.lastIndex,
+                onToggle = { state.toggleEntry(entry.id) },
+                onCopy = { onCopy(entry) },
+            )
         }
     }
 }
