@@ -12,10 +12,12 @@ import java.net.URL
 /**
  * 模块在线仓库（同 NPatch 使用的源）。
  *
- *   GET https://repo.fpfast.top/repo/modules                 模块列表
- *   GET https://repo.fpfast.top/repo/info/<pkg>              模块详情
+ *   GET https://repo.fpfast.top/repo/modules                 模块列表（全量 JSON，含 readme）
+ *   GET https://repo.fpfast.top/repo/info/<pkg>              模块详情（版本历史）
  *   GET https://repo.fpfast.top/repo/file/<pkg>/<tag>/<file> 下载
  *
+ * 列表体积 ~9.5 MB / 1290 条：readme_text 在解析时落盘到 readmes/<pkg>.txt，
+ * 内存模型不持有；全文搜索与详情渲染均读磁盘。
  * 下载结果记录在 repo-cache.json，同版本不重复下载。
  */
 class RepoStore(private val context: Context) {
@@ -24,23 +26,44 @@ class RepoStore(private val context: Context) {
         val packageName: String,
         val name: String,
         val version: String,
+        val versionCode: Long,
         val summary: String,
         val author: String,
         val updateTime: Long,
+        val createTime: Long,
         val supports89: Boolean,
         val supports100: Boolean,
+        val legacyMax: Int,
+        val lspMax: Int,
+        val scope89: List<String>,
+        val scope100: List<String>,
+    )
+
+    data class DownloadEntry(
+        val packageName: String,
+        val version: String,
+        val tag: String,
+        val fileName: String,
+        val path: String,
+        val size: Long,
+        val time: Long,
     )
 
     private val prefs = context.getSharedPreferences("repo", Context.MODE_PRIVATE)
     private val indexFile: File
         get() = File(context.filesDir, "repo-cache.json")
 
-    fun sourceUrl(): String = prefs.getString(KEY_URL, MODULES_URL) ?: MODULES_URL
+    private val readmeDir: File
+        get() = File(context.filesDir, "repo/readmes").apply { mkdirs() }
 
-    fun setSourceUrl(url: String) = prefs.edit().putString(KEY_URL, url.trim()).apply()
+    fun readmeText(pkg: String): String? {
+        val file = File(readmeDir, "$pkg.txt")
+        if (!file.isFile) return null
+        return runCatching { file.readText() }.getOrNull()?.takeIf { it.isNotBlank() }
+    }
 
     suspend fun fetch(): List<RepoModule> = withContext(Dispatchers.IO) {
-        val root = JSONObject(request(sourceUrl()))
+        val root = JSONObject(request(MODULES_URL))
         val array = root.optJSONArray("modules") ?: JSONArray()
 
         buildList {
@@ -48,20 +71,67 @@ class RepoStore(private val context: Context) {
                 val item = array.optJSONObject(i) ?: continue
                 val pkg = item.optString("pkg")
                 if (pkg.isBlank()) continue
+
+                val readme = item.optString("readme_text")
+                if (readme.isNotBlank()) {
+                    runCatching { File(readmeDir, "$pkg.txt").writeText(readme) }
+                }
+
                 add(
                     RepoModule(
                         packageName = pkg,
                         name = item.optString("desc").ifBlank { pkg },
                         version = item.optString("new_version"),
+                        versionCode = item.optLong("new_version_code"),
                         summary = item.optString("summary"),
                         author = item.optString("author"),
                         updateTime = item.optLong("new_update_time"),
+                        createTime = item.optLong("createTime").takeIf { it > 0 }
+                            ?: item.optLong("create_time"),
                         supports89 = item.optBoolean("isXP89") || item.optBoolean("isXp89"),
                         supports100 = item.optBoolean("isXP100") || item.optBoolean("isXp100"),
+                        legacyMax = item.optInt("xplegacymax"),
+                        lspMax = item.optInt("xplspmax"),
+                        scope89 = item.optJSONArray("xp89scope").toStringList(),
+                        scope100 = item.optJSONArray("xp100scope").toStringList(),
                     ),
                 )
             }
         }.sortedBy { it.name.lowercase() }
+    }
+
+    /** 已下载且文件仍完整（大小一致）的缓存条目，按下载时间倒序。 */
+    fun downloads(): List<DownloadEntry> {
+        val index = readIndex()
+        return buildList {
+            for (key in index.keys()) {
+                val record = index.optJSONObject(key) ?: continue
+                val path = record.optString("path")
+                if (path.isBlank()) continue
+                val file = File(path)
+                if (!file.isFile || file.length() != record.optLong("size")) continue
+                add(
+                    DownloadEntry(
+                        packageName = key,
+                        version = record.optString("version"),
+                        tag = record.optString("tag"),
+                        fileName = record.optString("file"),
+                        path = path,
+                        size = record.optLong("size"),
+                        time = record.optLong("time"),
+                    ),
+                )
+            }
+        }.sortedByDescending { it.time }
+    }
+
+    /** 删除单个下载缓存（文件 + 索引项）。 */
+    fun removeDownload(packageName: String): Boolean {
+        val index = readIndex()
+        val record = index.optJSONObject(packageName) ?: return false
+        runCatching { File(record.optString("path")).delete() }
+        index.remove(packageName)
+        return runCatching { indexFile.writeText(index.toString()) }.isSuccess
     }
 
     /** 已下载且仍可用的缓存文件（版本一致才算命中）。 */
@@ -171,11 +241,19 @@ class RepoStore(private val context: Context) {
     }
 
     private companion object {
-        const val KEY_URL = "source_url"
         const val BASE = "https://repo.fpfast.top/repo/"
         const val MODULES_URL = BASE + "modules"
         const val INFO_URL = BASE + "info/"
         const val FILE_URL = BASE + "file/"
         const val USER_AGENT = "XPatch/0.1.0"
+
+        fun JSONArray?.toStringList(): List<String> {
+            if (this == null) return emptyList()
+            return buildList {
+                for (i in 0 until length()) {
+                    optString(i).takeIf { it.isNotBlank() }?.let { add(it) }
+                }
+            }
+        }
     }
 }
