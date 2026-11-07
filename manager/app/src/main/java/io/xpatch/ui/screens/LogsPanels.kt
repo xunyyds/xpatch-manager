@@ -466,15 +466,15 @@ internal fun buildExportOptions(
         listOf(
             LogExportOption(
                 label = "导出当前筛选结果",
-                description = "共 " + matched + " 条，按当前排序，含包名与毫秒",
-                fileName = "xpatch-runtime-filtered-$stamp.txt",
+                description = "共 " + matched + " 条，按当前排序；zip 内含环境信息",
+                fileName = "xpatch-runtime-filtered-$stamp.zip",
                 build = { store.export(ordered) },
                 hasContent = matched > 0,
             ),
             LogExportOption(
                 label = "导出全部已加载日志",
-                description = "共 " + totalLoaded + " 条，忽略筛选；仅本次加载范围，不是磁盘全部",
-                fileName = "xpatch-runtime-loaded-$stamp.txt",
+                description = "共 " + totalLoaded + " 条，忽略筛选；zip 内含环境信息",
+                fileName = "xpatch-runtime-loaded-$stamp.zip",
                 build = { store.export(loadedEntries) },
                 hasContent = totalLoaded > 0,
             ),
@@ -483,15 +483,15 @@ internal fun buildExportOptions(
         listOf(
             LogExportOption(
                 label = "导出当前筛选结果",
-                description = "共 " + filteredOperations.size + " 条，按当前筛选",
-                fileName = "xpatch-operations-filtered-$stamp.txt",
+                description = "共 " + filteredOperations.size + " 条，按当前筛选；zip 内含环境信息",
+                fileName = "xpatch-operations-filtered-$stamp.zip",
                 build = { filteredOperations.joinToString("\n") },
                 hasContent = filteredOperations.isNotEmpty(),
             ),
             LogExportOption(
                 label = "导出全部已加载操作日志",
-                description = "共 " + allOperations.size + " 条，忽略筛选",
-                fileName = "xpatch-operations-loaded-$stamp.txt",
+                description = "共 " + allOperations.size + " 条，忽略筛选；zip 内含环境信息",
+                fileName = "xpatch-operations-loaded-$stamp.zip",
                 build = { allOperations.joinToString("\n") },
                 hasContent = allOperations.isNotEmpty(),
             ),
