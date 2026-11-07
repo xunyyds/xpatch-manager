@@ -193,6 +193,8 @@ fun MainScaffold(
     var result by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var pendingInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
+    var pendingUninstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
+    var uninstallingTarget by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var installBlocked by remember { mutableStateOf<InstallBlock?>(null) }
 
     var patchedApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
@@ -686,6 +688,36 @@ fun MainScaffold(
             logs = eventLog.entries()
             token++
         }
+    }
+
+    // 系统卸载返回后：确认真的卸载成功才继续安装，取消则停留在原状态
+    val uninstallLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { _ ->
+        val target = uninstallingTarget
+        uninstallingTarget = null
+        if (target == null) return@rememberLauncherForActivityResult
+        val stillInstalled = runCatching {
+            context.packageManager.getPackageInfo(target.packageName, 0)
+        }.isSuccess
+        if (stillInstalled) {
+            eventLog.add("已取消卸载 " + target.packageName)
+            logs = eventLog.entries()
+            // 回到签名不一致的选项，用户可改选继续安装或返回
+            pendingInstall = target
+            return@rememberLauncherForActivityResult
+        }
+        eventLog.add("已卸载 " + target.packageName + "，继续安装")
+        logs = eventLog.entries()
+        scope.launch {
+            repository.invalidate()
+            val refreshed = repository.loadPatchedApps()
+            withContext(Dispatchers.Main) {
+                patchedApps = refreshed
+                token++
+            }
+        }
+        installOutcome(target)
     }
 
     val repoSnapshot = produceState(
@@ -1665,6 +1697,11 @@ fun MainScaffold(
             title = "签名不一致",
             actions = listOf(
                 DialogAction("返回") { pendingInstall = null },
+                DialogAction("卸载原应用", destructive = true) {
+                    val target = pendingInstall
+                    pendingInstall = null
+                    pendingUninstall = target
+                },
                 DialogAction("继续安装") {
                     val target = pendingInstall
                     pendingInstall = null
@@ -1674,10 +1711,41 @@ fun MainScaffold(
         ) {
             Text(
                 if (outcome.forceOverwrite) {
-                    "该产物使用 XPatch 签名，与已安装应用签名不同。\n继续会先保留数据卸载原应用，再安装新包（需要 Shizuku）。\n\n点「返回」会保留打包结果，不必重新打包。"
+                    "该产物使用 XPatch 签名，与已安装应用签名不同。\n「继续安装」会先保留数据卸载原应用，再安装新包（需要 Shizuku）。\n「卸载原应用」调用系统卸载，数据会被删除。\n\n点「返回」会保留打包结果，不必重新打包。"
                 } else {
-                    "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n可以先卸载原应用再安装，或改用其他签名重新打包。\n\n点「返回」会保留打包结果，不必重新打包。"
+                    "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n「卸载原应用」调用系统卸载，卸载完成后自动继续安装（数据会被删除）。\n也可以改用其他签名重新打包。\n\n点「返回」会保留打包结果，不必重新打包。"
                 },
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+
+    pendingUninstall?.let { outcome ->
+        XPatchDialog(
+            miuix = miuix,
+            onDismiss = { pendingUninstall = null },
+            title = "卸载原应用？",
+            actions = listOf(
+                DialogAction("取消") { pendingUninstall = null },
+                DialogAction("继续卸载", destructive = true) {
+                    uninstallingTarget = outcome
+                    pendingUninstall = null
+                    val launched = runCatching {
+                        uninstallLauncher.launch(
+                            InstallHelper.uninstallIntent(outcome.packageName),
+                        )
+                    }.isSuccess
+                    if (!launched) {
+                        uninstallingTarget = null
+                        failure = "没有可用的卸载界面，请在系统设置中手动卸载 " + outcome.packageName
+                    }
+                },
+            ),
+        ) {
+            Text(
+                "将调用系统卸载界面。" +
+                    "卸载会连同该应用的全部数据一起删除，且无法恢复。\n\n" +
+                    "如果希望保留数据，请取消并改用「强行覆盖安装」（需要 Shizuku）。",
                 style = MaterialTheme.typography.bodySmall,
             )
         }
