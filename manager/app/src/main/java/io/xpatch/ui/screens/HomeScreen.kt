@@ -53,7 +53,10 @@ internal fun HomeScreen(
             onRefresh = onRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            LazyColumn(contentPadding = PaddingValues(bottom = 96.dp)) {
+            LazyColumn(
+                state = io.xpatch.ui.util.rememberPageScrollState(),
+                contentPadding = PaddingValues(bottom = io.xpatch.ui.util.rememberListBottomPadding(true)),
+            ) {
                 if (apps.isEmpty()) {
                     item {
                         EmptyState("还没有已打包的应用\n点右下角「添加应用」开始\n下拉可重新加载")
@@ -92,29 +95,17 @@ internal fun ShizukuSettingsRows(
     onRequest: () -> Unit,
     onRecheck: () -> Unit,
 ) {
-    val status = when {
-        ready -> "已授权"
-        available -> "未授权"
-        else -> "未安装"
-    }
     SettingItem(
-        title = "Shizuku",
-        subtitle = when {
-            ready -> "启动、强制停止、Dexopt 与运行日志读取可用"
-            available -> "授权后可重启应用、执行 Dexopt，并在无存储权限时读取日志"
-            else -> "未安装或未启动 Shizuku，只能使用系统安装器安装"
+        title = "Shizuku 服务",
+        subtitle = "检测服务状态；授权与其它权限统一在「权限管理」中处理",
+        value = when {
+            ready -> "可用"
+            available -> "未授权"
+            else -> "不可用"
         },
-        value = status,
-        arrow = !ready,
-        onClick = if (ready) onRecheck else onRequest,
+        arrow = true,
+        onClick = if (ready || available) onRecheck else onRequest,
     )
-    if (available) {
-        SettingItem(
-            title = "重新检测",
-            subtitle = if (ready) "重新检查 Shizuku 服务状态" else "如果已在 Shizuku 中授权，可手动刷新状态",
-            onClick = onRecheck,
-        )
-    }
 }
 
 @Composable

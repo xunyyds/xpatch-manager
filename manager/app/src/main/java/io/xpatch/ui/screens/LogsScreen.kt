@@ -339,7 +339,7 @@ internal fun LogsScreen(
             exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomCenter)
-                .padding(bottom = 96.dp),
+                .padding(bottom = io.xpatch.ui.util.rememberListBottomPadding(true)),
         ) {
             Text(
                 copyText,

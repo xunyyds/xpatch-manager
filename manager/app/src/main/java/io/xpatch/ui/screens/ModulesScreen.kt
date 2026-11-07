@@ -50,7 +50,10 @@ internal fun ModulesScreen(
         onRefresh = onRefresh,
         modifier = Modifier.fillMaxSize(),
     ) {
-        LazyColumn(contentPadding = PaddingValues(bottom = 96.dp)) {
+        LazyColumn(
+            state = io.xpatch.ui.util.rememberPageScrollState(),
+            contentPadding = PaddingValues(bottom = io.xpatch.ui.util.rememberListBottomPadding(true)),
+        ) {
             item { SearchField(query, onQueryChange, "搜索模块 / 包名 / 作者") }
             item {
                 if (miuix) {
@@ -118,7 +121,7 @@ internal fun ModuleRow(
 ) {
     EntryRow(
         icon = module.icon,
-        title = if (highlighted) module.label + " · 推荐" else module.label,
+        title = module.label,
         subtitle = moduleSubtitle(module),
         onClick = { onOpen(module) },
     )
@@ -128,9 +131,6 @@ internal fun moduleSubtitle(module: ModuleInfo): String {
     val parts = mutableListOf<String>()
     if (module.versionName.isNotBlank()) parts.add(module.versionName)
     parts.add("已启用 ${module.enabledApps} 个应用")
-    if (module.recommendedLabels.isNotEmpty()) {
-        parts.add("推荐 " + module.recommendedLabels.joinToString("/"))
-    }
     parts.add(if (module.modernModule) "新版模块" else "旧版模块")
     return parts.joinToString(" · ")
 }

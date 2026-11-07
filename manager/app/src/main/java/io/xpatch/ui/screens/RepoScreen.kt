@@ -503,7 +503,10 @@ internal fun RepoPageScreen(
             onRefresh = onRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            LazyColumn(contentPadding = PaddingValues(bottom = 96.dp)) {
+            LazyColumn(
+            state = io.xpatch.ui.util.rememberPageScrollState(),
+            contentPadding = PaddingValues(bottom = io.xpatch.ui.util.rememberListBottomPadding(false)),
+        ) {
                 item {
                     GroupHeader(
                         if (ordered.size == modules.size) {
@@ -954,7 +957,10 @@ internal fun DownloadsScreen(
                 Text("全部清理")
             }
         }
-        LazyColumn(contentPadding = PaddingValues(bottom = 96.dp)) {
+        LazyColumn(
+            state = io.xpatch.ui.util.rememberPageScrollState(),
+            contentPadding = PaddingValues(bottom = 96.dp),
+        ) {
             if (entries.isEmpty()) {
                 item { EmptyState("还没有下载过模块") }
                 item {

@@ -51,7 +51,8 @@ internal fun SignaturesScreen(
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.weight(1f),
-            contentPadding = PaddingValues(bottom = 96.dp),
+            state = io.xpatch.ui.util.rememberPageScrollState(),
+            contentPadding = PaddingValues(bottom = io.xpatch.ui.util.rememberListBottomPadding(false)),
         ) {
             item { GroupHeader("内置签名（兼容 FPA/NP）") }
             if (miuix) {

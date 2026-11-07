@@ -98,7 +98,10 @@ internal fun PatchHistoryScreen(
             onRefresh = onRefresh,
             modifier = Modifier.fillMaxSize(),
         ) {
-            LazyColumn(contentPadding = PaddingValues(bottom = 96.dp)) {
+            LazyColumn(
+                state = io.xpatch.ui.util.rememberPageScrollState(),
+                contentPadding = PaddingValues(bottom = io.xpatch.ui.util.rememberListBottomPadding(false)),
+            ) {
                 if (records.isEmpty()) {
                     item(key = "history-empty") {
                         EmptyState("还没有打包过的产物\n回到首页添加应用，就能去打包了")
