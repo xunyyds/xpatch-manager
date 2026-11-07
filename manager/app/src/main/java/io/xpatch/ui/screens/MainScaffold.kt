@@ -1,5 +1,12 @@
 package io.xpatch.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -165,6 +172,8 @@ fun MainScaffold(
     var logs by remember { mutableStateOf(eventLog.entries()) }
     var repoModules by remember { mutableStateOf<List<RepoStore.RepoModule>>(emptyList()) }
     var repoBusy by remember { mutableStateOf(false) }
+    var repoDownloadPkg by remember { mutableStateOf<String?>(null) }
+    var repoDownloadProgress by remember { mutableIntStateOf(0) }
     var repoError by remember { mutableStateOf<String?>(null) }
     var token by remember { mutableIntStateOf(0) }
     // 按应用包名串行化作用域同步：sync 先取快照再写文件，
@@ -616,7 +625,17 @@ fun MainScaffold(
                     else MaterialTheme.colorScheme.background,
                 )                .layerBackdrop(backdrop),
         ) {
-    when (val current = nav.page) {
+            AnimatedContent(
+                targetState = nav.page,
+                transitionSpec = {
+                    (slideInHorizontally(animationSpec = tween(220)) { it / 4 } + fadeIn(tween(220)))
+                        .togetherWith(
+                            slideOutHorizontally(animationSpec = tween(180)) { -it / 4 } + fadeOut(tween(180)),
+                        )
+                },
+                label = "pageNav",
+            ) { current ->
+            when (current) {
                 is Page.Home -> when (nav.tab) {
                     Tab.Home -> HomeScreen(
                         apps = patchedApps,
@@ -795,6 +814,7 @@ fun MainScaffold(
                                 context.packageManager.getPackageInfo(pkg, 0).versionName
                             }.getOrNull()
                     },
+                    installedVersionCode = { pkg -> installedVersionCodeOf(context, pkg) },
                     installedTime = { pkg ->
                         runCatching {
                             context.packageManager.getPackageInfo(pkg, 0).lastUpdateTime
@@ -803,6 +823,8 @@ fun MainScaffold(
                     isCached = { module -> runCatching { repoStore.cachedApk(module) != null }.getOrDefault(false) },
                     readmeText = { pkg -> repoStore.readmeText(pkg) },
                     downloadedBadge = downloadedBadge,
+                    downloadingPkg = repoDownloadPkg,
+                    downloadProgress = repoDownloadProgress,
                     onOpenDownloads = { nav.navigate(Page.RepoDownloads) },
                     onRefresh = {
                         scope.launch {
@@ -827,10 +849,17 @@ fun MainScaffold(
                                 if (cached != null) {
                                     installModuleFile(module.name, cached, module.packageName)
                                 } else {
-                                    busyText = "正在下载 " + module.name
-                                    val file = repoStore.download(module)
-                                    busyText = null
-                                    nav.navigate(Page.Config(PatchTarget.FromFile(file, module.name)))
+                                    repoDownloadPkg = module.packageName
+                                    repoDownloadProgress = 0
+                                    val file = repoStore.download(module) { p ->
+                                        repoDownloadProgress = p
+                                    }
+                                    repoDownloadPkg = null
+                                    eventLog.add("已下载 " + module.name)
+                                    showToast("已下载 " + module.name)
+                                    if (nav.page is Page.Repo || nav.page is Page.RepoDetail) {
+                                        nav.navigate(Page.RepoDownloads)
+                                    }
                                 }
                             }.onFailure {
                                 repoError = it.message ?: "下载失败"
@@ -854,6 +883,7 @@ fun MainScaffold(
                                 context.packageManager.getPackageInfo(pkg, 0).versionName
                             }.getOrNull()
                     },
+                    installedVersionCode = { pkg -> installedVersionCodeOf(context, pkg) },
                     busy = repoBusy,
                     onInstall = { entry ->
                         val module = repoModules.firstOrNull { it.packageName == entry.packageName }
@@ -895,6 +925,7 @@ fun MainScaffold(
                             ?: runCatching {
                                 context.packageManager.getPackageInfo(current.module.packageName, 0).versionName
                             }.getOrNull(),
+                        installedVersionCode = installedVersionCodeOf(context, current.module.packageName),
                         cached = runCatching { repoStore.cachedApk(current.module) != null }.getOrDefault(false),
                         busy = repoBusy,
                         readme = detailReadme,
@@ -907,10 +938,17 @@ fun MainScaffold(
                                     if (cached != null) {
                                         installModuleFile(current.module.name, cached, current.module.packageName)
                                     } else {
-                                        busyText = "正在下载 " + current.module.name
-                                        val file = repoStore.download(current.module)
-                                        busyText = null
-                                        nav.navigate(Page.Config(PatchTarget.FromFile(file, current.module.name)))
+                                        repoDownloadPkg = current.module.packageName
+                                        repoDownloadProgress = 0
+                                        val file = repoStore.download(current.module) { p ->
+                                            repoDownloadProgress = p
+                                        }
+                                        repoDownloadPkg = null
+                                        eventLog.add("已下载 " + current.module.name)
+                                        showToast("已下载 " + current.module.name)
+                                        if (nav.page is Page.Repo || nav.page is Page.RepoDetail) {
+                                            nav.navigate(Page.RepoDownloads)
+                                        }
                                     }
                                 }.onFailure {
                                     repoError = it.message ?: "下载失败"
@@ -1184,6 +1222,7 @@ fun MainScaffold(
                     },
                 )
             }
+            }
         }
     }
 
@@ -1412,6 +1451,11 @@ fun MainScaffold(
         }
     }
 }
+
+private fun installedVersionCodeOf(context: android.content.Context, pkg: String): Long? = runCatching {
+    @Suppress("DEPRECATION")
+    context.packageManager.getPackageInfo(pkg, 0).versionCode.toLong()
+}.getOrNull()
 
 private fun openAllFilesSettings(context: android.content.Context) {
     runCatching {
