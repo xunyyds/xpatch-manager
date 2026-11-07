@@ -45,21 +45,6 @@ class PatchService(private val context: Context) {
         buildFrom(copyInstalledApk(app), app.packageName, app.label, options, onLog, onProgress)
     }
 
-    suspend fun extractOriginalApk(app: AppInfo): File? = withContext(Dispatchers.IO) {
-        val installed = copyInstalledApk(app)
-        runCatching {
-            java.util.zip.ZipFile(installed).use { zip ->
-                val entry = SOURCE_ENTRIES.firstNotNullOfOrNull { zip.getEntry(it) } ?: return@use null
-                val dir = File(context.cacheDir, "input").apply { mkdirs() }
-                val target = File(dir, "${app.packageName}-source.apk")
-                zip.getInputStream(entry).use { input ->
-                    target.outputStream().use { output -> input.copyTo(output) }
-                }
-                target
-            }
-        }.getOrNull()
-    }
-
     private fun copyInstalledApk(app: AppInfo): File {
         val currentPath = runCatching {
             @Suppress("DEPRECATION")
@@ -206,14 +191,5 @@ class PatchService(private val context: Context) {
         return File(context.getExternalFilesDir(null), "输出")
     }
 
-    private companion object {
-        val SOURCE_ENTRIES = listOf(
-            "xp/source.apk",
-            "fpa/source.apk",
-            "xp/o_app.apk",
-            "assets/npatch/origin.apk",
-            "lspatch/origin.apk",
-            "assets/lspatch/origin.apk",
-        )
-    }
+    private companion object
 }

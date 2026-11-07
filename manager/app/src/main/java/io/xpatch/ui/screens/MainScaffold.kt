@@ -1411,76 +1411,7 @@ fun MainScaffold(
                     },
                     onAppInfo = { ShizukuBridge.openAppDetails(context, current.app.packageName) },
                     onViewLogs = { nav.openLogs() },
-                    onUpdateCore = {
-                        scope.launch {
-                            busyText = "正在提取原始安装包…"
-                            val src = patchService.extractOriginalApk(current.app)
-                            if (src == null) {
-                                busyText = null
-                                failure = "没有找到内嵌的原始安装包（xp/source.apk）"
-                            } else {
-                                eventLog.add("已提取原始包 " + src.name)
-                                busyText = null
-                                patchLog.clear()
-                                patchProgress = 0
-                                patchFailure = null
-                                patchRunning = true
-                                val coreOptions = PatchOptions(
-                                    hookCore = settings.hookCore,
-                                    bypassLevel = settings.signatureBypassLevel,
-                                    injectSignature = settings.injectSignature,
-                                    fileProvider = settings.fileProvider,
-                                    dynamicMode = settings.dynamicMode,
-                                )
-                                val coreSourceKey = listOf(
-                                    "core",
-                                    src.absolutePath,
-                                    src.length().toString(),
-                                    src.lastModified().toString(),
-                                ).joinToString("|")
-                                val coreFingerprint = PatchFingerprint.of(coreSourceKey, coreOptions)
-                                val coreSummary = PatchFingerprint.summary(coreOptions)
-                                runCatching {
-                                    patchService.buildFromFile(
-                                        src,
-                                        current.app.label,
-                                        coreOptions,
-                                        onLog = { line -> patchLog.add(line) },
-                                        onProgress = { patchProgress = it },
-                                    )
-                                }.onSuccess { outcome ->
-                                    result = outcome
-                                    val record = PatchRecord(
-                                        id = historyStore.newId(),
-                                        time = System.currentTimeMillis(),
-                                        packageName = outcome.packageName,
-                                        label = outcome.label,
-                                        versionName = current.app.versionName,
-                                        versionCode = current.app.versionCode,
-                                        sourceKey = coreSourceKey,
-                                        fingerprint = coreFingerprint,
-                                        optionSummary = coreSummary,
-                                        apkPath = outcome.apk.absolutePath,
-                                        apkSize = outcome.apk.length(),
-                                        apkModified = outcome.apk.lastModified(),
-                                        bootDex = outcome.bootDex,
-                                        originalFactory = outcome.originalFactory,
-                                        config = outcome.config,
-                                    )
-                                    withContext(Dispatchers.IO) { historyStore.record(record) }
-                                    currentRecordId = record.id
-                                    historyTick++
-                                }
-                                    .onFailure {
-                                        val msg = "该应用没有内嵌原始包，无法更新核心：" + (it.message ?: "")
-                                        patchLog.add("失败：$msg")
-                                        patchFailure = msg
-                                    }
-                                patchRunning = false
-                                token++
-                            }
-                        }
-                    },
+                    onUpdateCore = { nav.navigate(Page.Config(PatchTarget.Installed(current.app))) },
                     meta = remember(current.app.packageName, token) {
                         runCatching {
                             val pi = context.packageManager.getPackageInfo(current.app.packageName, 0)

@@ -186,7 +186,7 @@ internal fun ConfigScreen(
                     )
                     SwitchLine(
                         title = "动态模式",
-                        subtitle = "运行时动态接管类加载",
+                        subtitle = "内核动态接管类加载",
                         checked = dynamicMode,
                         onChange = { dynamicMode = it },
                     )

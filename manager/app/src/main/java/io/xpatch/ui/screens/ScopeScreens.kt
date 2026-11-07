@@ -227,7 +227,7 @@ internal fun AppScopeScreen(
                     DetailRow("版本号", app.versionName.ifBlank { "未设置" } + "（" + app.versionCode + "）", Modifier.padding(horizontal = 16.dp))
                     DetailRow("安装时间", meta?.installTime ?: "未设置", Modifier.padding(horizontal = 16.dp))
                     DetailRow("大小", meta?.apkSize ?: "未设置", Modifier.padding(horizontal = 16.dp))
-                    DetailRow("运行时", runtimeLabel(app), Modifier.padding(horizontal = 16.dp))
+                    DetailRow("内核", runtimeLabel(app), Modifier.padding(horizontal = 16.dp))
                     Spacer(Modifier.height(12.dp))
                     MiuixDivider()
                     ActionRow("启动应用", onLaunch)
@@ -242,14 +242,14 @@ internal fun AppScopeScreen(
                     MiuixDivider()
                     ActionRow("查看日志", onViewLogs)
                     MiuixDivider()
-                    ActionRow("更新核心", onUpdateCore, "从内嵌原始包重新打包")
+                    ActionRow("更新内核", onUpdateCore, "使用当前内核重新打包")
                 }
             } else {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
                     DetailRow("版本号", app.versionName.ifBlank { "未设置" } + "（" + app.versionCode + "）")
                     DetailRow("安装时间", meta?.installTime ?: "未设置")
                     DetailRow("大小", meta?.apkSize ?: "未设置")
-                    DetailRow("运行时", runtimeLabel(app))
+                    DetailRow("内核", runtimeLabel(app))
                 }
                 ActionRow("启动应用", onLaunch)
                 ActionRow("强制停止", onForceStop, "正在停止 ")
@@ -257,7 +257,7 @@ internal fun AppScopeScreen(
                 ActionRow("Dexopt 优化", onDexopt)
                 ActionRow("打开系统应用信息页", onAppInfo)
                 ActionRow("查看日志", onViewLogs)
-                ActionRow("更新核心", onUpdateCore, "从内嵌原始包重新打包")
+                ActionRow("更新内核", onUpdateCore, "使用当前内核重新打包")
             }
         }
         stickyHeader(key = "modules-header") {
@@ -476,8 +476,7 @@ internal fun runtimeLabel(app: AppInfo): String {
     if (app.runtimeVersion <= 0) return "未打包"
     val core = app.hookCore ?: "未知"
     val version = "v" + app.runtimeVersion
-    return if (app.runtimeVersion < LATEST_RUNTIME_VERSION) "$core $version（旧，建议重新打包）" else "$core $version"
-}
+    return if (app.runtimeVersion < LATEST_RUNTIME_VERSION) "$core $version（旧，建议重新打包）" else "$core $version"}
 
 @Composable
 internal fun DetailRow(label: String, value: String, modifier: Modifier = Modifier) {

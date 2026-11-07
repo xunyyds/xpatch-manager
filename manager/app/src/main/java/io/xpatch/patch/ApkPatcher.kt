@@ -70,7 +70,7 @@ class ApkPatcher(private val context: Context) {
             onLog(
                 if (depth == 0) {
                     if (legacyFamily != null) "检测到历史注入层，剥离后重新打包"
-                    else "检测到源包已注入，剥离旧运行时层"
+                    else "检测到源包已注入，剥离旧内核层"
                 } else {
                     "第 ${depth + 1} 层仍有注入痕迹，继续剥离"
                 },
@@ -466,7 +466,7 @@ class ApkPatcher(private val context: Context) {
                     advance()
                 }
 
-                onLog("注入运行时与引导桩 $bootDexName")
+                onLog("注入内核与引导桩 $bootDexName")
 
                 for (item in added) {
                     if (item.name == SOURCE_ENTRY) {
