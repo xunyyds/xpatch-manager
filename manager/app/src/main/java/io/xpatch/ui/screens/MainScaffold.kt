@@ -44,8 +44,10 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
@@ -67,6 +69,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import io.xpatch.data.ConfigBackup
+import io.xpatch.data.EnvInfoCollector
 import io.xpatch.data.EventLog
 import io.xpatch.data.ManagerRepository
 import io.xpatch.data.ModuleApiStore
@@ -78,6 +81,7 @@ import io.xpatch.data.RuntimeLogStore
 import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
+import io.xpatch.data.UpdateChecker
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.InstallHelper
@@ -95,12 +99,18 @@ import io.xpatch.ui.components.StandardBottomBar
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.util.AdaptiveWidth
+import io.xpatch.ui.util.LocalPageKey
+import io.xpatch.ui.util.LocalScrollStateStore
 import top.yukonga.miuix.kmp.basic.Icon as MiuixIcon
 import top.yukonga.miuix.kmp.basic.IconButton as MiuixIconButton
 import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.TopAppBar as MiuixTopAppBar
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.io.BufferedOutputStream
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -140,6 +150,7 @@ fun MainScaffold(
     val scope = rememberCoroutineScope()
 
     val nav = rememberNavigator()
+    val scrollStore = remember { io.xpatch.ui.util.ScrollStateStore() }
     val miuix = LocalMiuix.current
     val clipboard = LocalClipboardManager.current
     val logsState = remember { LogsState() }
@@ -187,6 +198,32 @@ fun MainScaffold(
     var patchableApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var modules by remember { mutableStateOf<List<ModuleInfo>>(emptyList()) }
     var settings by remember { mutableStateOf(settingsStore.load()) }
+    var onboardingDone by remember { mutableStateOf(settings.onboardingDone) }
+    if (!onboardingDone) {
+        OnboardingScreen(
+            onAcceptDisclaimer = {
+                settingsStore.setDisclaimerAcceptedAt(System.currentTimeMillis())
+            },
+            onComplete = {
+                settingsStore.setOnboardingDone(true)
+                onboardingDone = true
+            },
+            onExit = { (context as? android.app.Activity)?.finish() },
+        )
+        return
+    }
+    var startupUpdate by remember { mutableStateOf<UpdateChecker.ReleaseInfo?>(null) }
+    var startupPrompted by remember { mutableStateOf(false) }
+    LaunchedEffect(onboardingDone) {
+        if (!onboardingDone || startupPrompted) return@LaunchedEffect
+        val result = runCatching {
+            kotlinx.coroutines.withTimeoutOrNull(20_000) { UpdateChecker.check(context, force = false) }
+        }.getOrNull()
+        if (result is UpdateChecker.CheckResult.Available) {
+            startupPrompted = true
+            startupUpdate = result.release
+        }
+    }
     var logs by remember { mutableStateOf(emptyList<String>()) }
     var repoModules by remember { mutableStateOf<List<RepoStore.RepoModule>>(emptyList()) }
     var repoBusy by remember { mutableStateOf(false) }
@@ -345,7 +382,7 @@ fun MainScaffold(
     }
 
     val logExportLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("text/plain"),
+        ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri ->
         val text = pendingLogText
         pendingLogText = null
@@ -356,12 +393,39 @@ fun MainScaffold(
         scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
-                    context.contentResolver.openOutputStream(uri)?.use {
-                        it.write(text.toByteArray(Charsets.UTF_8))
+                    val baseName = (name ?: "xpatch-logs").removeSuffix(".zip").removeSuffix(".txt")
+                    val extras = buildMap {
+                        put(
+                            "Shizuku",
+                            when {
+                                ShizukuBridge.isAvailable() && ShizukuBridge.hasPermission() -> "已连接并授权"
+                                ShizukuBridge.isAvailable() -> "可连接未授权"
+                                else -> "不可用"
+                            },
+                        )
+                        put("运行日志快照条数", (logsRuntime.snapshot?.totalLoaded ?: 0).toString())
+                    }
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        ZipOutputStream(BufferedOutputStream(output)).use { zip ->
+                            fun putEntry(entryName: String, content: String) {
+                                zip.putNextEntry(ZipEntry(entryName))
+                                zip.write(content.toByteArray(Charsets.UTF_8))
+                                zip.closeEntry()
+                            }
+                            putEntry("logs/" + baseName + ".log", text)
+                            putEntry("environment-info.txt", EnvInfoCollector.collect(context, extras))
+                            io.xpatch.data.CrashRecorder.lastCrashFile(context)?.let { crash ->
+                                runCatching {
+                                    zip.putNextEntry(ZipEntry("last-crash.txt"))
+                                    crash.inputStream().use { it.copyTo(zip) }
+                                    zip.closeEntry()
+                                }
+                            }
+                        }
                     }
                 }
             }.onSuccess {
-                eventLog.add("已导出日志 " + (name ?: ""))
+                eventLog.add("已导出日志包 " + (name ?: ""))
             }.onFailure {
                 failure = "写入导出文件失败：" + (it.message ?: "未知错误")
                 eventLog.add("日志导出失败 " + (it.message ?: ""))
@@ -488,6 +552,8 @@ fun MainScaffold(
         is Page.RepoDownloads -> "下载管理"
         is Page.RepoDetail -> current.module.name
         is Page.PatchHistory -> "打包历史"
+        is Page.About -> "关于"
+        is Page.Disclaimer -> "免责声明"
         is Page.LogModule -> if (current.framework) LogLayer.Framework.label
         else labelOf(current.module)
     }
@@ -723,6 +789,20 @@ fun MainScaffold(
                 },
                 label = "pageNav",
             ) { current ->
+            AdaptiveWidth {
+            val pageKey = navKeyOf(current, nav.tab)
+            val liveKeys = remember(nav.page, nav.tab, nav.stackSize) {
+                buildSet {
+                    add(navKeyOf(nav.page, nav.tab))
+                    nav.stackPages.forEach { add(navKeyOf(it, nav.tab)) }
+                }
+            }
+            remember(liveKeys) { scrollStore.retain(liveKeys); liveKeys }
+            CompositionLocalProvider(
+                LocalPageKey provides pageKey,
+                LocalScrollStateStore provides scrollStore,
+            ) {
+            key(pageKey) {
             when (current) {
                 is Page.Home -> when (nav.tab) {
                     Tab.Home -> HomeScreen(
@@ -903,6 +983,8 @@ fun MainScaffold(
                             settingsStore.setSkipArtifactDeletePrompt(skip)
                             settings = settings.copy(skipArtifactDeletePrompt = skip)
                         },
+                        onOpenDisclaimer = { nav.navigate(Page.Disclaimer) },
+                        onOpenAbout = { nav.navigate(Page.About) },
                     )
                 }
 
@@ -914,7 +996,7 @@ fun MainScaffold(
                     downloadingPkg = repoDownloadPkg,
                     downloadProgress = { repoDownloadProgress },
                     downloadDoneTick = repoDownloadDoneTick,
-                    onOpenDownloads = { nav.navigate(Page.RepoDownloads) },
+                    onOpenDownloads = { nav.replace(Page.RepoDownloads) },
                     onRefresh = {
                         scope.launch {
                             repoBusy = true
@@ -984,7 +1066,7 @@ fun MainScaffold(
                         logs = eventLog.entries()
                         token++
                     },
-                    onOpenRepo = { nav.navigate(Page.Repo) },
+                    onOpenRepo = { nav.replace(Page.Repo) },
                     onOpenDetail = { module ->
                         runCatching { nav.navigate(Page.RepoDetail(module)) }
                             .onFailure { eventLog.add("打开详情失败 " + (it.message ?: "")) }
@@ -1263,6 +1345,9 @@ fun MainScaffold(
                     onOpenPicker = { },
                 )
 
+                is Page.About -> AboutScreen(onOpenDisclaimer = { nav.navigate(Page.Disclaimer) })
+                is Page.Disclaimer -> DisclaimerScreen()
+
                 is Page.ModuleScope -> ModuleScopeScreen(
                     module = current.module,
                     apps = patchedApps,
@@ -1270,8 +1355,11 @@ fun MainScaffold(
                     onToggle = { app, inScope ->
                         repository.setInScope(current.module.packageName, app.packageName, inScope)
                         eventLog.add(
-                            if (inScope) "作用域 + ${current.module.packageName} → ${app.packageName}"
-                            else "作用域 - ${current.module.packageName} → ${app.packageName}",
+                            if (inScope) {
+                                "作用域 + ${current.module.packageName} → ${app.packageName}"
+                            } else {
+                                "作用域 - ${current.module.packageName} → ${app.packageName}"
+                            },
                         )
                         token++
                         syncScopeFile(app.packageName)
@@ -1445,11 +1533,33 @@ fun MainScaffold(
                 )
             }
             }
+            }
+            }
+            }
         }
     }
 
-    if (showAddDialog) {
+    startupUpdate?.let { release ->
         XPatchDialog(
+            miuix = miuix,
+            onDismiss = { startupUpdate = null },
+            title = "发现新版本 v" + release.version,
+            actions = listOf(
+                DialogAction("稍后") { startupUpdate = null },
+                DialogAction("去更新") {
+                    startupUpdate = null
+                    nav.navigate(Page.About)
+                },
+            ),
+        ) {
+            Text(
+                "当前版本 v" + io.xpatch.BuildConfig.VERSION_NAME + "，可在「关于」页下载安装。",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+        }
+    }
+
+    if (showAddDialog) {        XPatchDialog(
             miuix = miuix,
             onDismiss = { showAddDialog = false },
             title = "添加应用",
