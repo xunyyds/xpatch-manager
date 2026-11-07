@@ -47,6 +47,8 @@ internal sealed interface Page {
     data object RepoDownloads : Page
     data class RepoDetail(val module: RepoStore.RepoModule) : Page
     data object PatchHistory : Page
+    data object About : Page
+    data object Disclaimer : Page
     data class LogModule(
         val groupKey: String,
         val module: String,
@@ -71,12 +73,38 @@ internal class Navigator {
 
     private val stack = mutableStateListOf<Page>()
 
+    val stackPages: List<Page> get() = stack.toList()
+
+    val stackSize: Int get() = stack.size
+
     val canBack: Boolean
         get() = stack.isNotEmpty() || page !is Page.Home || tab != Tab.Home
 
     fun navigate(target: Page) {
         if (target == page) return
+        val existing = stack.indexOf(target)
+        if (existing >= 0) {
+            while (stack.size > existing + 1) stack.removeAt(stack.lastIndex)
+            page = stack.removeAt(stack.lastIndex)
+            return
+        }
         if (target is Page.Home) stack.clear() else stack.add(page)
+        page = target
+    }
+
+    /** 同级页面互跳：替换当前页而不是压栈，避免仓库↔下载管理无限嵌套。 */
+    fun replace(target: Page) {
+        if (target == page) return
+        if (target is Page.Home) {
+            stack.clear()
+            page = target
+            return
+        }
+        if (stack.isEmpty()) {
+            stack.add(page)
+            page = target
+            return
+        }
         page = target
     }
 
@@ -113,3 +141,25 @@ internal class Navigator {
 
 @Composable
 internal fun rememberNavigator(): Navigator = remember { Navigator() }
+
+internal fun navKeyOf(page: Page, tab: Tab): String = when (page) {
+    is Page.Home -> "home:" + tab.name
+    is Page.Picker -> "picker"
+    is Page.Signatures -> "signatures"
+    is Page.PatchHistory -> "history"
+    is Page.Repo -> "repo"
+    is Page.RepoDownloads -> "repoDownloads"
+    is Page.RepoDetail -> "repoDetail:" + page.module.packageName
+    is Page.About -> "about"
+    is Page.Disclaimer -> "disclaimer"
+    is Page.Config -> "config:" + page.target.stableKey()
+    is Page.ModuleScope -> "moduleScope:" + page.module.packageName
+    is Page.AppScope -> "appScope:" + page.app.packageName
+    is Page.ModuleDetail -> "moduleDetail:" + page.module.packageName + ":" + page.app.packageName
+    is Page.LogModule -> "logModule:" + page.groupKey
+}
+
+private fun PatchTarget.stableKey(): String = when (this) {
+    is PatchTarget.Installed -> "installed:" + app.packageName
+    is PatchTarget.FromFile -> "file:" + file.absolutePath
+}

@@ -33,6 +33,12 @@ data class ManagerSettings(
     val patchHistoryLimit: Int = SettingsStore.HISTORY_LIMIT_DEFAULT,
     val deleteArtifactOnRemove: Boolean = true,
     val skipArtifactDeletePrompt: Boolean = false,
+    val onboardingDone: Boolean = false,
+    val disclaimerAcceptedAt: Long = 0,
+    val storageDeniedOnce: Boolean = false,
+    val lastUpdateCheckAt: Long = 0,
+    val updateCheckCache: String = "",
+    val updateGoodSource: String = "",
 )
 
 class SettingsStore(context: Context) {
@@ -56,6 +62,12 @@ class SettingsStore(context: Context) {
             .coerceIn(HISTORY_LIMIT_MIN, HISTORY_LIMIT_MAX),
         deleteArtifactOnRemove = prefs.getBoolean(KEY_DELETE_ARTIFACT, true),
         skipArtifactDeletePrompt = prefs.getBoolean(KEY_SKIP_DELETE_PROMPT, false),
+        onboardingDone = prefs.getBoolean(KEY_ONBOARDING_DONE, false),
+        disclaimerAcceptedAt = prefs.getLong(KEY_DISCLAIMER_AT, 0),
+        storageDeniedOnce = prefs.getBoolean(KEY_STORAGE_DENIED, false),
+        lastUpdateCheckAt = prefs.getLong(KEY_UPDATE_CHECK_AT, 0),
+        updateCheckCache = prefs.getString(KEY_UPDATE_CACHE, "").orEmpty(),
+        updateGoodSource = prefs.getString(KEY_UPDATE_SOURCE, "").orEmpty(),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -97,6 +109,21 @@ class SettingsStore(context: Context) {
     fun setSkipArtifactDeletePrompt(skip: Boolean) =
         prefs.edit().putBoolean(KEY_SKIP_DELETE_PROMPT, skip).apply()
 
+    fun setOnboardingDone(done: Boolean) =
+        prefs.edit().putBoolean(KEY_ONBOARDING_DONE, done).apply()
+
+    fun setDisclaimerAcceptedAt(at: Long) =
+        prefs.edit().putLong(KEY_DISCLAIMER_AT, at).apply()
+
+    fun setStorageDeniedOnce(denied: Boolean) =
+        prefs.edit().putBoolean(KEY_STORAGE_DENIED, denied).apply()
+
+    fun setUpdateCheckCache(at: Long, json: String) =
+        prefs.edit().putLong(KEY_UPDATE_CHECK_AT, at).putString(KEY_UPDATE_CACHE, json).apply()
+
+    fun setUpdateGoodSource(prefix: String) =
+        prefs.edit().putString(KEY_UPDATE_SOURCE, prefix).apply()
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
@@ -120,6 +147,12 @@ class SettingsStore(context: Context) {
         private const val KEY_HISTORY_LIMIT = "patch_history_limit"
         private const val KEY_DELETE_ARTIFACT = "patch_history_delete_artifact"
         private const val KEY_SKIP_DELETE_PROMPT = "patch_history_skip_delete_prompt"
+        private const val KEY_ONBOARDING_DONE = "onboarding_done"
+        private const val KEY_DISCLAIMER_AT = "disclaimer_accepted_at"
+        private const val KEY_STORAGE_DENIED = "storage_denied_once"
+        private const val KEY_UPDATE_CHECK_AT = "update_check_at"
+        private const val KEY_UPDATE_CACHE = "update_check_cache"
+        private const val KEY_UPDATE_SOURCE = "update_good_source"
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
     }

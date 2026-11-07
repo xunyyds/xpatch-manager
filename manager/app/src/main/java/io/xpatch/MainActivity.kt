@@ -18,6 +18,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import io.xpatch.data.EventLog
+import io.xpatch.data.CrashRecorder
 import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.SettingsStore
 import io.xpatch.ui.components.DialogAction
@@ -33,6 +34,7 @@ class MainActivity : ComponentActivity() {
     private var scopeSyncThread: Thread? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        CrashRecorder.install(this)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val settingsStore = SettingsStore(this)
