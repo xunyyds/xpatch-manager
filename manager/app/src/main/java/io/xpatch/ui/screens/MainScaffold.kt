@@ -12,6 +12,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -25,6 +26,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
+import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.AlertDialog
@@ -56,9 +58,11 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -154,6 +158,8 @@ fun MainScaffold(
 
     val nav = rememberNavigator()
     val scrollStore = remember { io.xpatch.ui.util.ScrollStateStore() }
+    val saveableStateHolder = rememberSaveableStateHolder()
+    val retainedKeys = remember { mutableSetOf<String>() }
     val miuix = LocalMiuix.current
     val clipboard = LocalClipboardManager.current
     val logsState = remember { LogsState() }
@@ -902,6 +908,10 @@ fun MainScaffold(
     }
 
     val liquidBottomBar = settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID
+    val moduleDownloadTask = downloadTasks.values.firstOrNull {
+        it.kind == DownloadCenter.Kind.MODULE && it.failed == null && !it.done
+    }
+    val moduleDownloadPercent = moduleDownloadTask?.percent
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -931,6 +941,14 @@ fun MainScaffold(
                                 )
                             }
                         }
+                        if (nav.page is Page.Repo) {
+                            DownloadAction(
+                                miuix = true,
+                                progress = moduleDownloadPercent,
+                                badge = repoSnapshot.value.badge,
+                                onClick = { nav.replace(Page.RepoDownloads) },
+                            )
+                        }
                     },
                 )
             } else {
@@ -957,6 +975,14 @@ fun MainScaffold(
                             IconButton(onClick = { nav.navigate(Page.PatchHistory) }) {
                                 Icon(Icons.Rounded.History, contentDescription = "打包历史")
                             }
+                        }
+                        if (nav.page is Page.Repo) {
+                            DownloadAction(
+                                miuix = false,
+                                progress = moduleDownloadPercent,
+                                badge = repoSnapshot.value.badge,
+                                onClick = { nav.replace(Page.RepoDownloads) },
+                            )
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
@@ -1020,11 +1046,19 @@ fun MainScaffold(
                     nav.stackPages.forEach { add(navKeyOf(it, nav.tab)) }
                 }
             }
-            remember(liveKeys) { scrollStore.retain(liveKeys); liveKeys }
+            remember(liveKeys) {
+                scrollStore.retain(liveKeys)
+                val stale = retainedKeys - liveKeys
+                stale.forEach { saveableStateHolder.removeState(it) }
+                retainedKeys.clear()
+                retainedKeys.addAll(liveKeys)
+                liveKeys
+            }
             CompositionLocalProvider(
                 LocalPageKey provides pageKey,
                 LocalScrollStateStore provides scrollStore,
             ) {
+            saveableStateHolder.SaveableStateProvider(pageKey) {
             key(pageKey) {
             when (current) {
                 is Page.Home -> when (nav.tab) {
@@ -1677,6 +1711,7 @@ fun MainScaffold(
             }
             }
             }
+            }
         }
     }
 
@@ -1979,6 +2014,46 @@ private fun buildRepoSnapshot(
     }
 
     return RepoInstallSnapshot(installed = installed, cache = cache, badge = badge)
+}
+
+@Composable
+private fun DownloadAction(
+    miuix: Boolean,
+    progress: Int?,
+    badge: Int,
+    onClick: () -> Unit,
+) {
+    Box(contentAlignment = Alignment.Center) {
+        if (miuix) {
+            MiuixIconButton(onClick = onClick) {
+                MiuixIcon(
+                    imageVector = Icons.Rounded.Download,
+                    contentDescription = "下载管理",
+                    tint = MiuixTheme.colorScheme.onSurface,
+                )
+            }
+        } else {
+            IconButton(onClick = onClick) {
+                Icon(Icons.Rounded.Download, contentDescription = "下载管理")
+            }
+        }
+        if (progress != null) {
+            CircularProgressIndicator(
+                progress = { progress / 100f },
+                modifier = Modifier.size(38.dp),
+                strokeWidth = 2.dp,
+            )
+        } else if (badge > 0) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 6.dp, end = 6.dp)
+                    .size(8.dp)
+                    .clip(androidx.compose.foundation.shape.CircleShape)
+                    .background(androidx.compose.ui.graphics.Color(0xFFE5484D)),
+            )
+        }
+    }
 }
 
 private fun openAllFilesSettings(context: android.content.Context) {

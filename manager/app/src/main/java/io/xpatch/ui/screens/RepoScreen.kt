@@ -334,62 +334,6 @@ internal fun RepoPageScreen(
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 2.dp),
-            horizontalArrangement = Arrangement.End,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier.onGloballyPositioned { coords ->
-                    downloadIconCenter = Offset(
-                        coords.positionInRoot().x + coords.size.width / 2f,
-                        coords.positionInRoot().y + coords.size.height / 2f,
-                    )
-                },
-            ) {
-                if (downloadingPkg != null) {
-                    DownloadProgressRing(downloadProgress)
-                }
-                IconButton(onClick = onOpenDownloads) {
-                    Icon(
-                        imageVector = if (showDoneFlash) Icons.Rounded.Check else Icons.Rounded.Download,
-                        contentDescription = "下载管理",
-                        tint = if (showDoneFlash) {
-                            Color(0xFF2BA84A)
-                        } else {
-                            MaterialTheme.colorScheme.primary
-                        },
-                        modifier = Modifier.graphicsLayer {
-                            scaleX = iconPulse.value
-                            scaleY = iconPulse.value
-                        },
-                    )
-                }
-                if (!showDoneFlash && snapshot.badge > 0) {
-                    Box(
-                        contentAlignment = Alignment.Center,
-                        modifier = Modifier
-                            .align(Alignment.TopEnd)
-                            .offset(x = 2.dp, y = (-2).dp)
-                            .size(18.dp)
-                            .background(MaterialTheme.colorScheme.primary, CircleShape),
-                    ) {
-                        Text(
-                            text = if (snapshot.badge > 99) "99+" else snapshot.badge.toString(),
-                            color = MaterialTheme.colorScheme.onPrimary,
-                            fontSize = 10.sp,
-                            lineHeight = 10.sp,
-                            fontWeight = FontWeight.Medium,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                    }
-                }
-            }
-        }
         SearchField(query, { query = it }, "搜索 模块 / 包名 / 作者 / 简介")
 
         Row(
