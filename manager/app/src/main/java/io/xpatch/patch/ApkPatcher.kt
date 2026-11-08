@@ -108,7 +108,7 @@ class ApkPatcher(private val context: Context) {
             val manifestEntry = entries.firstOrNull { it.name == MANIFEST }
                 ?: error("APK 缺少 AndroidManifest.xml")
             val editor = AxmlEditor(readEntry(source, manifestEntry))
-            originalFactory = editor.readApplicationAttribute(ATTR_FACTORY_NAME)
+            originalFactory = sanitizeFactory(editor.readApplicationAttribute(ATTR_FACTORY_NAME), onLog)
             var patched = editor.setApplicationAttribute(ATTR_FACTORY_NAME, STUB_CLASS)
             options.versionName?.takeIf { it.isNotBlank() }?.let { name ->
                 patched = AxmlEditor(patched).setStringAttribute("manifest", "versionName", name)
@@ -176,6 +176,22 @@ class ApkPatcher(private val context: Context) {
             bootDexName = bootDexName,
             config = config,
         )
+    }
+
+    /**
+     * 从原清单里读到的 appComponentFactory 不能直接当作“原厂工厂”记录：
+     *
+     * - 若源包本身已被我们打补丁（重复打包、或用户拿已补丁包再次打包），
+     *   读到的就是我们自己的桩类，写进配置会让引导桩委派给它自己 → 无限递归；
+     * - 空串等价于“原应用没有自定义工厂”，应显式记为 null，交给 super 默认实现。
+     */
+    private fun sanitizeFactory(factory: String?, onLog: (String) -> Unit): String? {
+        if (factory.isNullOrBlank()) return null
+        if (factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES) {
+            onLog("源包工厂指向引导桩（$factory），已忽略以免自我委派")
+            return null
+        }
+        return factory
     }
 
     private fun readRawEntry(source: RandomAccessFile, entry: Entry): ByteArray {
@@ -920,7 +936,14 @@ class ApkPatcher(private val context: Context) {
         const val HOOK_SO_ENTRY = "xp/hook_core.so"
         const val STUB_CLASS = "io.xpatch.stub.AppEntry"
         const val ATTR_FACTORY_NAME = "appComponentFactory"
-        const val RUNTIME_VERSION = 41
+        const val RUNTIME_VERSION = 42
+
+        /** 历史版本用过的引导桩类名，从清单/META 里读到时都视为“我们自己的桩”。 */
+        val LEGACY_STUB_CLASSES = setOf(
+            "fpa.AppEntry",
+            "xpt.stub.AppEntry",
+            "io.xpatch.stub.AppEntry",
+        )
 
         val INJECTED_NAMES = setOf(
             "xp/core.dex",

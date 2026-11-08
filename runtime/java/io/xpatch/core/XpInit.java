@@ -82,7 +82,6 @@ public class XpInit {
             ModuleLoader.preloadWrapperDexes();
             refreshScopeModulePaths();
             initModules();
-            doLoop();
         } catch (Throwable th2) {
             XpHook.log0(TAG, "create app failed " + Log.getStackTraceString(th2));
         }
@@ -386,30 +385,6 @@ public class XpInit {
             new RemoteModuleProvider(AppEnv.appContext).refreshScopeModulePaths();
         } catch (Throwable th) {
             XpHook.log0(TAG, "refresh scope module paths failed " + Log.getStackTraceString(th));
-        }
-    }
-
-    private static void doLoop() {
-        new Thread(new Runnable() {
-            @Override
-            public final void run() {
-                XpInit.lambda$doLoop$1();
-            }
-        }).start();
-    }
-
-    static void lambda$doLoop$1() {
-        while (true) {
-            try {
-                Thread.sleep(1000L);
-                if (System.currentTimeMillis() >= 999) {
-                    return;
-                } else {
-                    XpHook.log0(TAG, "loop");
-                }
-            } catch (InterruptedException e) {
-                throw new RuntimeException(e);
-            }
         }
     }
 

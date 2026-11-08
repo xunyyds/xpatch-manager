@@ -32,9 +32,28 @@ public final class RemoteAccessBridge {
     private RemoteAccessBridge() {
     }
 
+    /**
+     * 启动期尝试连接管理器侧的远程访问服务。
+     *
+     * 管理器当前没有注册 authority 为 {@link #AUTHORITY} 的 Provider（只有
+     * ShizukuProvider / InitializationProvider / FileProvider），所以这里必须先做
+     * 一次 provider 存在性检查：直接 ContentResolver.call() 会走 ActivityThread 的
+     * provider 查找，失败时在 logcat 里留下一条 E（Failed to find provider info）和
+     * 一条 W（Unknown authority），每个进程启动都刷两条无意义错误。
+     *
+     * 检查到 provider 不存在时静默退化为 NoOp；以后管理器补上实现即可自动生效。
+     */
     public static void initialize(Context context) {
         if (context != null) {
             resolveRemoteService(context, true);
+        }
+    }
+
+    private static boolean isProviderInstalled(Context context) {
+        try {
+            return context.getPackageManager().resolveContentProvider(AUTHORITY, 0) != null;
+        } catch (Throwable th) {
+            return false;
         }
     }
 
@@ -105,6 +124,13 @@ public final class RemoteAccessBridge {
         }
         lastResolveTime = SystemClock.uptimeMillis();
         if (context == null) {
+            remoteService = NoOpRemoteAccessService.INSTANCE;
+            lastResolvedFallback = true;
+            return;
+        }
+        if (!isProviderInstalled(context)) {
+            // 管理器尚未提供该 Provider：不要发起 call，否则每个进程都会在 logcat
+            // 留下 "Failed to find provider info" + "Unknown authority" 两条错误。
             remoteService = NoOpRemoteAccessService.INSTANCE;
             lastResolvedFallback = true;
             return;
