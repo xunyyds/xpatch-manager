@@ -107,12 +107,18 @@ internal class LogDetailState {
 internal data class RuntimeLogsState(
     val snapshot: RuntimeLogStore.Snapshot? = null,
     val loading: Boolean = false,
+    val loadingMore: Boolean = false,
     val error: String? = null,
     val hasAccess: Boolean = true,
 ) {
     val entries: List<RuntimeLogStore.Entry> get() = snapshot?.entries.orEmpty()
 
     val refreshing: Boolean get() = loading && snapshot != null
+
+    /** 磁盘上是否还有更早的日志没加载。 */
+    val hasMore: Boolean get() = snapshot?.hasMore == true
+
+    val pendingFiles: Int get() = snapshot?.pendingFiles ?: 0
 }
 
 internal data class ClearOutcome(
@@ -127,6 +133,11 @@ internal data class LogExportOption(
     val fileName: String,
     val build: () -> String,
     val hasContent: Boolean,
+    /**
+     * 流式写出。非 null 时导出走这条路径，不再把全部日志拼成一个 String，
+     * 从而支持"把磁盘上全部日志导出"而不受内存限制。
+     */
+    val stream: (suspend (write: (String) -> Unit) -> Unit)? = null,
 )
 
 internal class LogsState {
@@ -197,6 +208,22 @@ internal sealed interface LogRow {
     }
 }
 
+internal data class FullSearchResult(
+    val entries: List<RuntimeLogStore.Entry>,
+    val query: String,
+)
+
+/**
+ * 全量命中并入已加载结果后的渲染基座。
+ *
+ * [query] 用来丢弃"上一个关键词"迟到的合并结果：全量扫描是异步的，
+ * 关键词一变就必须立刻停止使用旧结果，否则列表会短暂显示别的关键词的条目。
+ */
+internal data class MergedLogsBase(
+    val query: String,
+    val base: LogsBase,
+)
+
 internal data class LogsBase(
     val groups: List<LogGroup>,
     val ordered: List<RuntimeLogStore.Entry>,
@@ -244,6 +271,12 @@ internal fun filterLogs(
     apps: Set<String>,
     groupOrder: GroupOrder,
     timeOrder: TimeOrder,
+    /**
+     * 跳过"按应用 / 层级 / 关键词"的逐条过滤，只做排序、分组与统计。
+     * 供 [mergeFullSearchBase] 使用：全量扫描阶段已经复核过这些条件，
+     * 这里再跑一遍只会白白重复字符串匹配。
+     */
+    preselected: Boolean = false,
 ): LogsBase {
     val appCounts = HashMap<String, Int>()
     for (entry in entries) appCounts[entry.target] = (appCounts[entry.target] ?: 0) + 1
@@ -254,9 +287,11 @@ internal fun filterLogs(
     val needle = query.trim()
     val filtered = ArrayList<RuntimeLogStore.Entry>()
     for (entry in entries) {
-        if (apps.isNotEmpty() && entry.target !in apps) continue
-        if (layer != LogLayer.All && layerOf(entry) != layer) continue
-        if (needle.isNotEmpty() && !matchesLog(entry, needle, labels)) continue
+        if (!preselected) {
+            if (apps.isNotEmpty() && entry.target !in apps) continue
+            if (layer != LogLayer.All && layerOf(entry) != layer) continue
+            if (needle.isNotEmpty() && !matchesLog(entry, needle, labels)) continue
+        }
         filtered += entry
     }
 
@@ -311,6 +346,62 @@ internal fun filterLogs(
         multiApp = !singleApp,
         filtered = needle.isNotEmpty() || layer != LogLayer.All || apps.isNotEmpty(),
         query = needle,
+    )
+}
+
+/**
+ * 全量搜索命中并入已加载结果，得到列表真正渲染用的 [LogsBase]。
+ *
+ * - 命中来自磁盘全量扫描，带完整 [RuntimeLogStore.Entry]，优先保留；
+ * - 与已加载结果去重按"物理行身份"：`sourcePath + 字节偏移`，也就是
+ *   [RuntimeLogStore.Entry.id]（见 `RuntimeLogStore.parseBlock` 里的 `id = path + "@" + offset`）。
+ *   不再用 `timeMillis + text` 兜底：同一次重试循环里多行完全相同的日志是真实存在的，
+ *   按内容去重会把它们吞掉；文件被截断/轮转导致偏移漂移时，宁可多显示一条，也不隐藏真实日志。
+ * - 排序、分组、日期分组仍然全部交给 [filterLogs]/[buildRows]，
+ *   所以模块视图与时间线视图的渲染逻辑没有任何变化；
+ * - 应用筛选列表沿用已加载结果，避免筛选面板只剩"命中的应用"；
+ *   multiApp / total / groups 则与合并后的数据保持一致。
+ *
+ * 只在关键词非空、且全量扫描已经返回结果时调用，因此恒为筛选态。
+ */
+internal fun mergeFullSearchBase(
+    loaded: LogsBase,
+    hits: List<RuntimeLogStore.Entry>,
+    query: String,
+    groupOrder: GroupOrder,
+    timeOrder: TimeOrder,
+): LogsBase {
+    val merged = ArrayList<RuntimeLogStore.Entry>(hits.size + loaded.ordered.size)
+    val seenIds = HashSet<String>(hits.size * 2)
+
+    fun keep(entry: RuntimeLogStore.Entry) {
+        if (!seenIds.add(entry.id)) return
+        merged += entry
+    }
+
+    // 命中优先：它们是全量扫描结果，理论上已经覆盖下方"已加载"的全部匹配项。
+    hits.forEach { keep(it) }
+    // 已加载结果补齐：兜住"扫描期间日志文件又被写入/轮转"这类边界情况。
+    loaded.ordered.forEach { keep(it) }
+
+    val base = filterLogs(
+        entries = merged,
+        // 命中在扫描阶段已经按关键词/应用/层级复核过（见 LogsScreen 的 scanAll 过滤），
+        // preselected = true 时 labels/layer/apps 都不参与命中判断，这里只做排序与分组。
+        labels = emptyMap(),
+        query = query,
+        layer = LogLayer.All,
+        apps = emptySet(),
+        groupOrder = groupOrder,
+        timeOrder = timeOrder,
+        preselected = true,
+    )
+    return base.copy(
+        // 应用筛选面板沿用"已加载"的应用清单：命中只覆盖的部分应用不该让面板突然变短。
+        // multiApp 不覆盖：它必须与 base.groups 的 key 规则一致（多应用时按 target+module 分组），
+        // 否则模块视图会出现"同名分组却看不到 target"。
+        apps = loaded.apps,
+        filtered = true,
     )
 }
 

@@ -56,6 +56,14 @@ import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.IconButton
+import androidx.compose.material.icons.rounded.KeyboardArrowRight
+import androidx.compose.ui.draw.rotate
 
 private val LOG_LAYER_LABELS = LogLayer.entries.map { it.label }
 private val LOG_VIEW_LABELS = LogViewMode.entries.map { it.label }
@@ -460,24 +468,35 @@ internal fun buildExportOptions(
     filteredOperations: List<String>,
     allOperations: List<String>,
     store: RuntimeLogStore,
+    fullExport: (suspend (write: (String) -> Unit) -> Unit)? = null,
 ): List<LogExportOption> {
     val stamp = System.currentTimeMillis()
     return if (tab == LogsTab.Runtime) {
-        listOf(
+        listOfNotNull(
             LogExportOption(
                 label = "导出当前筛选结果",
                 description = "共 " + matched + " 条，按当前排序；zip 内含环境信息",
                 fileName = "xpatch-runtime-filtered-$stamp.zip",
-                build = { store.export(ordered) },
+                build = { "" }, stream = { write -> store.exportTo(ordered) { write(it) } },
                 hasContent = matched > 0,
             ),
             LogExportOption(
                 label = "导出全部已加载日志",
                 description = "共 " + totalLoaded + " 条，忽略筛选；zip 内含环境信息",
                 fileName = "xpatch-runtime-loaded-$stamp.zip",
-                build = { store.export(loadedEntries) },
+                build = { "" }, stream = { write -> store.exportTo(loadedEntries) { write(it) } },
                 hasContent = totalLoaded > 0,
             ),
+            fullExport?.let { stream ->
+                LogExportOption(
+                    label = "导出全部日志（含未加载）",
+                    description = "流式读取磁盘上全部日志文件，不受已加载范围限制",
+                    fileName = "xpatch-runtime-all-$stamp.zip",
+                    build = { "" },
+                    hasContent = true,
+                    stream = stream,
+                )
+            },
         )
     } else {
         listOf(
@@ -566,3 +585,221 @@ internal fun appChipText(selected: Set<String>, apps: List<LogAppFilter>): Strin
 
     else -> selected.size.toString() + " 个应用"
 }
+
+/** 清理面板里的"运行日志"分组：一个应用一张卡，可展开看模块文件。 */
+internal data class ClearRuntimeGroup(
+    val target: String,
+    val label: String,
+    val files: List<RuntimeLogStore.LogFileInfo>,
+) {
+    val bytes: Long get() = files.sumOf { it.size }
+    val moduleCount: Int get() = files.map { it.module }.distinct().size
+}
+
+/**
+ * 选择性清理日志：按大类分卡、卡内可展开勾选，未勾选的内容不受影响。
+ *
+ * 交互参照手机管家：先看总量，再决定删哪一类；每张卡都能单独全选/全不选。
+ */
+@Composable
+internal fun ClearLogsSheet(
+    groups: List<ClearRuntimeGroup>,
+    operationsCount: Int,
+    operationsBytes: Long,
+    crashCount: Int,
+    crashBytes: Long,
+    onDismiss: () -> Unit,
+    onConfirm: (targets: Set<String>, clearOperations: Boolean, clearCrashes: Boolean) -> Unit,
+) {
+    var selectedTargets by remember { mutableStateOf(setOf<String>()) }
+    var clearOperations by remember { mutableStateOf(false) }
+    var clearCrashes by remember { mutableStateOf(false) }
+    var expandedRuntime by remember { mutableStateOf(true) }
+    var expandedOps by remember { mutableStateOf(false) }
+    var expandedCrash by remember { mutableStateOf(false) }
+
+    val totalBytes = groups.filter { it.target in selectedTargets }.sumOf { it.bytes } +
+        (if (clearOperations) operationsBytes else 0L) +
+        (if (clearCrashes) crashBytes else 0L)
+    val selectedCount = selectedTargets.size +
+        (if (clearOperations) 1 else 0) +
+        (if (clearCrashes) 1 else 0)
+
+    BottomSheet(onDismiss = onDismiss) {
+        Column(Modifier.fillMaxWidth()) {
+            Text(
+                "清理日志",
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                modifier = Modifier.padding(horizontal = 4.dp),
+            )
+            Text(
+                "选择要删除的内容，未勾选的不受影响。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            )
+
+            // ── 运行日志 ──────────────────────────────────────────────
+            ClearSection(
+                title = "运行日志",
+                summary = groups.size.toString() + " 个应用 · " + formatBytes(groups.sumOf { it.bytes }),
+                checked = selectedTargets.size == groups.size && groups.isNotEmpty(),
+                enabled = groups.isNotEmpty(),
+                expanded = expandedRuntime,
+                onToggleCheck = {
+                    selectedTargets = if (selectedTargets.size == groups.size) emptySet()
+                    else groups.map { it.target }.toSet()
+                },
+                onToggleExpand = { expandedRuntime = !expandedRuntime },
+            ) {
+                if (groups.isEmpty()) {
+                    Text(
+                        "没有可清理的运行日志",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    )
+                } else {
+                    groups.forEach { group ->
+                        val checked = group.target in selectedTargets
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    selectedTargets = if (checked) selectedTargets - group.target
+                                    else selectedTargets + group.target
+                                }
+                                .padding(start = 48.dp, end = 12.dp, top = 2.dp, bottom = 2.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Checkbox(checked = checked, onCheckedChange = null)
+                            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                                Text(group.label, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    group.moduleCount.toString() + " 个模块 · " + formatBytes(group.bytes),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── 操作日志 ──────────────────────────────────────────────
+            ClearSection(
+                title = "操作日志",
+                summary = operationsCount.toString() + " 条 · " + formatBytes(operationsBytes),
+                checked = clearOperations,
+                enabled = operationsCount > 0,
+                expanded = expandedOps,
+                onToggleCheck = { clearOperations = !clearOperations },
+                onToggleExpand = { expandedOps = !expandedOps },
+            ) {
+                Text(
+                    "记录管理器自己的操作（安装、打包、设置变更）。清理后不影响运行日志。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+
+            // ── 崩溃记录 ──────────────────────────────────────────────
+            ClearSection(
+                title = "崩溃记录",
+                summary = crashCount.toString() + " 个文件 · " + formatBytes(crashBytes),
+                checked = clearCrashes,
+                enabled = crashCount > 0,
+                expanded = expandedCrash,
+                onToggleCheck = { clearCrashes = !clearCrashes },
+                onToggleExpand = { expandedCrash = !expandedCrash },
+            ) {
+                Text(
+                    "管理器自身崩溃时留下的堆栈，排查完可以删。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                )
+            }
+
+            Spacer(Modifier.height(10.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text(
+                    if (selectedCount == 0) "未选择" else "已选 " + selectedCount + " 项 · " + formatBytes(totalBytes),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.weight(1f),
+                )
+                TextButton(onClick = onDismiss) { Text("取消") }
+                Spacer(Modifier.width(4.dp))
+                Button(
+                    onClick = { onConfirm(selectedTargets, clearOperations, clearCrashes) },
+                    enabled = selectedCount > 0,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.error,
+                        contentColor = MaterialTheme.colorScheme.onError,
+                    ),
+                ) { Text("清理") }
+            }
+        }
+    }
+}
+
+@Composable
+private fun ClearSection(
+    title: String,
+    summary: String,
+    checked: Boolean,
+    enabled: Boolean,
+    expanded: Boolean,
+    onToggleCheck: () -> Unit,
+    onToggleExpand: () -> Unit,
+    content: @Composable () -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Checkbox(checked = checked, onCheckedChange = { onToggleCheck() }, enabled = enabled)
+            Column(
+                Modifier.weight(1f).clickable(enabled = enabled) { onToggleExpand() }.padding(vertical = 10.dp),
+            ) {
+                Text(title, style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.Medium)
+                Text(
+                    summary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+            IconButton(onClick = onToggleExpand, enabled = enabled) {
+                Icon(
+                    Icons.Rounded.KeyboardArrowRight,
+                    contentDescription = if (expanded) "收起" else "展开",
+                    // 右向箭头展开时旋转 90° 变向下，符合树形列表的通用语义
+                    modifier = Modifier.rotate(if (expanded) 90f else 0f),
+                )
+            }
+        }
+        if (expanded && enabled) {
+            HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+            content()
+            Spacer(Modifier.height(6.dp))
+        }
+    }
+}
+
+internal fun formatBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024 * 1024 -> String.format("%.2f GB", bytes / 1024.0 / 1024.0 / 1024.0)
+    bytes >= 1024L * 1024 -> String.format("%.1f MB", bytes / 1024.0 / 1024.0)
+    bytes >= 1024L -> String.format("%.0f KB", bytes / 1024.0)
+    else -> bytes.toString() + " B"
+}
+

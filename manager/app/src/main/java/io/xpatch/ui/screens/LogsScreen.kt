@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
@@ -49,6 +50,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -57,7 +59,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
+import java.io.File
 import io.xpatch.data.RuntimeLogStore
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.SearchField
@@ -76,10 +80,16 @@ internal fun LogsScreen(
     labelOf: (String) -> String,
     onRefreshRuntime: () -> Unit,
     onRequestStorage: () -> Unit,
+    onLoadMoreRuntime: () -> Unit,
     onClearRuntime: suspend () -> RuntimeLogStore.ClearResult,
     onClearOperations: () -> Boolean,
-    onExport: (String, String) -> Unit,
+    onExport: (String, String, (suspend ((String) -> Unit) -> Unit)?) -> Unit,
     onOpenModule: (LogGroup) -> Unit,
+    /** 列出可清理的日志文件（有 Shizuku 时走 shell，能覆盖 Android/data 与私有目录）。 */
+    listLogFiles: suspend () -> List<RuntimeLogStore.LogFileInfo> = { emptyList() },
+    /** 删除选中的日志文件（有 Shizuku 时走 shell rm）。 */
+    deleteLogFiles: suspend (List<String>) -> RuntimeLogStore.ClearResult =
+        { RuntimeLogStore.ClearResult(0, 0, emptyList()) },
 ) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -91,8 +101,13 @@ internal fun LogsScreen(
     var copyTick by remember { mutableIntStateOf(0) }
     var menuOpen by remember { mutableStateOf(false) }
     var filterOpen by remember { mutableStateOf(false) }
-    var clearTarget by remember { mutableStateOf<LogsTab?>(null) }
     var outcome by remember { mutableStateOf<ClearOutcome?>(null) }
+    // 选择性清理：按应用分组的可清理文件 + 操作日志/崩溃记录的体积
+    var clearSheetOpen by remember { mutableStateOf(false) }
+    var clearGroups by remember { mutableStateOf<List<ClearRuntimeGroup>>(emptyList()) }
+    var operationsBytes by remember { mutableStateOf(0L) }
+    var crashStats by remember { mutableStateOf(0 to 0L) }
+    val appContext = LocalContext.current.applicationContext
     val expandedEntries = remember { mutableStateMapOf<String, Boolean>() }
 
     LaunchedEffect(state.tab) {
@@ -156,8 +171,79 @@ internal fun LogsScreen(
     val ready = computed ?: state.cachedBase
     val computing = computed == null && ready != null
 
-    val rows = remember(ready, state.view) {
-        ready?.let { buildRows(it, state.view) }.orEmpty()
+    // 关键词非空且磁盘上还有未加载内容时，跨全量做一次流式搜索，
+    // 避免"搜不到"其实只是因为那条日志还在未加载区间。
+    val searchQuery = state.query.trim()
+    var fullSearch by remember { mutableStateOf<FullSearchResult?>(null) }
+    var fullSearching by remember { mutableStateOf(false) }
+    LaunchedEffect(searchQuery, state.layer, state.apps, runtime.snapshot?.readAtMillis) {
+        fullSearch = null
+        if (searchQuery.isEmpty() || runtime.snapshot?.hasMore != true) {
+            fullSearching = false
+            return@LaunchedEffect
+        }
+        fullSearching = true
+        delay(LOGS_SEARCH_DEBOUNCE_MS)
+        val snapshotLabels = labels
+        fullSearch = withContext(Dispatchers.IO) {
+            val hits = ArrayList<RuntimeLogStore.Entry>()
+            store.scanAll(targets = emptyList()) { chunk ->
+                for (entry in chunk) {
+                    if (state.apps.isNotEmpty() && entry.target !in state.apps) continue
+                    if (state.layer != LogLayer.All && layerOf(entry) != state.layer) continue
+                    if (!matchesLog(entry, searchQuery, snapshotLabels)) continue
+                    hits += entry
+                }
+            }
+            FullSearchResult(
+                entries = hits.sortedWith(
+                    compareByDescending<RuntimeLogStore.Entry> { it.timeMillis },
+                ),
+                query = searchQuery,
+            )
+        }
+        fullSearching = false
+    }
+
+    // 全量命中并入列表的渲染数据源：命中优先（带完整 Entry），已加载结果去重后补齐。
+    // 合并与排序放到 Default 线程，避免大结果集在组合期做重活；
+    // 结果带上 query，用来丢弃"上一个关键词"迟到的合并结果。
+    val searchHits = fullSearch?.takeIf { it.query == searchQuery }
+    val mergedRender by produceState<MergedLogsBase?>(
+        initialValue = null,
+        ready,
+        searchHits,
+        state.groupOrder,
+        state.timeOrder,
+    ) {
+        val loaded = ready
+        val hits = searchHits
+        value = if (loaded == null || hits == null) {
+            null
+        } else {
+            withContext(Dispatchers.Default) {
+                MergedLogsBase(
+                    query = hits.query,
+                    base = mergeFullSearchBase(
+                        loaded = loaded,
+                        hits = hits.entries,
+                        query = hits.query,
+                        groupOrder = state.groupOrder,
+                        timeOrder = state.timeOrder,
+                    ),
+                )
+            }
+        }
+    }
+    // 只有"关键词仍然是当前关键词、且仍在运行日志页"时才用合并结果，
+    // 否则回落到纯已加载结果（例如切到操作日志页或刚清空搜索词）。
+    val searchMerged = mergedRender?.takeIf {
+        it.query == searchQuery && state.tab == LogsTab.Runtime
+    }
+    val base = searchMerged?.base ?: ready
+
+    val rows = remember(base, state.view) {
+        base?.let { buildRows(it, state.view) }.orEmpty()
     }
 
     val needle = state.opQuery.trim()
@@ -193,18 +279,30 @@ internal fun LogsScreen(
         newestKey != state.seenNewest
 
     val totalLoaded = runtime.entries.size
-    val matched = ready?.matched ?: 0
+    // matched/ordered 都取渲染数据源：全量搜索就绪后，"当前筛选结果"指的就是全部日志的命中。
+    val matched = base?.matched ?: 0
 
-    val exportOptions = remember(state.tab, ready, shownOperations, operations) {
+    val exportOptions = remember(state.tab, base, shownOperations, operations, runtime.snapshot) {
         buildExportOptions(
             tab = state.tab,
-            matched = ready?.matched ?: 0,
-            ordered = ready?.ordered.orEmpty(),
+            matched = base?.matched ?: 0,
+            ordered = base?.ordered.orEmpty(),
             totalLoaded = runtime.entries.size,
             loadedEntries = runtime.entries,
             filteredOperations = shownOperations,
             allOperations = operations,
             store = store,
+            fullExport = if (state.tab == LogsTab.Runtime) {
+                { write ->
+                    // 全量导出：按文件流式扫描磁盘，逐条交给写出方，
+                    // 既不受"已加载"范围限制，也不会把全部日志读进内存。
+                    store.scanAll(targets = emptyList()) { chunk ->
+                        chunk.sortedByDescending { it.timeMillis }.forEach { write(it.fullText) }
+                    }
+                }
+            } else {
+                null
+            },
         )
     }
 
@@ -225,13 +323,39 @@ internal fun LogsScreen(
                 onExport = { option ->
                     menuOpen = false
                     scope.launch {
-                        val text = withContext(Dispatchers.Default) { option.build() }
-                        onExport(option.fileName, text)
+                        if (option.stream != null) {
+                            onExport(option.fileName, "", option.stream)
+                        } else {
+                            val text = withContext(Dispatchers.Default) { option.build() }
+                            onExport(option.fileName, text, null)
+                        }
                     }
                 },
                 onClear = {
                     menuOpen = false
-                    clearTarget = state.tab
+                    scope.launch {
+                        val grouped = withContext(Dispatchers.IO) {
+                            val files = listLogFiles()
+                            files.groupBy { it.target }
+                                .map { (target, list) ->
+                                    ClearRuntimeGroup(target = target, label = labelOf(target), files = list)
+                                }
+                                .sortedByDescending { it.bytes }
+                        }
+                        clearGroups = grouped
+                        operationsBytes = withContext(Dispatchers.IO) {
+                            File(appContext.filesDir, "events/operations.log").takeIf { it.isFile }?.length() ?: 0L
+                        }
+                        crashStats = withContext(Dispatchers.IO) {
+                            val dir = File(appContext.filesDir, "crash")
+                            val files = dir.listFiles()?.filter { it.isFile }.orEmpty()
+                            files.size to files.sumOf { it.length() }
+                        }
+                        clearSheetOpen = true
+                    }
+                },
+                onDoubleTap = {
+                    scope.launch { listState.animateScrollToItem(0) }
                 },
             )
 
@@ -251,19 +375,24 @@ internal fun LogsScreen(
 
             if (state.tab == LogsTab.Runtime) {
                 val snapshot = runtime.snapshot
-                val showStatus = ready != null && (
-                    ready.filtered ||
-                        snapshot?.truncatedByLimit == true ||
-                        snapshot?.headTruncated == true ||
-                        snapshot?.failures?.isNotEmpty() == true
-                    )
+                val truncated = snapshot?.headTruncated == true
+                val readFailed = snapshot?.failures?.isNotEmpty() == true
+                // 应用私有目录（/data/data/<pkg>/files/xpatch-logs）里的日志只能经 shell 读，
+                // 有这类来源时即使没有任何筛选也要把状态行亮出来，否则用户不知道"日志不全"。
+                val privateDir = snapshot?.hasPrivateDir == true
+                val showStatus = base != null &&
+                    (base.filtered || truncated || readFailed || privateDir)
                 if (showStatus) {
                     SlimStatusLine(
                         matched = matched,
                         loaded = totalLoaded,
-                        filtered = ready?.filtered == true,
+                        filtered = base?.filtered == true,
                         snapshot = snapshot,
                         refreshing = runtime.refreshing,
+                        fullSearching = fullSearching,
+                        // 非 null 表示列表已在展示全量搜索结果，文案据此改成"全部日志"。
+                        fullSearchHits = searchMerged?.base?.matched,
+                        privateDirHint = privateDir,
                         onReset = {
                             state.resetFilters()
                             queryText = ""
@@ -274,8 +403,10 @@ internal fun LogsScreen(
                     runtime = runtime,
                     state = state,
                     rows = rows,
-                    base = ready,
+                    base = base,
                     computing = computing,
+                    // 全量搜索结果已在列表里时，不再提示"还有文件未加载"——命中已覆盖磁盘全量。
+                    fullSearchActive = searchMerged != null,
                     listState = listState,
                     hasNew = hasNew,
                     expandedEntries = expandedEntries,
@@ -283,6 +414,7 @@ internal fun LogsScreen(
                     modifier = Modifier.weight(1f),
                     onToggleEntry = { id -> expandedEntries[id] = !(expandedEntries[id] ?: false) },
                     onOpenModule = onOpenModule,
+                    onLoadMore = onLoadMoreRuntime,
                     onCopy = { entry ->
                         clipboard.setText(AnnotatedString(entry.fullText))
                         copyText = "已复制 " + entry.timeText
@@ -363,35 +495,51 @@ internal fun LogsScreen(
                 },
             )
         }
-        clearTarget?.let { tab ->
-            val clearModel = remember(tab, runtime.entries, ready, operations) {
-                clearScope(tab, runtime, operations, ready)
-            }
-            ClearConfirmDialog(
-                tab = tab,
-                scope = clearModel,
-                onConfirm = {
-                    clearTarget = null
+        if (clearSheetOpen) {
+            ClearLogsSheet(
+                groups = clearGroups,
+                operationsCount = operations.size,
+                operationsBytes = operationsBytes,
+                crashCount = crashStats.first,
+                crashBytes = crashStats.second,
+                onDismiss = { clearSheetOpen = false },
+                onConfirm = { targets, clearOps, clearCrash ->
+                    clearSheetOpen = false
                     scope.launch {
-                        outcome = if (tab == LogsTab.Runtime) {
-                            val cleared = onClearRuntime()
-                            ClearOutcome(
-                                ok = cleared.ok,
-                                title = if (cleared.ok) "运行日志已清空" else "运行日志未完全清空",
-                                message = describeClear(cleared),
-                            )
-                        } else {
-                            val ok = onClearOperations()
-                            ClearOutcome(
-                                ok = ok,
-                                title = if (ok) "操作日志已清空" else "操作日志清空失败",
-                                message = if (ok) "已移除本机保存的操作记录，运行日志未受影响"
-                                else "写入本机存储失败，界面内容已保留，可稍后重试",
+                        var ok = true
+                        val messages = StringBuilder()
+                        if (targets.isNotEmpty()) {
+                            val paths = clearGroups
+                                .filter { it.target in targets }
+                                .flatMap { group -> group.files.map { it.path } }
+                            val cleared = deleteLogFiles(paths)
+                            ok = ok && cleared.ok
+                            messages.append(
+                                "运行日志：删除 " + cleared.deletedFiles + " 个文件（" +
+                                    targets.size + " 个应用）",
                             )
                         }
+                        if (clearOps) {
+                            val cleared = onClearOperations()
+                            ok = ok && cleared
+                            messages.append(if (messages.isEmpty()) "" else "；").append("操作日志已清空")
+                        }
+                        if (clearCrash) {
+                            val removed = withContext(Dispatchers.IO) {
+                                File(appContext.filesDir, "crash").deleteRecursively()
+                            }
+                            ok = ok && removed
+                            messages.append(if (messages.isEmpty()) "" else "；").append("崩溃记录已清空")
+                        }
+                        if (messages.isEmpty()) messages.append("没有选择任何内容")
+                        outcome = ClearOutcome(
+                            ok = ok,
+                            title = if (ok) "清理完成" else "部分内容未清理",
+                            message = messages.toString(),
+                        )
+                        onRefreshRuntime()
                     }
                 },
-                onDismiss = { clearTarget = null },
             )
         }
 
@@ -415,10 +563,12 @@ private fun LogsTopBar(
     onOpenFilter: () -> Unit,
     onExport: (LogExportOption) -> Unit,
     onClear: () -> Unit,
+    onDoubleTap: () -> Unit = {},
 ) {
     Row(
         Modifier
             .fillMaxWidth()
+            .pointerInput(Unit) { detectTapGestures(onDoubleTap = { onDoubleTap() }) }
             .padding(start = 16.dp, end = 4.dp, top = 6.dp, bottom = 2.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -573,6 +723,14 @@ private fun SlimStatusLine(
     filtered: Boolean,
     snapshot: RuntimeLogStore.Snapshot?,
     refreshing: Boolean,
+    fullSearching: Boolean = false,
+    /**
+     * 全量搜索的命中数；非 null 表示列表里展示的已经是"全部日志"的搜索结果，
+     * 文案要明确说出来，而不是再补一句"另有 N 条"。
+     */
+    fullSearchHits: Int? = null,
+    /** 部分日志落在应用私有目录、需要 Shizuku 才能读取时的提示位。 */
+    privateDirHint: Boolean = false,
     onReset: () -> Unit,
 ) {
     Row(
@@ -583,17 +741,30 @@ private fun SlimStatusLine(
     ) {
         Text(
             buildString {
-                if (filtered) {
+                val hits = fullSearchHits
+                if (hits != null) {
+                    // 列表就是全量命中，不要说"另有 N 条"，否则用户以为还有隐藏结果。
+                    append("已在全部日志中搜索：命中 ")
+                    append(countText(hits))
+                    append(" 条")
+                } else if (filtered) {
                     append("匹配 ")
                     append(countText(matched))
-                    append(" / 共 ")
+                    append(" / 已加载 ")
                     append(countText(loaded))
+                    append(" 条")
                 } else {
                     append(countText(loaded))
                     append(" 条")
                 }
-                if (snapshot != null && (snapshot.truncatedByLimit || snapshot.headTruncated)) {
-                    append(" · 已截断")
+                if (fullSearching) {
+                    append(" · 正在搜索全部日志…")
+                }
+                if (privateDirHint) {
+                    append(" · 部分日志在应用私有目录，需 Shizuku 读取")
+                }
+                if (snapshot != null && headTruncatedOf(snapshot)) {
+                    append(" · 单文件过大，较早内容未载入")
                 }
                 if (snapshot != null && snapshot.failures.isNotEmpty()) {
                     append(" · ")
@@ -614,6 +785,56 @@ private fun SlimStatusLine(
         Spacer(Modifier.weight(1f))
         if (filtered) {
             TinyTextButton("重置筛选", onReset)
+        }
+    }
+}
+
+@Composable
+internal fun LoadMoreFooter(
+    loadingMore: Boolean,
+    hasMore: Boolean,
+    loaded: Int,
+    pendingFiles: Int,
+    onLoadMore: () -> Unit,
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 18.dp),
+        horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        when {
+            loadingMore -> {
+                CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 1.6.dp)
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    "正在加载更早的日志…",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+
+            hasMore -> Box(
+                Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .combinedClickable(onClick = onLoadMore, onLongClick = null)
+                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    "已加载 " + countText(loaded) + " 条 · 还有 " + pendingFiles +
+                        " 个文件未读取，点击继续加载",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+            }
+
+            else -> Text(
+                "已加载全部日志，共 " + countText(loaded) + " 条",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.outline,
+            )
         }
     }
 }
@@ -643,6 +864,8 @@ private fun RuntimeLogList(
     state: LogsState,
     rows: List<LogRow>,
     base: LogsBase?,
+    /** 列表数据源来自全量搜索结果时为 true：命中已覆盖磁盘全量，不再提示继续加载。 */
+    fullSearchActive: Boolean = false,
     computing: Boolean,
     listState: LazyListState,
     hasNew: Boolean,
@@ -651,6 +874,7 @@ private fun RuntimeLogList(
     modifier: Modifier = Modifier,
     onToggleEntry: (String) -> Unit,
     onOpenModule: (LogGroup) -> Unit,
+    onLoadMore: () -> Unit,
     onCopy: (RuntimeLogStore.Entry) -> Unit,
     onRefresh: () -> Unit,
     onRequestStorage: () -> Unit,
@@ -663,6 +887,9 @@ private fun RuntimeLogList(
         modifier = modifier.fillMaxSize(),
     ) {
         Box(Modifier.fillMaxSize()) {
+            // 滚到接近底部时自动补下一页。
+            // 只增量合并已加载部分，不会重新解析磁盘上全部日志。
+            // 全量搜索结果不需要翻页：命中本身已经覆盖磁盘上全部文件。
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -691,7 +918,9 @@ private fun RuntimeLogList(
                         )
                     }
 
-                    runtime.entries.isEmpty() -> item(key = "state:empty") {
+                    // 全量搜索可能命中"还没加载"区间的日志：
+                    // 只要 rows 非空就得渲染，不能被"已加载为空"的空白卡片挡住。
+                    runtime.entries.isEmpty() && rows.isEmpty() -> item(key = "state:empty") {
                         LogStateCard(
                             title = "暂无运行日志",
                             body = "已安装模块的应用运行后才会生成日志，路径为 Android/data/应用包名/.logs。下拉可重新加载。",
@@ -705,7 +934,11 @@ private fun RuntimeLogList(
                     }
 
                     rows.isEmpty() -> item(key = "state:no-match") {
-                        EmptyResultCard(query = base?.query.orEmpty(), onReset = onReset)
+                        EmptyResultCard(
+                            query = base?.query.orEmpty(),
+                            searchedAll = fullSearchActive,
+                            onReset = onReset,
+                        )
                     }
 
                     else -> items(
@@ -733,6 +966,11 @@ private fun RuntimeLogList(
                                 onCopy = { onCopy(row.entry) },
                             )
                         }
+                    }
+                }
+
+                if (rows.isNotEmpty() && !fullSearchActive) {
+                    item(key = "state:load-more") {
                     }
                 }
             }
@@ -868,7 +1106,12 @@ private fun LogLoadingCard(text: String) {
 }
 
 @Composable
-private fun EmptyResultCard(query: String, onReset: () -> Unit) {
+private fun EmptyResultCard(
+    query: String,
+    onReset: () -> Unit,
+    /** 结果来自全量搜索时为 true：此时"没搜到"就是全部日志都没搜到，不能再提示"只覆盖已加载"。 */
+    searchedAll: Boolean = false,
+) {
     Column(
         Modifier
             .fillMaxWidth()
@@ -882,7 +1125,8 @@ private fun EmptyResultCard(query: String, onReset: () -> Unit) {
         )
         Spacer(Modifier.height(6.dp))
         Text(
-            "搜索只覆盖已加载的日志，可重置筛选后再试。",
+            if (searchedAll) "已在全部日志中搜索，没有命中。"
+            else "搜索只覆盖已加载的日志，可重置筛选后再试。",
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
@@ -1130,3 +1374,10 @@ private fun OperationRow(
 internal fun countText(value: Int): String =
     if (value < 1000) value.toString()
     else String.format(java.util.Locale.US, "%.1fk", value / 1000.0)
+
+/**
+ * 条数上限已经取消。剩余的"头部截断"只代表单个日志文件超出单次读取预算，
+ * UI 借此提示"更早的内容还没有载入"，而不是暗示存在条数上限。
+ */
+internal fun headTruncatedOf(snapshot: RuntimeLogStore.Snapshot): Boolean =
+    snapshot.headTruncated

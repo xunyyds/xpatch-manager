@@ -48,6 +48,10 @@ import io.xpatch.ui.components.SearchField
 import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.runtime.rememberCoroutineScope
+import kotlinx.coroutines.launch
 
 @Suppress("UNUSED_PARAMETER")
 @Composable
@@ -62,6 +66,7 @@ internal fun LogModuleScreen(
     onCopy: (RuntimeLogStore.Entry) -> Unit,
 ) {
     var filterOpen by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
     val filtered = remember(entries, state.query, state.level, state.dayFrom, state.dayTo, state.timeOrder) {
         filterGroupEntries(
             entries = entries,
@@ -76,6 +81,16 @@ internal fun LogModuleScreen(
     val counts = remember(entries) { levelCounts(entries) }
 
     Column(Modifier.fillMaxSize()) {
+        // 双击顶部摘要卡 = 回到列表最上面（长列表快速返回）
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .pointerInput(Unit) {
+                    detectTapGestures(onDoubleTap = {
+                        scope.launch { listState.animateScrollToItem(0) }
+                    })
+                },
+        ) {
         ModuleSummaryCard(
             module = module,
             framework = framework,
@@ -87,6 +102,8 @@ internal fun LogModuleScreen(
             onOpenFilter = { filterOpen = true },
             onReset = { state.reset() },
         )
+        }
+
         SearchField(
             value = state.query,
             onValueChange = { state.query = it },
