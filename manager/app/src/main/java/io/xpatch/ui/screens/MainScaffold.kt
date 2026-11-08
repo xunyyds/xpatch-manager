@@ -157,6 +157,7 @@ fun MainScaffold(
     var logDetailState by remember { mutableStateOf(LogDetailState()) }
     val logDetailList = androidx.compose.foundation.lazy.rememberLazyListState()
     var logsRefreshing by remember { mutableStateOf(false) }
+    var logsLoadingMore by remember { mutableStateOf(false) }
     var logsRuntime by remember {
         mutableStateOf(RuntimeLogsState(hasAccess = false))
     }
@@ -168,6 +169,9 @@ fun MainScaffold(
     var modulesRefreshing by remember { mutableStateOf(false) }
     var pendingExportFileName by remember { mutableStateOf<String?>(null) }
     var pendingLogText by remember { mutableStateOf<String?>(null) }
+    var pendingLogStream by remember {
+        mutableStateOf<(suspend ((String) -> Unit) -> Unit)?>(null)
+    }
     val labelCache = remember { java.util.concurrent.ConcurrentHashMap<String, String>() }
     val labelOf: (String) -> String = { packageName ->
         labelCache.getOrPut(packageName) {
@@ -254,6 +258,90 @@ fun MainScaffold(
                 }
             }
         }
+    }
+
+    /**
+     * 打包管线（唯一入口）。
+     *
+     * 配置页的「开始打包」与应用详情的「更新内核」快捷入口都走这里：
+     * 前者带着用户改过的 options，后者用当前 settings 直接重打、不进入配置页。
+     * 抽成一处是为了保证两条路产出的 fingerprint、历史记录、失败语义完全一致。
+     */
+    val startPatch: suspend (PatchTarget, PatchOptions) -> Unit = startPatch@{ target, options ->
+        settingsStore.setHookCore(options.hookCore)
+        settingsStore.setSignatureBypassLevel(options.bypassLevel)
+        settingsStore.setInjectSignature(options.injectSignature)
+        settingsStore.setFileProvider(options.fileProvider)
+        settingsStore.setDynamicMode(options.dynamicMode)
+        settingsStore.setForceOverwrite(options.forceOverwrite)
+        settings = settings.copy(
+            hookCore = options.hookCore,
+            signatureBypassLevel = options.bypassLevel,
+            injectSignature = options.injectSignature,
+            fileProvider = options.fileProvider,
+            dynamicMode = options.dynamicMode,
+            forceOverwrite = options.forceOverwrite,
+        )
+        val sourceKey = patchSourceKey(target)
+        val fingerprint = PatchFingerprint.of(sourceKey, options)
+        val summary = PatchFingerprint.summary(options)
+        val recordVersionName = options.versionName ?: patchVersionName(target)
+        val recordVersionCode = options.versionCode?.toLong() ?: patchVersionCode(target)
+        busyText = null
+        patchLog.clear()
+        patchProgress = 0
+        patchFailure = null
+        patchRunning = true
+        runCatching {
+            when (target) {
+                is PatchTarget.Installed -> patchService.build(
+                    target.app,
+                    options,
+                    onLog = { line -> patchLog.add(line) },
+                    onProgress = { patchProgress = it },
+                )
+
+                is PatchTarget.FromFile -> patchService.buildFromFile(
+                    target.file,
+                    target.label,
+                    options,
+                    onLog = { line -> patchLog.add(line) },
+                    onProgress = { patchProgress = it },
+                )
+            }
+        }.onSuccess { outcome ->
+            eventLog.add("打包完成 " + outcome.packageName + " · " + outcome.bootDex)
+            patchProgress = 100
+            result = outcome
+            val record = PatchRecord(
+                id = historyStore.newId(),
+                time = System.currentTimeMillis(),
+                packageName = outcome.packageName,
+                label = outcome.label,
+                versionName = recordVersionName,
+                versionCode = recordVersionCode,
+                sourceKey = sourceKey,
+                fingerprint = fingerprint,
+                optionSummary = summary,
+                apkPath = outcome.apk.absolutePath,
+                apkSize = outcome.apk.length(),
+                apkModified = outcome.apk.lastModified(),
+                bootDex = outcome.bootDex,
+                originalFactory = outcome.originalFactory,
+                config = outcome.config,
+                forceOverwrite = outcome.forceOverwrite,
+            )
+            withContext(Dispatchers.IO) { historyStore.record(record) }
+            currentRecordId = record.id
+            historyTick++
+            token++
+        }.onFailure {
+            eventLog.add("打包失败 " + it.message)
+            patchLog.add("失败：" + it.message)
+            patchFailure = it.message ?: "未知错误"
+        }
+        patchRunning = false
+        logs = eventLog.entries()
     }
 
     val apkPicker = rememberLauncherForActivityResult(
@@ -388,11 +476,13 @@ fun MainScaffold(
         ActivityResultContracts.CreateDocument("application/zip"),
     ) { uri ->
         val text = pendingLogText
+        val stream = pendingLogStream
         pendingLogText = null
+        pendingLogStream = null
         val name = pendingExportFileName
         pendingExportFileName = null
         if (uri == null) return@rememberLauncherForActivityResult
-        if (text == null) return@rememberLauncherForActivityResult
+        if (text == null && stream == null) return@rememberLauncherForActivityResult
         scope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -407,6 +497,11 @@ fun MainScaffold(
                             },
                         )
                         put("运行日志快照条数", (logsRuntime.snapshot?.totalLoaded ?: 0).toString())
+                        put(
+                            "运行日志文件数",
+                            (logsRuntime.snapshot?.fileCount ?: 0).toString() +
+                                "（已加载 " + (logsRuntime.snapshot?.loadedFiles ?: 0) + "）",
+                        )
                     }
                     context.contentResolver.openOutputStream(uri)?.use { output ->
                         ZipOutputStream(BufferedOutputStream(output)).use { zip ->
@@ -415,7 +510,24 @@ fun MainScaffold(
                                 zip.write(content.toByteArray(Charsets.UTF_8))
                                 zip.closeEntry()
                             }
-                            putEntry("logs/" + baseName + ".log", text)
+                            if (stream != null) {
+                                // 流式导出：逐条写出，内存占用与日志总量无关
+                                zip.putNextEntry(ZipEntry("logs/" + baseName + ".log"))
+                                val buffered = java.io.BufferedWriter(
+                                    java.io.OutputStreamWriter(zip, Charsets.UTF_8),
+                                    64 * 1024,
+                                )
+                                var first = true
+                                stream { line ->
+                                    if (!first) buffered.write("\n")
+                                    buffered.write(line)
+                                    first = false
+                                }
+                                buffered.flush()
+                                zip.closeEntry()
+                            } else {
+                                putEntry("logs/" + baseName + ".log", text.orEmpty())
+                            }
                             putEntry("environment-info.txt", EnvInfoCollector.collect(context, extras))
                             io.xpatch.data.CrashRecorder.lastCrashFile(context)?.let { crash ->
                                 runCatching {
@@ -442,22 +554,33 @@ fun MainScaffold(
             logsRefreshing = true
             logsRuntime = logsRuntime.copy(loading = true, error = null)
             try {
+                // 首屏只读最新一页；更早的内容由 loadMoreRuntimeLogs 增量补上。
+                // 这样"打开日志页"的耗时与磁盘上日志总量无关。
+                // 一次性把日志全部读进内存：条目本身很轻（几十字节），千级/万级无压力；
+                // 列表由 LazyColumn 按需渲染，所以"全量加载"不等于"全量绘制"。
+                // 这样也去掉了"边滚边加载"的状态机与底部闪烁的加载提示。
                 val snapshot = withContext(Dispatchers.IO) {
                     val targets = repository.patchedPackageNames()
-                    val local = runCatching { logStore.load(targets) }.getOrNull()
-                    if (local != null && local.entries.isNotEmpty()) {
-                        local
-                    } else if (ShizukuBridge.hasPermission()) {
+                    val merged = if (ShizukuBridge.hasPermission()) {
                         runCatching {
-                            logStore.loadViaShell(
+                            logStore.loadFirstPageMerged(
                                 reader = { command -> ShizukuBridge.exec(command) },
-                                fileReader = { path, maxBytes -> ShizukuBridge.readText(path, maxBytes) },
                                 targets = targets,
+                                fileReader = { path, maxBytes -> ShizukuBridge.readText(path, maxBytes) },
                             )
-                        }.getOrNull() ?: local
+                        }.getOrNull()
                     } else {
-                        local
+                        null
                     }
+                    var acc = merged ?: runCatching { logStore.loadFirstPage(targets) }.getOrNull()
+                    var guard = 0
+                    while (acc != null && acc.hasMore && guard < MAX_LOG_PAGES) {
+                        val next = runCatching { logStore.loadMore(acc) }.getOrNull()
+                        if (next == null) break
+                        acc = next
+                        guard++
+                    }
+                    acc
                 }
                 logsRuntime = if (snapshot != null) {
                     RuntimeLogsState(
@@ -478,6 +601,38 @@ fun MainScaffold(
                 logsRefreshing = false
             }
         }
+    }
+
+    /**
+     * 增量加载更早的日志。
+     *
+     * 由列表滚到底部触发，一次补一页（约 [RuntimeLogStore.PAGE_BYTES]）。
+     * 没有条数上限，用户可以一直往前翻到磁盘上最早的一条。
+     */
+    val loadMoreRuntimeLogs: suspend () -> Unit = {
+        val current = logsRuntime.snapshot
+        if (!logsLoadingMore && current != null && current.hasMore) {
+            logsLoadingMore = true
+            logsRuntime = logsRuntime.copy(loadingMore = true)
+            try {
+                val next = withContext(Dispatchers.IO) {
+                    runCatching { logStore.loadMore(current) }.getOrNull()
+                }
+                if (next != null) {
+                    logsRuntime = logsRuntime.copy(
+                        snapshot = next,
+                        loadingMore = false,
+                        error = null,
+                    )
+                } else {
+                    logsRuntime = logsRuntime.copy(
+                        loadingMore = false,
+                        error = "加载更早的日志失败",
+                    )
+                }
+            } finally {
+                logsLoadingMore = false
+            }        }
     }
 
     LaunchedEffect(Unit) {
@@ -915,6 +1070,7 @@ fun MainScaffold(
                         labelOf = labelOf,
                         onRefreshRuntime = { scope.launch { loadRuntimeLogs() } },
                         onRequestStorage = { openAllFilesSettings(context) },
+                        onLoadMoreRuntime = { scope.launch { loadMoreRuntimeLogs() } },
                         onClearRuntime = {
                             val result = runCatching {
                                 withContext(Dispatchers.IO) { logStore.clear() }
@@ -945,9 +1101,10 @@ fun MainScaffold(
                             logs = eventLog.entries()
                             ok
                         },
-                        onExport = { fileName, text ->
+                        onExport = { fileName, text, stream ->
                             pendingExportFileName = fileName
                             pendingLogText = text
+                            pendingLogStream = stream
                             logExportLauncher.launch(fileName)
                         },
                         onOpenModule = { group ->
@@ -960,6 +1117,38 @@ fun MainScaffold(
                                     targets = group.targets,
                                 ),
                             )
+                        },
+                        // Shizuku 能读能删（和 MT 管理器一样）：有权限时一律走 shell，
+                        // 这样 Android/data 与 /data/data/<pkg>/files/xpatch-logs 都在视野内；
+                        // 没有 Shizuku 才退回本地可读范围。
+                        listLogFiles = {
+                            val targets = repository.patchedPackageNames()
+                            withContext(Dispatchers.IO) {
+                                if (ShizukuBridge.hasPermission()) {
+                                    val shell = runCatching {
+                                        logStore.listShellFiles(
+                                            reader = { command -> ShizukuBridge.exec(command) },
+                                            targets = targets,
+                                        )
+                                    }.getOrDefault(emptyList())
+                                    if (shell.isNotEmpty()) shell
+                                    else runCatching { logStore.listLocalFiles(targets) }.getOrNull()?.first ?: emptyList()
+                                } else {
+                                    runCatching { logStore.listLocalFiles(targets) }.getOrNull()?.first ?: emptyList()
+                                }
+                            }
+                        },
+                        deleteLogFiles = { paths ->
+                            withContext(Dispatchers.IO) {
+                                if (ShizukuBridge.hasPermission()) {
+                                    logStore.deleteViaShell(
+                                        reader = { command -> ShizukuBridge.exec(command) },
+                                        paths = paths,
+                                    )
+                                } else {
+                                    logStore.clearFiles(paths)
+                                }
+                            }
                         },
                     )
 
@@ -1249,82 +1438,7 @@ fun MainScaffold(
                         logs = eventLog.entries()
                     },
                     onStart = { options ->
-                        settingsStore.setHookCore(options.hookCore)
-                        settingsStore.setSignatureBypassLevel(options.bypassLevel)
-                        settingsStore.setInjectSignature(options.injectSignature)
-                        settingsStore.setFileProvider(options.fileProvider)
-                        settingsStore.setDynamicMode(options.dynamicMode)
-                        settingsStore.setForceOverwrite(options.forceOverwrite)
-                        settings = settings.copy(
-                            hookCore = options.hookCore,
-                            signatureBypassLevel = options.bypassLevel,
-                            injectSignature = options.injectSignature,
-                            fileProvider = options.fileProvider,
-                            dynamicMode = options.dynamicMode,
-                            forceOverwrite = options.forceOverwrite,
-                        )
-                        val sourceKey = patchSourceKey(current.target)
-                        val fingerprint = PatchFingerprint.of(sourceKey, options)
-                        val summary = PatchFingerprint.summary(options)
-                        val recordVersionName = options.versionName ?: patchVersionName(current.target)
-                        val recordVersionCode = options.versionCode?.toLong() ?: patchVersionCode(current.target)
-                        scope.launch {
-                            busyText = null
-                            patchLog.clear()
-                            patchProgress = 0
-                            patchFailure = null
-                            patchRunning = true
-                            runCatching {
-                                when (val target = current.target) {
-                                    is PatchTarget.Installed -> patchService.build(
-                                        target.app,
-                                        options,
-                                        onLog = { line -> patchLog.add(line) },
-                                        onProgress = { patchProgress = it },
-                                    )
-
-                                    is PatchTarget.FromFile -> patchService.buildFromFile(
-                                        target.file,
-                                        target.label,
-                                        options,
-                                        onLog = { line -> patchLog.add(line) },
-                                        onProgress = { patchProgress = it },
-                                    )
-                                }
-                            }.onSuccess { outcome ->
-                                eventLog.add("打包完成 ${outcome.packageName} · ${outcome.bootDex}")
-                                patchProgress = 100
-                                result = outcome
-                                val record = PatchRecord(
-                                    id = historyStore.newId(),
-                                    time = System.currentTimeMillis(),
-                                    packageName = outcome.packageName,
-                                    label = outcome.label,
-                                    versionName = recordVersionName,
-                                    versionCode = recordVersionCode,
-                                    sourceKey = sourceKey,
-                                    fingerprint = fingerprint,
-                                    optionSummary = summary,
-                                    apkPath = outcome.apk.absolutePath,
-                                    apkSize = outcome.apk.length(),
-                                    apkModified = outcome.apk.lastModified(),
-                                    bootDex = outcome.bootDex,
-                                    originalFactory = outcome.originalFactory,
-                                    config = outcome.config,
-                                    forceOverwrite = outcome.forceOverwrite,
-                                )
-                                withContext(Dispatchers.IO) { historyStore.record(record) }
-                                currentRecordId = record.id
-                                historyTick++
-                                token++
-                            }.onFailure {
-                                eventLog.add("打包失败 ${it.message}")
-                                patchLog.add("失败：${it.message}")
-                                patchFailure = it.message ?: "未知错误"
-                            }
-                            patchRunning = false
-                            logs = eventLog.entries()
-                        }
+                        scope.launch { startPatch(current.target, options) }
                     },
                     onPickSignature = { profile ->
                         signatureStore.setDefaultProfile(profile.id)
@@ -1484,6 +1598,7 @@ fun MainScaffold(
                     },
                     onAppInfo = { ShizukuBridge.openAppDetails(context, current.app.packageName) },
                     onViewLogs = { nav.openLogs() },
+                    // 只保留「更新内核」一个入口：复用打包页，用户在打包页里改参数再开始。
                     onUpdateCore = { nav.navigate(Page.Config(PatchTarget.Installed(current.app))) },
                     meta = remember(current.app.packageName, token) {
                         runCatching {
@@ -1884,3 +1999,6 @@ private fun patchSourceKey(target: PatchTarget): String = when (target) {
         target.file.lastModified().toString(),
     ).joinToString("|")
 }
+
+/** 全量读取时的页数上限（防御性：避免异常游标导致死循环）。 */
+private const val MAX_LOG_PAGES = 400

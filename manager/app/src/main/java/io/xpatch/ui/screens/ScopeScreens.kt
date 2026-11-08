@@ -6,6 +6,7 @@ import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -192,6 +193,8 @@ internal fun AppScopeScreen(
     val settledState = remember { mutableStateOf(enabledFlags) }
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
+    /** 0=全部 1=已启用 2=推荐。与搜索、排序共同决定列表内容。 */
+    var scopeFilter by remember { mutableIntStateOf(0) }
     val settledEnabled = settledState.value
 
     val onSwitchSettled: (String) -> Unit = { pkg ->
@@ -215,6 +218,13 @@ internal fun AppScopeScreen(
             query.isBlank() ||
                 module.label.contains(query, ignoreCase = true) ||
                 module.packageName.contains(query, ignoreCase = true)
+        }
+        .filter { module ->
+            when (scopeFilter) {
+                1 -> settledEnabled[module.packageName] == true
+                2 -> recommendedFlags[module.packageName] == true
+                else -> true
+            }
         }
         .let { source ->
             when (sort) {
@@ -331,6 +341,14 @@ internal fun AppScopeScreen(
                         softWrap = false,
                     )
                 }
+                ScopeFilterRow(
+                    selected = scopeFilter,
+                    total = modules.size,
+                    enabled = settledEnabled.count { it.value },
+                    recommended = recommendedFlags.count { it.value },
+                    miuix = miuix,
+                    onSelect = { scopeFilter = it },
+                )
             }
         }
         if (modules.isEmpty()) {
@@ -484,7 +502,7 @@ internal fun RecommendBadge() {
     )
 }
 
-private const val LATEST_RUNTIME_VERSION = 41
+private const val LATEST_RUNTIME_VERSION = 42
 
 internal fun runtimeLabel(app: AppInfo): String {
     if (app.runtimeVersion <= 0) return "未打包"
@@ -564,5 +582,59 @@ internal fun ScopeHeader(title: String, subtitle: String, countText: String) {
             style = MaterialTheme.typography.labelMedium,
             color = MaterialTheme.colorScheme.primary,
         )
+    }
+}
+
+/**
+ * 模块作用域的筛选条：全部 / 已启用 / 推荐。
+ *
+ * 与搜索框、排序菜单共同决定列表内容——三者互不覆盖，符合"保留现有筛选和排序"的预期。
+ */
+@Composable
+private fun ScopeFilterRow(
+    selected: Int,
+    total: Int,
+    enabled: Int,
+    recommended: Int,
+    miuix: Boolean,
+    onSelect: (Int) -> Unit,
+) {
+    val labels = listOf("全部 $total", "已启用 $enabled", "推荐 $recommended")
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        labels.forEachIndexed { index, label ->
+            val on = index == selected
+            val container = when {
+                on && miuix -> MiuixTheme.colorScheme.primary
+                on -> MaterialTheme.colorScheme.primary
+                miuix -> MiuixTheme.colorScheme.surfaceContainerHigh
+                else -> MaterialTheme.colorScheme.surfaceContainerHigh
+            }
+            val content = when {
+                on && miuix -> MiuixTheme.colorScheme.onPrimary
+                on -> MaterialTheme.colorScheme.onPrimary
+                miuix -> MiuixTheme.colorScheme.onSurfaceVariantSummary
+                else -> MaterialTheme.colorScheme.onSurfaceVariant
+            }
+            Box(
+                Modifier
+                    .clip(RoundedCornerShape(50))
+                    .background(container)
+                    .clickable { onSelect(index) }
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+            ) {
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = content,
+                    maxLines = 1,
+                    softWrap = false,
+                )
+            }
+        }
     }
 }
