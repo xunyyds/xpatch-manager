@@ -79,7 +79,8 @@ object UpdateChecker {
     suspend fun download(
         context: Context,
         release: ReleaseInfo,
-        onProgress: (Int) -> Unit = {},
+        control: DownloadControl = DownloadControl(),
+        onProgress: (Int, Long) -> Unit = { _, _ -> },
     ): File? = withContext(Dispatchers.IO) {
         val dir = File(context.cacheDir, "update").apply { mkdirs() }
         val target = File(dir, release.apkName)
@@ -88,12 +89,17 @@ object UpdateChecker {
             MIRROR_PREFIXES.forEach { add(it + release.apkUrl) }
             add(release.apkUrl)
         }
-        urls.forEach { url ->
-            val ok = runCatching { downloadTo(url, tmp, onProgress) }.getOrDefault(false)
-            if (ok && tmp.renameTo(target)) return@withContext target
-            runCatching { tmp.delete() }
+        val ok = Downloader.download(urls, tmp, control, USER_AGENT) { progress ->
+            val percent = if (progress.total > 0) {
+                ((progress.read * 100) / progress.total).toInt().coerceIn(0, 100)
+            } else {
+                0
+            }
+            onProgress(percent, progress.bytesPerSecond)
         }
-        null
+        if (!ok) return@withContext null
+        runCatching { target.delete() }
+        if (tmp.renameTo(target)) target else null
     }
 
     fun compareVersion(left: String, right: String): Int {
@@ -187,40 +193,4 @@ object UpdateChecker {
         )
     }.getOrNull()
 
-    private fun downloadTo(url: String, tmp: File, onProgress: (Int) -> Unit): Boolean {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        try {
-            connection.connectTimeout = CONNECT_TIMEOUT
-            connection.readTimeout = 30_000
-            connection.instanceFollowRedirects = true
-            connection.setRequestProperty("User-Agent", USER_AGENT)
-            connection.connect()
-            val code = connection.responseCode
-            if (code !in 200..299) return false
-            val total = connection.contentLengthLong
-            var last = -1
-            var read = 0L
-            connection.inputStream.use { input ->
-                tmp.outputStream().use { output ->
-                    val buffer = ByteArray(64 * 1024)
-                    while (true) {
-                        val count = input.read(buffer)
-                        if (count < 0) break
-                        output.write(buffer, 0, count)
-                        read += count
-                        if (total > 0) {
-                            val percent = ((read * 100) / total).toInt()
-                            if (percent != last) {
-                                last = percent
-                                onProgress(percent)
-                            }
-                        }
-                    }
-                }
-            }
-            return total <= 0 || read == total
-        } finally {
-            connection.disconnect()
-        }
-    }
 }

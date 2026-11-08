@@ -18,12 +18,11 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -37,6 +36,7 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.xpatch.BuildConfig
+import io.xpatch.data.DownloadCenter
 import io.xpatch.data.UpdateChecker
 import io.xpatch.patch.InstallHelper
 import io.xpatch.ui.components.AppIcon
@@ -64,16 +64,18 @@ internal fun AboutScreen(
     val scope = rememberCoroutineScope()
     var checking by remember { mutableStateOf(false) }
     var updateState by remember { mutableStateOf<UpdateChecker.CheckResult?>(null) }
-    var downloadPercent by remember { mutableIntStateOf(-1) }
-    var downloadVersion by remember { mutableStateOf<String?>(null) }
+    var downloadTaskId by remember { mutableStateOf<Long?>(null) }
     var updateError by remember { mutableStateOf<String?>(null) }
+    val downloadTasks by DownloadCenter.tasks.collectAsState()
+    val downloadTask = downloadTaskId?.let { downloadTasks[it] }
+    val downloading = downloadTask != null && !downloadTask.done && downloadTask.failed == null
 
     val appIcon = remember {
         runCatching { context.packageManager.getApplicationIcon(context.packageName) }.getOrNull() as? Drawable
     }
 
     fun checkUpdate() {
-        if (checking || downloadPercent >= 0) return
+        if (checking || downloading) return
         checking = true
         updateState = null
         scope.launch {
@@ -91,24 +93,14 @@ internal fun AboutScreen(
     }
 
     fun startDownload(release: UpdateChecker.ReleaseInfo) {
-        if (downloadPercent >= 0) return
+        if (downloading) return
         if (!InstallHelper.canInstall(context)) {
             Toast.makeText(context, "请先授予「安装未知应用」权限", Toast.LENGTH_SHORT).show()
             InstallHelper.openInstallPermission(context)
             return
         }
-        scope.launch {
-            downloadPercent = 0
-            downloadVersion = release.version
-            val apk = UpdateChecker.download(context, release) { percent -> downloadPercent = percent }
-            downloadPercent = -1
-            downloadVersion = null
-            if (apk == null) {
-                updateError = "下载失败，请检查网络后重试"
-            } else if (!InstallHelper.installWithSystem(context, apk)) {
-                updateError = "无法调起系统安装器，请检查系统安装服务"
-            }
-        }
+        downloadTaskId = DownloadCenter.startUpdate(context, release)
+        Toast.makeText(context, "已开始后台下载，可在通知里暂停或取消", Toast.LENGTH_SHORT).show()
     }
 
     LazyColumn(
@@ -135,8 +127,12 @@ internal fun AboutScreen(
                     RowDivider(startPadding = 16.dp)
                     SettingItem(
                         title = "下载并安装 v" + available.release.version,
-                        subtitle = "共 " + readableSize(available.release.apkSize) + " · 来自 GitHub Releases",
-                        arrow = downloadPercent < 0,
+                        subtitle = if (downloading) {
+                            "正在下载 " + (downloadTask?.percent ?: 0) + "% · 可在通知中暂停或取消"
+                        } else {
+                            "共 " + readableSize(available.release.apkSize) + " · 来自 GitHub Releases"
+                        },
+                        arrow = !downloading,
                         onClick = { startDownload(available.release) },
                     )
                 }
@@ -191,7 +187,7 @@ internal fun AboutScreen(
     }
 
     val available = updateState as? UpdateChecker.CheckResult.Available
-    if (available != null && downloadPercent < 0 && updateError == null) {
+    if (available != null && !downloading && updateError == null) {
         XPatchDialog(
             onDismiss = { updateState = null },
             title = "发现新版本 v" + available.release.version,
@@ -218,27 +214,6 @@ internal fun AboutScreen(
                     }
                 }
             }
-        }
-    }
-
-    if (downloadPercent in 0..99) {
-        XPatchDialog(
-            onDismiss = {},
-            dismissible = false,
-            title = "正在下载 v" + (downloadVersion ?: ""),
-            actions = emptyList(),
-        ) {
-            LinearProgressIndicator(
-                progress = { downloadPercent / 100f },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                downloadPercent.toString() + "%",
-                style = MaterialTheme.typography.labelMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                modifier = Modifier.align(Alignment.End),
-            )
         }
     }
 

@@ -37,6 +37,9 @@ class MainActivity : ComponentActivity() {
         CrashRecorder.install(this)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        io.xpatch.notify.AppNotifications.ensureChannels(this)
+        io.xpatch.data.RestartCenter.init(this)
+        requestNotificationPermissionIfNeeded()
         val settingsStore = SettingsStore(this)
         val initialSettings = settingsStore.load()
         setContent {
@@ -59,6 +62,15 @@ class MainActivity : ComponentActivity() {
                     onDismiss = { storageGranted = true },
                 )
             }
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return
+        val granted = checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
     }
 

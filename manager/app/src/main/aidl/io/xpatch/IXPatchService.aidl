@@ -1,5 +1,7 @@
 package io.xpatch;
 
+import android.os.ParcelFileDescriptor;
+
 interface IXPatchService {
 
     void destroy() = 16777114;
@@ -13,4 +15,6 @@ interface IXPatchService {
     void dexopt(String packageName) = 4;
 
     int getUid() = 5;
+
+    ParcelFileDescriptor openRead(String path) = 6;
 }

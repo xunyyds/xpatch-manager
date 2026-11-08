@@ -7,6 +7,7 @@ import android.content.ServiceConnection
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import io.xpatch.BuildConfig
 import io.xpatch.IXPatchService
@@ -110,6 +111,9 @@ object ShizukuBridge {
 
     fun readText(path: String, maxBytes: Int): String? =
         runCatching { service()?.readText(path, maxBytes) }.getOrNull()?.takeIf { it.isNotEmpty() }
+
+    fun openRead(path: String): ParcelFileDescriptor? =
+        runCatching { service()?.openRead(path) }.getOrNull()
 
     fun forceStop(packageName: String): Boolean = runCatching {
         service()?.forceStop(packageName)

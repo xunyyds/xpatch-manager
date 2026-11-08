@@ -45,6 +45,7 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -69,6 +70,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import io.xpatch.data.ConfigBackup
+import io.xpatch.data.DownloadCenter
 import io.xpatch.data.EnvInfoCollector
 import io.xpatch.data.EventLog
 import io.xpatch.data.ManagerRepository
@@ -77,6 +79,7 @@ import io.xpatch.data.PatchExportRef
 import io.xpatch.data.PatchHistoryStore
 import io.xpatch.data.PatchRecord
 import io.xpatch.data.RepoStore
+import io.xpatch.data.RestartCenter
 import io.xpatch.data.RuntimeLogStore
 import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.SettingsStore
@@ -237,6 +240,7 @@ fun MainScaffold(
     var repoDownloadPkg by remember { mutableStateOf<String?>(null) }
     var repoDownloadProgress by remember { mutableIntStateOf(0) }
     var repoDownloadDoneTick by remember { mutableIntStateOf(0) }
+    var repoDownloadTaskId by remember { mutableStateOf<Long?>(null) }
     var repoError by remember { mutableStateOf<String?>(null) }
     var token by remember { mutableIntStateOf(0) }
     val scopeSyncLocks = remember { HashMap<String, Mutex>() }
@@ -260,13 +264,6 @@ fun MainScaffold(
         }
     }
 
-    /**
-     * 打包管线（唯一入口）。
-     *
-     * 配置页的「开始打包」与应用详情的「更新内核」快捷入口都走这里：
-     * 前者带着用户改过的 options，后者用当前 settings 直接重打、不进入配置页。
-     * 抽成一处是为了保证两条路产出的 fingerprint、历史记录、失败语义完全一致。
-     */
     val startPatch: suspend (PatchTarget, PatchOptions) -> Unit = startPatch@{ target, options ->
         settingsStore.setHookCore(options.hookCore)
         settingsStore.setSignatureBypassLevel(options.bypassLevel)
@@ -511,7 +508,6 @@ fun MainScaffold(
                                 zip.closeEntry()
                             }
                             if (stream != null) {
-                                // 流式导出：逐条写出，内存占用与日志总量无关
                                 zip.putNextEntry(ZipEntry("logs/" + baseName + ".log"))
                                 val buffered = java.io.BufferedWriter(
                                     java.io.OutputStreamWriter(zip, Charsets.UTF_8),
@@ -554,11 +550,6 @@ fun MainScaffold(
             logsRefreshing = true
             logsRuntime = logsRuntime.copy(loading = true, error = null)
             try {
-                // 首屏只读最新一页；更早的内容由 loadMoreRuntimeLogs 增量补上。
-                // 这样"打开日志页"的耗时与磁盘上日志总量无关。
-                // 一次性把日志全部读进内存：条目本身很轻（几十字节），千级/万级无压力；
-                // 列表由 LazyColumn 按需渲染，所以"全量加载"不等于"全量绘制"。
-                // 这样也去掉了"边滚边加载"的状态机与底部闪烁的加载提示。
                 val snapshot = withContext(Dispatchers.IO) {
                     val targets = repository.patchedPackageNames()
                     val merged = if (ShizukuBridge.hasPermission()) {
@@ -603,12 +594,6 @@ fun MainScaffold(
         }
     }
 
-    /**
-     * 增量加载更早的日志。
-     *
-     * 由列表滚到底部触发，一次补一页（约 [RuntimeLogStore.PAGE_BYTES]）。
-     * 没有条数上限，用户可以一直往前翻到磁盘上最早的一条。
-     */
     val loadMoreRuntimeLogs: suspend () -> Unit = {
         val current = logsRuntime.snapshot
         if (!logsLoadingMore && current != null && current.hasMore) {
@@ -676,7 +661,6 @@ fun MainScaffold(
                 if (access && (logsRuntime.snapshot == null || !hadAccess) && !logsRefreshing) {
                     scope.launch { loadRuntimeLogs() }
                 }
-                // 安装/卸载发生在系统侧，回到前台时重建快照，内核版本徽标才会实时刷新
                 scope.launch {
                     repository.invalidate()
                     val refreshed = repository.loadPatchedApps()
@@ -820,7 +804,6 @@ fun MainScaffold(
                     is ShizukuInstaller.Result.Failure -> {
                         eventLog.add(step.message)
                         if (outcome.forceOverwrite) {
-                            // 强行覆盖依赖 Shizuku，回退系统安装器必然因签名不一致再次失败，直接明确报错
                             failure = step.message + "\n\n请确认 Shizuku 已授权，或改为普通打包后再安装。"
                         } else {
                             showToast(step.message)
@@ -845,7 +828,6 @@ fun MainScaffold(
         }
     }
 
-    // 系统卸载返回后：确认真的卸载成功才继续安装，取消则停留在原状态
     val uninstallLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
     ) { _ ->
@@ -858,7 +840,6 @@ fun MainScaffold(
         if (stillInstalled) {
             eventLog.add("已取消卸载 " + target.packageName)
             logs = eventLog.entries()
-            // 回到签名不一致的选项，用户可改选继续安装或返回
             pendingInstall = target
             return@rememberLauncherForActivityResult
         }
@@ -888,6 +869,36 @@ fun MainScaffold(
 
     val onRepoDownloadProgress: (Int) -> Unit = { percent ->
         if (percent != repoDownloadProgress) repoDownloadProgress = percent
+    }
+
+    val downloadTasks by DownloadCenter.tasks.collectAsState()
+    LaunchedEffect(downloadTasks, repoDownloadTaskId) {
+        val id = repoDownloadTaskId ?: return@LaunchedEffect
+        val task = downloadTasks[id] ?: return@LaunchedEffect
+        if (task.percent != repoDownloadProgress) {
+            repoDownloadProgress = task.percent
+        }
+    }
+    LaunchedEffect(Unit) {
+        DownloadCenter.events.collect { event ->
+            when (event) {
+                is DownloadCenter.Event.ModuleReady -> {
+                    repoDownloadPkg = null
+                    repoDownloadTaskId = null
+                    repoDownloadDoneTick++
+                    eventLog.add("已下载 " + event.module.name)
+                    showToast("已下载 " + event.module.name)
+                    installModuleFile(event.module.name, event.file, event.module.packageName)
+                    token++
+                }
+
+                is DownloadCenter.Event.Failed -> {
+                    repoDownloadPkg = null
+                    repoDownloadTaskId = null
+                    eventLog.add(event.message)
+                }
+            }
+        }
     }
 
     val liquidBottomBar = settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID
@@ -1118,9 +1129,6 @@ fun MainScaffold(
                                 ),
                             )
                         },
-                        // Shizuku 能读能删（和 MT 管理器一样）：有权限时一律走 shell，
-                        // 这样 Android/data 与 /data/data/<pkg>/files/xpatch-logs 都在视野内；
-                        // 没有 Shizuku 才退回本地可读范围。
                         listLogFiles = {
                             val targets = repository.patchedPackageNames()
                             withContext(Dispatchers.IO) {
@@ -1270,11 +1278,7 @@ fun MainScaffold(
                                 } else {
                                     repoDownloadPkg = module.packageName
                                     repoDownloadProgress = 0
-                                    repoStore.download(module, onRepoDownloadProgress)
-                                    repoDownloadPkg = null
-                                    repoDownloadDoneTick++
-                                    eventLog.add("已下载 " + module.name)
-                                    showToast("已下载 " + module.name)
+                                    repoDownloadTaskId = DownloadCenter.startModule(context, repoStore, module)
                                 }
                             }.onFailure {
                                 repoError = it.message ?: "下载失败"
@@ -1347,11 +1351,7 @@ fun MainScaffold(
                                     } else {
                                         repoDownloadPkg = current.module.packageName
                                         repoDownloadProgress = 0
-                                        repoStore.download(current.module, onRepoDownloadProgress)
-                                        repoDownloadPkg = null
-                                        repoDownloadDoneTick++
-                                        eventLog.add("已下载 " + current.module.name)
-                                        showToast("已下载 " + current.module.name)
+                                        repoDownloadTaskId = DownloadCenter.startModule(context, repoStore, current.module)
                                     }
                                 }.onFailure {
                                     repoError = it.message ?: "下载失败"
@@ -1404,7 +1404,6 @@ fun MainScaffold(
                     signatures = signatures,
                     defaultSignatureId = defaultSignatureId,
                     busy = busyText != null,
-                    // 跟随 ON_RESUME 刷新，授权返回后开关立即可用
                     forceOverwriteReady = shizukuReady,
                     forceOverwriteBlockReason = remember(shizukuReady, shizukuAvailable) {
                         ShizukuInstaller.forceOverwriteBlockReason()
@@ -1550,6 +1549,12 @@ fun MainScaffold(
                         )
                         token++
                         syncScopeFile(app.packageName)
+                        RestartCenter.request(
+                            context,
+                            app.packageName,
+                            app.label,
+                            "模块作用域已更新，重启 " + app.label + " 后生效",
+                        )
                     },
                 )
 
@@ -1564,6 +1569,12 @@ fun MainScaffold(
                         eventLog.add("API ${module.packageName} → ${ModuleApiStore.label(api)}，重启目标应用后生效")
                         token++
                         syncScopeFile(current.app.packageName)
+                        RestartCenter.request(
+                            context,
+                            current.app.packageName,
+                            current.app.label,
+                            "模块 " + module.label + " 的 API 级别已改为 " + ModuleApiStore.label(api) + "，重启后生效",
+                        )
                     },
                     onLaunch = {
                         runCatching { ShizukuBridge.launch(context, current.app.packageName) }
@@ -1598,7 +1609,6 @@ fun MainScaffold(
                     },
                     onAppInfo = { ShizukuBridge.openAppDetails(context, current.app.packageName) },
                     onViewLogs = { nav.openLogs() },
-                    // 只保留「更新内核」一个入口：复用打包页，用户在打包页里改参数再开始。
                     onUpdateCore = { nav.navigate(Page.Config(PatchTarget.Installed(current.app))) },
                     meta = remember(current.app.packageName, token) {
                         runCatching {
@@ -1632,6 +1642,12 @@ fun MainScaffold(
                         )
                         token++
                         syncScopeFile(current.app.packageName)
+                        RestartCenter.request(
+                            context,
+                            current.app.packageName,
+                            current.app.label,
+                            "模块作用域已更新，重启 " + current.app.label + " 后生效",
+                        )
                     },
                 )
 
@@ -1648,6 +1664,12 @@ fun MainScaffold(
                         )
                         token++
                         syncScopeFile(current.app.packageName)
+                        RestartCenter.request(
+                            context,
+                            current.app.packageName,
+                            current.app.label,
+                            "模块作用域已更新，重启 " + current.app.label + " 后生效",
+                        )
                     },
                 )
             }
@@ -1892,6 +1914,21 @@ fun MainScaffold(
         }
     }
 
+    val restartRequest by RestartCenter.dialog.collectAsState()
+    restartRequest?.let { request ->
+        XPatchDialog(
+            miuix = miuix,
+            onDismiss = { RestartCenter.dismissDialog() },
+            title = "需要重启 " + request.label,
+            actions = listOf(
+                DialogAction("稍后处理") { RestartCenter.dismissDialog() },
+                DialogAction("立即重启") { RestartCenter.restartNow(context, request.packageName) },
+            ),
+        ) {
+            Text(request.reason, style = MaterialTheme.typography.bodySmall)
+        }
+    }
+
     failure?.let { message ->
         XPatchDialog(
             miuix = miuix,
@@ -2000,5 +2037,4 @@ private fun patchSourceKey(target: PatchTarget): String = when (target) {
     ).joinToString("|")
 }
 
-/** 全量读取时的页数上限（防御性：避免异常游标导致死循环）。 */
 private const val MAX_LOG_PAGES = 400

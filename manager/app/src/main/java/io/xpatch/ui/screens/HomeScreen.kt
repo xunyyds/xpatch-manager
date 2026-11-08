@@ -22,18 +22,29 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import io.xpatch.data.RestartCenter
 import io.xpatch.model.AppInfo
+import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.PullRefreshBox
+import io.xpatch.ui.components.RestartHintBanner
+import io.xpatch.ui.components.RestartListRows
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SettingItem
+import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -47,6 +58,11 @@ internal fun HomeScreen(
     onOpen: (AppInfo) -> Unit,
 ) {
     val miuix = LocalMiuix.current
+    val context = LocalContext.current
+    val pendingRestarts by RestartCenter.pending.collectAsState()
+    val bannerHidden by RestartCenter.bannerHidden.collectAsState()
+    var showRestartList by remember { mutableStateOf(false) }
+
     Column(Modifier.fillMaxSize()) {
         PullRefreshBox(
             refreshing = refreshing,
@@ -57,6 +73,22 @@ internal fun HomeScreen(
                 state = io.xpatch.ui.util.rememberPageScrollState(),
                 contentPadding = PaddingValues(bottom = io.xpatch.ui.util.rememberListBottomPadding(true)),
             ) {
+                if (pendingRestarts.isNotEmpty() && !bannerHidden) {
+                    item {
+                        RestartHintBanner(
+                            requests = pendingRestarts,
+                            onRestart = {
+                                if (pendingRestarts.size == 1) {
+                                    RestartCenter.restartNow(context, pendingRestarts.first().packageName)
+                                } else {
+                                    RestartCenter.restartAll(context)
+                                }
+                            },
+                            onOpenList = { showRestartList = true },
+                            onHide = { RestartCenter.hideBanner() },
+                        )
+                    }
+                }
                 if (apps.isEmpty()) {
                     item {
                         EmptyState("还没有已打包的应用\n点右下角「添加应用」开始\n下拉可重新加载")
@@ -82,6 +114,24 @@ internal fun HomeScreen(
                             RowDivider()
                         }
                     }
+                }
+            }
+        }
+
+        if (showRestartList) {
+            XPatchDialog(
+                onDismiss = { showRestartList = false },
+                title = "待重启的应用",
+                actions = listOf(
+                    DialogAction("全部重启") {
+                        RestartCenter.restartAll(context)
+                        showRestartList = false
+                    },
+                    DialogAction("关闭") { showRestartList = false },
+                ),
+            ) {
+                RestartListRows(pendingRestarts) { request ->
+                    RestartCenter.restartNow(context, request.packageName)
                 }
             }
         }

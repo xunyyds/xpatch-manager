@@ -2,6 +2,7 @@ package io.xpatch.patch
 
 import android.content.Context
 import android.os.IBinder
+import android.os.ParcelFileDescriptor
 import android.os.Process
 import androidx.annotation.Keep
 import io.xpatch.IXPatchService
@@ -42,6 +43,15 @@ class XPatchUserService : IXPatchService.Stub {
             String(bytes, Charsets.UTF_8)
         }
     }.getOrDefault("")
+
+    override fun openRead(path: String): ParcelFileDescriptor? = runCatching {
+        val file = File(path)
+        if (!file.isFile) {
+            null
+        } else {
+            ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+        }
+    }.getOrNull()
 
     override fun forceStop(packageName: String) {
         runCatching {

@@ -181,54 +181,40 @@ class RepoStore(private val context: Context) {
         return if (file.exists() && file.length() == record.size) file else null
     }
 
-    suspend fun download(module: RepoModule, onProgress: (Int) -> Unit = {}): File =
-        withContext(Dispatchers.IO) {
-            cachedApk(module)?.let { return@withContext it }
+    suspend fun download(
+        module: RepoModule,
+        control: DownloadControl = DownloadControl(),
+        onProgress: (Int, Long) -> Unit = { _, _ -> },
+    ): File = withContext(Dispatchers.IO) {
+        cachedApk(module)?.let { return@withContext it }
 
-            val info = JSONObject(request(INFO_URL + module.packageName))
-                .optJSONArray("modules")
-                ?.optJSONObject(0)
-                ?: error("仓库未返回该模块的详情")
+        val info = JSONObject(request(INFO_URL + module.packageName))
+            .optJSONArray("modules")
+            ?.optJSONObject(0)
+            ?: error("仓库未返回该模块的详情")
 
-            val tag = info.optString("tag")
-            val fileName = info.optString("file_name")
-            require(tag.isNotBlank() && fileName.isNotBlank()) { "模块缺少可下载文件" }
+        val tag = info.optString("tag")
+        val fileName = info.optString("file_name")
+        require(tag.isNotBlank() && fileName.isNotBlank()) { "模块缺少可下载文件" }
 
-            val version = info.optString("version").ifBlank { module.version }
-            val url = FILE_URL + module.packageName + "/" + tag + "/" + fileName
-            val dir = File(context.cacheDir, "repo").apply { mkdirs() }
-            val target = File(dir, "$fileName")
+        val version = info.optString("version").ifBlank { module.version }
+        val url = FILE_URL + module.packageName + "/" + tag + "/" + fileName
+        val dir = File(context.cacheDir, "repo").apply { mkdirs() }
+        val target = File(dir, "$fileName")
 
-            val connection = open(url)
-            try {
-                val total = connection.contentLength
-                var lastPercent = -1
-                connection.inputStream.use { input ->
-                    target.outputStream().use { output ->
-                        val buffer = ByteArray(64 * 1024)
-                        var read: Int
-                        var done = 0
-                        while (input.read(buffer).also { read = it } > 0) {
-                            output.write(buffer, 0, read)
-                            done += read
-                            if (total > 0) {
-                                val percent = (done * 100 / total).coerceIn(0, 100)
-                                if (percent != lastPercent) {
-                                    lastPercent = percent
-                                    onProgress(percent)
-                                }
-                            }
-                        }
-                    }
-                }
-                if (total > 0 && lastPercent != 100) onProgress(100)
-            } finally {
-                connection.disconnect()
+        val ok = Downloader.download(listOf(url), target, control, USER_AGENT) { progress ->
+            val percent = if (progress.total > 0) {
+                ((progress.read * 100) / progress.total).toInt().coerceIn(0, 100)
+            } else {
+                0
             }
-
-            recordDownload(module.packageName, version, tag, fileName, target)
-            target
+            onProgress(percent, progress.bytesPerSecond)
         }
+        if (!ok) error("下载失败：" + module.name)
+
+        recordDownload(module.packageName, version, tag, fileName, target)
+        target
+    }
 
     fun clearCache() {
         runCatching {

@@ -68,6 +68,17 @@ PathClassLoader(模块APK, 模块APK!/lib/<abi>/)
 原因打到 logcat（`log persistence unavailable: ...`），引导阶段则把整段堆栈写进
 `bootstrap.log`（见 `compat-android17.md` 第 7 条）。
 
+### 下载与通知
+
+- 模块作用域、模块 API 级别等「重启后生效」的改动：界面弹可忽略对话框，同时发一条常驻通知
+  （重启 / 忽略）；通知按钮由 `NotificationActionReceiver` 落到 `RestartCenter`，不依赖界面存活；
+- 版本更新与模块下载统一走 `DownloadCenter`：后台 IO 作用域、常驻通知显示进度、通知内
+  暂停 / 继续 / 取消；下载完成后通过通知拉起系统安装器，应用在后台也不会卡住；
+- 下载实现 `Downloader`：256 KB 缓冲、`Range` 续传、多镜像并发测速后选最快、
+  5 秒窗口速度过低自动换源；
+- 通知渠道 `xp_restart`（默认）与 `xp_download`（低重要度），Android 13+ 启动时申请
+  `POST_NOTIFICATIONS`，未授权时只保留界面内状态。
+
 ### 读取约定
 
 - **写**：追加 + 轮转。`logs.log`、`logs_1.log`…，单文件 16 MB 封顶；写满后序号递增，
