@@ -27,3 +27,9 @@ manager/local.properties
 *.p12
 *.keystore
 !manager/app/src/main/assets/xp/key.p12
+
+# 本地工作区（构建缓存 / 审查产物，不入库）
+work/
+
+# 实验性构建输出目录
+manager/app/build-alt/

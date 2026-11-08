@@ -1,19 +1,47 @@
+import java.io.ByteArrayOutputStream
+import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
+import java.util.Properties
+import java.security.MessageDigest
+import javax.inject.Inject
+import org.gradle.api.DefaultTask
+import org.gradle.api.GradleException
+import org.gradle.api.file.DirectoryProperty
+import org.gradle.api.file.RegularFileProperty
+import org.gradle.api.provider.Property
+import org.gradle.api.tasks.Input
+import org.gradle.api.tasks.InputDirectory
+import org.gradle.api.tasks.InputFile
+import org.gradle.api.tasks.Internal
+import org.gradle.api.tasks.Optional
+import org.gradle.api.tasks.OutputFile
+import org.gradle.api.tasks.PathSensitive
+import org.gradle.api.tasks.PathSensitivity
+import org.gradle.api.tasks.TaskAction
+import org.gradle.process.ExecOperations
+import org.gradle.work.DisableCachingByDefault
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+/** 平台版本只写一份，android 块与下面的引导桩构建链共用。 */
+val xpCompileSdk = 37
+val xpBuildToolsVersion = "37.0.0"
+
 android {
     namespace = "io.xpatch"
-    compileSdk = 37
-    buildToolsVersion = "37.0.0"
+    compileSdk = xpCompileSdk
+    buildToolsVersion = xpBuildToolsVersion
 
     defaultConfig {
         applicationId = "io.xpatch"
         minSdk = 26
         targetSdk = 37
-        versionCode = 6
-        versionName = "0.1.5"
+        versionCode = 7
+        versionName = "0.1.6"
     }
 
     signingConfigs {
@@ -84,6 +112,574 @@ configurations.all {
     }
 }
 
+// ---------------------------------------------------------------------------
+// 引导桩（stub.dex）构建链
+//
+// 背景：manager/stub/io/xpatch/stub/AppEntry.java 是注入到目标 APK 的引导桩源码，
+// 产物以 assets/xp/stub.dex 的形式随管理器发布。历史上这个 dex 是手工编译入库的
+// 二进制，改了 java 却忘了重新编译很容易发生，所以这里把它接进构建：
+//
+//   buildStubDex : javac 编译 manager/stub/**/*.java → SDK 的 d8 生成 assets/xp/stub.dex
+//   verifyStubDex: 对比 stub.dex / 源码与 build/stub-dex.sha256，源码变了就提示重新生成
+//
+// 工具链缺失（找不到 SDK d8、javac 或 android.jar）时只打印警告并跳过，
+// 继续沿用已入库的 stub.dex，保证 assembleRelease 不会因此失败。
+//
+// 开关（gradle.properties 或 -P 项目属性）：
+//   xp.stub.autoBuild    = true  是否在构建期自动生成 stub.dex，false 完全关闭
+//   xp.stub.verifyStrict = false verifyStubDex 不一致时是否让 check 失败（默认仅提示）
+//   xp.stub.javaVersion  = 11    javac 的 source/target
+//   xp.stub.minApi       = 29    d8 --min-api（与内核一致，XPatch 支持 Android 10+）
+//   xp.stub.sdkDir       = -     覆盖 local.properties 里的 sdk.dir
+// ---------------------------------------------------------------------------
 
+/** AppEntry.java 只 import android.* 与 java.*，classpath 给一个 android.jar 就够。 */
+val xpStubSdkDir: File? = run {
+    val candidates = listOfNotNull(
+        providers.gradleProperty("xp.stub.sdkDir").orNull,
+        XpStubDex.localProperty(rootProject.file("local.properties"), "sdk.dir"),
+        System.getenv("ANDROID_SDK_ROOT"),
+        System.getenv("ANDROID_HOME"),
+    )
+    candidates.asSequence()
+        .map { it.trim() }
+        .filter { it.isNotEmpty() }
+        .map { File(it) }
+        .firstOrNull { it.isDirectory }
+}
 
+val xpStubAndroidJar: File? = XpStubDex.resolveAndroidJar(xpStubSdkDir, xpCompileSdk)
+val xpStubD8: File? = XpStubDex.resolveD8(xpStubSdkDir, xpBuildToolsVersion)
+val xpStubJavac: File? = XpStubDex.resolveJdkTool("javac")
 
+val xpStubAutoBuild: Boolean = providers.gradleProperty("xp.stub.autoBuild").orNull
+    ?.trim()?.lowercase()
+    ?.let { it != "false" && it != "off" && it != "0" && it != "no" }
+    ?: true
+
+val xpStubVerifyStrict: Boolean = providers.gradleProperty("xp.stub.verifyStrict").orNull
+    ?.trim()?.lowercase()
+    ?.let { it == "true" || it == "on" || it == "1" || it == "yes" }
+    ?: false
+
+val xpStubJavaVersion: String = providers.gradleProperty("xp.stub.javaVersion").orNull
+    ?.trim()?.takeIf { it.isNotEmpty() }
+    ?: "11"
+
+val xpStubMinApi: Int = providers.gradleProperty("xp.stub.minApi").orNull
+    ?.trim()?.toIntOrNull()
+    ?: 29
+
+/** 引导桩源码目录（manager/stub），产物落在本模块的 assets 里。 */
+val xpStubSourceDir: File = rootProject.file("stub")
+val xpStubDexFile: File = file("src/main/assets/xp/stub.dex")
+val xpStubChecksumFile = layout.buildDirectory.file("stub-dex.sha256")
+
+val buildStubDexTask = tasks.register<BuildStubDexTask>("buildStubDex") {
+    group = "xp"
+    description = "编译 manager/stub 的引导桩源码并用 d8 生成 assets/xp/stub.dex"
+    if (xpStubSourceDir.isDirectory) sourceDir.fileValue(xpStubSourceDir)
+    dexFile.set(xpStubDexFile)
+    checksumFile.set(xpStubChecksumFile)
+    stampFile.set(layout.buildDirectory.file("stub-dex.ok"))
+    workDir.set(layout.buildDirectory.dir("stub-dex"))
+    autoBuild.set(xpStubAutoBuild)
+    javaVersion.set(xpStubJavaVersion)
+    minApi.set(xpStubMinApi)
+    javaHome.set(System.getProperty("java.home") ?: "")
+    xpStubJavac?.let { javacPath.set(it.absolutePath) }
+    xpStubD8?.let { d8Path.set(it.absolutePath) }
+    xpStubAndroidJar?.let { androidJar.set(it) }
+}
+
+val verifyStubDexTask = tasks.register<VerifyStubDexTask>("verifyStubDex") {
+    group = "xp"
+    description = "校验 assets/xp/stub.dex 与 build/stub-dex.sha256 记录是否一致（挂到 check，不阻塞 assemble）"
+    if (xpStubSourceDir.isDirectory) sourceDir.fileValue(xpStubSourceDir)
+    dexFile.set(xpStubDexFile)
+    checksumFile.set(xpStubChecksumFile)
+    strict.set(xpStubVerifyStrict)
+}
+
+// 资源合并之前先产出 dex：preBuild 覆盖所有变体，merge*Assets 作为兜底
+// （不同 AGP 版本上 preBuild 的存在性不一样，两条都用 lazy matching 挂，缺了就是空操作）。
+tasks.matching { it.name == "preBuild" }.configureEach {
+    dependsOn(buildStubDexTask)
+}
+tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
+    dependsOn(buildStubDexTask)
+}
+// 一致性校验只挂 check，assembleRelease / assembleDebug 不受影响。
+tasks.matching { it.name == "check" }.configureEach {
+    dependsOn(verifyStubDexTask)
+}
+
+// ---------------------------------------------------------------------------
+// 引导桩构建链的工具函数
+//
+// 说明：这些函数放在 object 里而不是脚本顶层，因为脚本顶层声明是 Script 类的成员，
+// 同一文件里的 task class 访问不到；object 是独立类，两边都能调用。
+// ---------------------------------------------------------------------------
+object XpStubDex {
+
+    private val versionPattern = Regex("""(\d+(?:\.\d+)*)""")
+
+    private fun isWindows(): Boolean =
+        System.getProperty("os.name").orEmpty().lowercase().contains("windows")
+
+    /** 从 "android-37.0" / "37.0.0" 这类名字里取出版本号，用于排序与匹配。 */
+    fun versionKey(name: String): List<Int> =
+        versionPattern.find(name)?.value
+            ?.split('.')
+            ?.mapNotNull { it.toIntOrNull() }
+            ?: emptyList()
+
+    fun compareVersion(a: String, b: String): Int {
+        val left = versionKey(a)
+        val right = versionKey(b)
+        for (index in 0 until maxOf(left.size, right.size)) {
+            val l = left.getOrElse(index) { 0 }
+            val r = right.getOrElse(index) { 0 }
+            if (l != r) return l.compareTo(r)
+        }
+        return 0
+    }
+
+    /** 读 local.properties 里的单个键（sdk.dir 等）。 */
+    fun localProperty(file: File, key: String): String? {
+        if (!file.isFile) return null
+        return try {
+            val properties = Properties()
+            file.inputStream().use { properties.load(it) }
+            properties.getProperty(key)?.trim()?.takeIf { it.isNotEmpty() }
+        } catch (error: Exception) {
+            null
+        }
+    }
+
+    /** 在 platforms/ 下挑 android.jar：优先主版本等于 compileSdk 的，其次版本最高的。 */
+    fun resolveAndroidJar(sdkDir: File?, compileSdk: Int): File? {
+        if (sdkDir == null) return null
+        val platforms = File(sdkDir, "platforms")
+        if (!platforms.isDirectory) return null
+        val jars = platforms.listFiles { file -> file.isDirectory }
+            ?.sortedWith(Comparator<File> { a, b -> compareVersion(b.name, a.name) })
+            ?.map { File(it, "android.jar") }
+            ?.filter { it.isFile }
+            .orEmpty()
+        return jars.firstOrNull { versionKey(it.parentFile.name).firstOrNull() == compileSdk }
+            ?: jars.firstOrNull()
+    }
+
+    /** 挑 d8：优先 buildToolsVersion 对应的目录，其次 build-tools 下版本最高的。 */
+    fun resolveD8(sdkDir: File?, buildToolsVersion: String): File? {
+        if (sdkDir == null) return null
+        val root = File(sdkDir, "build-tools")
+        if (!root.isDirectory) return null
+        val executable = if (isWindows()) "d8.bat" else "d8"
+        File(File(root, buildToolsVersion), executable).takeIf { it.isFile }?.let { return it }
+        return root.listFiles { file -> file.isDirectory }
+            ?.sortedWith(Comparator<File> { a, b -> compareVersion(b.name, a.name) })
+            ?.asSequence()
+            ?.map { File(it, executable) }
+            ?.firstOrNull { it.isFile }
+    }
+
+    /** 在构建用的 JDK 里找 javac（System.getProperty("java.home") 即 Gradle 守护进程的 JDK）。 */
+    fun resolveJdkTool(tool: String): File? {
+        val executable = if (isWindows()) "$tool.exe" else tool
+        val candidates = mutableListOf<File>()
+        val javaHome = System.getProperty("java.home")?.takeIf { it.isNotBlank() }
+        if (javaHome != null) {
+            candidates += File(javaHome, "bin/$executable")
+            File(javaHome).parentFile?.let { candidates += File(it, "bin/$executable") }
+        }
+        System.getenv("JAVA_HOME")?.takeIf { it.isNotBlank() }
+            ?.let { candidates += File(it, "bin/$executable") }
+        return candidates.firstOrNull { it.isFile }
+    }
+
+    fun hex(bytes: ByteArray): String = bytes.joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    fun sha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(64 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                if (read > 0) digest.update(buffer, 0, read)
+            }
+        }
+        return hex(digest.digest())
+    }
+
+    /**
+     * 源码摘要：按相对路径排序后，把「路径 + 内容」依次喂进 SHA-256。
+     *
+     * 和 dex 的哈希一起写进 build/stub-dex.sha256，用来回答
+     * 「这份 stub.dex 是不是当前源码生成的」——只看 dex 自身哈希回答不了这个问题。
+     */
+    fun sourceDigest(dir: File): String {
+        val base = dir.absoluteFile
+        if (!base.isDirectory) return sha256OfText("missing")
+        val files = base.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".java") }
+            .sortedBy { it.relativeTo(base).invariantSeparatorsPath }
+            .toList()
+        val digest = MessageDigest.getInstance("SHA-256")
+        files.forEach { file ->
+            val path = file.relativeTo(base).invariantSeparatorsPath
+            digest.update(path.toByteArray(Charsets.UTF_8))
+            digest.update(0.toByte())
+            digest.update(file.readBytes())
+            digest.update(0.toByte())
+        }
+        return hex(digest.digest())
+    }
+
+    fun sha256OfText(text: String): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        digest.update(text.toByteArray(Charsets.UTF_8))
+        return hex(digest.digest())
+    }
+
+    fun tail(text: String, limit: Int = 1600): String =
+        if (text.length <= limit) text else "…" + text.takeLast(limit)
+}
+
+/**
+ * 编译引导桩并生成 assets/xp/stub.dex。
+ *
+ * 任何一步失败都只记警告、保留已入库的 dex，避免把「构建机没装 SDK」升级成构建失败。
+ */
+@DisableCachingByDefault(because = "写回源码树里的 assets，且依赖本机的 SDK 工具链")
+abstract class BuildStubDexTask : DefaultTask() {
+
+    @get:InputDirectory
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourceDir: DirectoryProperty
+
+    @get:InputFile
+    @get:Optional
+    abstract val androidJar: RegularFileProperty
+
+    @get:OutputFile
+    abstract val dexFile: RegularFileProperty
+
+    @get:OutputFile
+    abstract val checksumFile: RegularFileProperty
+
+    /**
+     * 成功标记。编译失败时故意不写这个文件，Gradle 下一轮就不会把任务判成 UP-TO-DATE，
+     * 从而保证「源码改了但编译不过」不会被静默地沿用旧 dex。
+     */
+    @get:OutputFile
+    abstract val stampFile: RegularFileProperty
+
+    @get:Internal
+    abstract val workDir: DirectoryProperty
+
+    @get:Input
+    abstract val autoBuild: Property<Boolean>
+
+    @get:Input
+    abstract val javaVersion: Property<String>
+
+    @get:Input
+    abstract val minApi: Property<Int>
+
+    @get:Input
+    @get:Optional
+    abstract val javacPath: Property<String>
+
+    @get:Input
+    @get:Optional
+    abstract val d8Path: Property<String>
+
+    @get:Internal
+    abstract val javaHome: Property<String>
+
+    @get:Inject
+    abstract val execOps: ExecOperations
+
+    @TaskAction
+    fun build() {
+        val dex = dexFile.get().asFile
+
+        if (!autoBuild.get()) {
+            logger.lifecycle("buildStubDex: xp.stub.autoBuild=false，跳过生成，沿用已入库的 ${dex.name}")
+            return
+        }
+
+        val jar = androidJar.orNull?.asFile
+        val javac = javacPath.orNull?.let(::File)
+        val d8 = d8Path.orNull?.let(::File)
+        val sourcesRoot = sourceDir.orNull?.asFile
+        val missing = buildList {
+            if (sourcesRoot == null || !sourcesRoot.isDirectory) add("manager/stub 源码目录")
+            if (jar == null || !jar.isFile) add("android.jar")
+            if (javac == null || !javac.isFile) add("javac")
+            if (d8 == null || !d8.isFile) add("d8")
+        }
+        if (missing.isNotEmpty()) {
+            logger.warn(
+                "buildStubDex: 找不到 ${missing.joinToString("、")}，跳过引导桩编译，" +
+                    "沿用已入库的 ${dex.name}。请检查 local.properties 的 sdk.dir 与 JDK，" +
+                    "或显式关闭：-Pxp.stub.autoBuild=false"
+            )
+            return
+        }
+        // 到这一步工具链齐全；显式取非空局部变量，后面按普通 File 使用。
+        val jarFile = jar ?: return
+        val javacFile = javac ?: return
+        val d8File = d8 ?: return
+        val sourceRoot = sourcesRoot ?: return
+
+        val work = workDir.get().asFile
+        val classes = File(work, "classes")
+        val dexOut = File(work, "dex")
+        val stamp = stampFile.get().asFile
+        // 先删成功标记：本轮如果任何一步失败，下一轮构建会重新尝试而不是沉默地沿用旧 dex。
+        stamp.delete()
+        try {
+            classes.deleteRecursively()
+            dexOut.deleteRecursively()
+            classes.mkdirs()
+            dexOut.mkdirs()
+
+            val sources = sourceRoot.walkTopDown()
+                .filter { it.isFile && it.name.endsWith(".java") }
+                .sortedBy { it.path }
+                .toList()
+            if (sources.isEmpty()) {
+                logger.warn("buildStubDex: $sourceRoot 下没有 .java，跳过")
+                return
+            }
+
+            val env = buildMap {
+                javaHome.orNull?.takeIf { it.isNotBlank() }?.let { put("JAVA_HOME", it) }
+            }
+
+            runTool(
+                listOf(
+                    javacFile.absolutePath,
+                    "-encoding", "UTF-8",
+                    "-nowarn",
+                    "-source", javaVersion.get(),
+                    "-target", javaVersion.get(),
+                    "-classpath", jarFile.absolutePath,
+                    "-d", classes.absolutePath,
+                ) + sources.map { it.absolutePath },
+                env, work, "javac",
+            )
+
+            val classFiles = classes.walkTopDown()
+                .filter { it.isFile && it.name.endsWith(".class") }
+                .sortedBy { it.path }
+                .toList()
+            if (classFiles.isEmpty()) error("javac 没有产出任何 .class 文件")
+
+            runTool(
+                listOf(
+                    d8File.absolutePath,
+                    "--release",
+                    "--min-api", minApi.get().toString(),
+                    "--lib", jarFile.absolutePath,
+                    "--output", dexOut.absolutePath,
+                ) + classFiles.map { it.absolutePath },
+                env, work, "d8",
+            )
+
+            val produced = File(dexOut, "classes.dex")
+            if (!produced.isFile || produced.length() == 0L) error("d8 没有产出 classes.dex")
+
+            // 先写临时文件再原子替换：中途失败时已入库的 stub.dex 不会被截断。
+            val parent = dex.parentFile ?: error("assets/xp 目录不存在")
+            parent.mkdirs()
+            val previousHash = if (dex.isFile) XpStubDex.sha256(dex) else null
+            val temp = File(parent, dex.name + ".tmp")
+            produced.copyTo(temp, overwrite = true)
+            val replaced = runCatching {
+                Files.move(
+                    temp.toPath(),
+                    dex.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
+            }.isSuccess
+            if (!replaced) {
+                temp.copyTo(dex, overwrite = true)
+                temp.delete()
+            }
+
+            val checksum = checksumFile.get().asFile
+            checksum.parentFile?.mkdirs()
+            val dexHash = XpStubDex.sha256(dex)
+            checksum.writeText(
+                buildString {
+                    appendLine("# 由 :app:buildStubDex 生成，请勿手工编辑")
+                    appendLine("# dex      = stub.dex 自身哈希")
+                    appendLine("# sources  = manager/stub 全部 .java 的路径+内容哈希")
+                    appendLine("dex=$dexHash")
+                    appendLine("sources=${XpStubDex.sourceDigest(sourceRoot)}")
+                    appendLine("java=${javaVersion.get()}")
+                    appendLine("minApi=${minApi.get()}")
+                },
+                Charsets.UTF_8,
+            )
+
+            if (previousHash != null && previousHash != dexHash) {
+                logger.lifecycle(
+                    "buildStubDex: stub.dex 内容已变化（$previousHash → $dexHash），" +
+                        "确认无误后提交 assets/xp/stub.dex"
+                )
+            }
+            stamp.parentFile?.mkdirs()
+            stamp.writeText(dexHash, Charsets.UTF_8)
+            logger.lifecycle(
+                "buildStubDex: 已生成 ${dex.absolutePath}（${dex.length()} 字节，" +
+                    "${sources.size} 个源文件，javac ${javaVersion.get()} / min-api ${minApi.get()}）"
+            )
+        } catch (error: Exception) {
+            logger.warn(
+                "buildStubDex: 生成失败，已跳过并沿用已入库的 ${dex.name}：${error.message}"
+            )
+            logger.info("buildStubDex: 失败详情", error)
+        }
+    }
+
+    private fun runTool(
+        command: List<String>,
+        environment: Map<String, String>,
+        workingDirectory: File,
+        label: String,
+    ) {
+        val output = ByteArrayOutputStream()
+        val result = execOps.exec {
+            isIgnoreExitValue = true
+            commandLine(*command.toTypedArray())
+            workingDir = workingDirectory
+            if (environment.isNotEmpty()) environment(environment)
+            standardOutput = output
+            errorOutput = output
+        }
+        if (result.exitValue != 0) {
+            val text = XpStubDex.tail(output.toString(Charsets.UTF_8.name()))
+            error("$label 退出码 ${result.exitValue}\n$text")
+        }
+    }
+}
+
+/**
+ * 轻量一致性校验：stub.dex 是否由当前 manager/stub 源码生成。
+ *
+ * 基线是 build/stub-dex.sha256（由 buildStubDex 写出）。不一致时默认只提示，
+ * 不阻塞任何构建；需要严格门禁时设置 -Pxp.stub.verifyStrict=true。
+ */
+@DisableCachingByDefault(because = "只做一致性校验，没有可缓存的输出")
+abstract class VerifyStubDexTask : DefaultTask() {
+
+    @get:InputDirectory
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val sourceDir: DirectoryProperty
+
+    // 这个任务没有声明 output，每次校验都会真的执行；dex 与基线只决定「读什么」，
+    // 用 @Internal 避免文件缺失时先被 Gradle 的输入校验判失败，好让下面的提示能打出来。
+    @get:Internal
+    abstract val dexFile: RegularFileProperty
+
+    @get:Internal
+    abstract val checksumFile: RegularFileProperty
+
+    @get:Input
+    abstract val strict: Property<Boolean>
+
+    @TaskAction
+    fun verify() {
+        val dex = dexFile.orNull?.asFile
+        if (dex == null || !dex.isFile) {
+            logger.warn("verifyStubDex: 没找到 assets/xp/stub.dex，跳过校验")
+            return
+        }
+
+        val sourcesRoot = sourceDir.orNull?.asFile
+        if (sourcesRoot == null || !sourcesRoot.isDirectory) {
+            logger.warn("verifyStubDex: 没找到引导桩源码目录 manager/stub，跳过校验")
+            return
+        }
+
+        val baseline = checksumFile.orNull?.asFile
+        if (baseline == null || !baseline.isFile) {
+            // 没有基线（刚 clone、还没跑过 buildStubDex）时退化为比较修改时间，
+            // 至少能抓到「改了源码却没重新生成 dex」。
+            if (newestSource(sourcesRoot) > dex.lastModified()) {
+                report(listOf("stub 源码已变更，请重新生成 dex（./gradlew :app:buildStubDex）"))
+            } else {
+                logger.lifecycle(
+                    "verifyStubDex: 尚无 stub-dex.sha256 基线（先跑 :app:buildStubDex 可精确比对）；" +
+                        "按修改时间判断未见异常"
+                )
+            }
+            return
+        }
+
+        val recorded = readBaseline(baseline)
+        val actualDex = XpStubDex.sha256(dex)
+        val actualSources = XpStubDex.sourceDigest(sourcesRoot)
+        val expectedDex = recorded["dex"]
+        val expectedSources = recorded["sources"]
+
+        val problems = mutableListOf<String>()
+        if (expectedDex != null && !expectedDex.equals(actualDex, ignoreCase = true)) {
+            problems += "stub.dex 的 sha256 与记录不一致（可能被手工替换）：" +
+                "当前 $actualDex，记录 $expectedDex"
+        }
+        if (expectedSources != null) {
+            if (!expectedSources.equals(actualSources, ignoreCase = true)) {
+                problems += "stub 源码已变更，请重新生成 dex（./gradlew :app:buildStubDex）"
+            }
+        } else if (newestSource(sourcesRoot) > dex.lastModified()) {
+            // 旧格式基线只有 dex 哈希：退化为比较源码与 dex 的修改时间。
+            problems += "stub 源码已变更，请重新生成 dex（./gradlew :app:buildStubDex）"
+        }
+
+        if (problems.isEmpty()) {
+            logger.lifecycle("verifyStubDex: stub.dex 与源码一致（sha256 $actualDex）")
+            return
+        }
+        report(problems)
+    }
+
+    private fun newestSource(dir: File): Long =
+        dir.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".java") }
+            .maxOfOrNull { it.lastModified() }
+            ?: 0L
+
+    private fun report(problems: List<String>) {
+        val message = problems.joinToString("\n")
+        if (strict.get()) {
+            throw GradleException("verifyStubDex 校验失败：\n$message")
+        }
+        logger.warn("verifyStubDex 校验失败（仅提示，不阻塞构建）：\n$message")
+    }
+
+    private fun readBaseline(file: File): Map<String, String> {
+        val result = mutableMapOf<String, String>()
+        file.readLines(Charsets.UTF_8).forEach { line ->
+            val trimmed = line.trim()
+            if (trimmed.isEmpty() || trimmed.startsWith("#")) return@forEach
+            val separator = trimmed.indexOf('=')
+            if (separator > 0) {
+                result[trimmed.substring(0, separator).trim()] = trimmed.substring(separator + 1).trim()
+            } else if (trimmed.matches(Regex("""[0-9a-fA-F]{64}"""))) {
+                // 兼容只写一行裸哈希的旧格式
+                result["dex"] = trimmed
+            }
+        }
+        return result
+    }
+}
