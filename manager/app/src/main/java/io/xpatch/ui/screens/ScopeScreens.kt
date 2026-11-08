@@ -83,7 +83,6 @@ internal fun ModuleScopeScreen(
                 module = module,
                 metaLine = moduleMetaLine(
                     "v" + module.versionName,
-                    moduleTypeText(module),
                     "API " + module.apiLevel,
                     "已选择 $selectedCount 个应用",
                 ),

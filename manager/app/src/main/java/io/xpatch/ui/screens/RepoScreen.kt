@@ -71,6 +71,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.xpatch.data.ModuleUpdate
 import io.xpatch.data.RepoStore
 import io.xpatch.ui.components.BottomSheet
 import io.xpatch.ui.components.DialogAction
@@ -124,11 +125,9 @@ internal data class RepoInstallSnapshot(
 }
 
 private fun statusOf(module: RepoStore.RepoModule, snapshot: RepoInstallSnapshot): Int {
-    val installed = snapshot.versionNameOf(module.packageName)
-    if (installed == null) return if (snapshot.isCached(module)) 2 else 3
+    val installed = snapshot.versionNameOf(module.packageName) ?: return if (snapshot.isCached(module)) 2 else 3
     val code = snapshot.versionCodeOf(module.packageName)
-    if (code != null && module.versionCode > 0) return if (code == module.versionCode) 0 else 1
-    return if (installed == module.version) 0 else 1
+    return if (ModuleUpdate.isUpdate(module.version, module.versionCode, installed, code)) 1 else 0
 }
 
 private data class RepoQuery(
@@ -467,6 +466,7 @@ internal fun RepoPageScreen(
                         RepoModuleRow(
                             module = module,
                             installedVersion = snapshot.versionNameOf(module.packageName),
+                            installedVersionCode = snapshot.versionCodeOf(module.packageName),
                             cached = snapshot.isCached(module),
                             downloading = downloadingPkg == module.packageName,
                             onOpen = { onOpenDetail(module) },
@@ -629,6 +629,7 @@ private fun scopeLabel(target: String): String = when (target) {
 internal fun RepoModuleRow(
     module: RepoStore.RepoModule,
     installedVersion: String?,
+    installedVersionCode: Long? = null,
     cached: Boolean,
     downloading: Boolean,
     onOpen: () -> Unit,
@@ -637,7 +638,12 @@ internal fun RepoModuleRow(
 ) {
     val state = when {
         downloading -> "下载中"
-        installedVersion != null && installedVersion == module.version -> "已安装"
+        installedVersion != null && !ModuleUpdate.isUpdate(
+            module.version,
+            module.versionCode,
+            installedVersion,
+            installedVersionCode,
+        ) -> "已安装"
         cached -> "已下载"
         installedVersion != null -> "可更新"
         else -> ""
@@ -919,10 +925,8 @@ internal fun DownloadsScreen(
                     val module = modulesByPackage[entry.packageName]
                     val installed = snapshot.versionNameOf(entry.packageName)
                     val code = snapshot.versionCodeOf(entry.packageName)
-                    val outdated = module != null && when {
-                        module.versionCode > 0 && code != null -> code != module.versionCode
-                        else -> module.version != entry.version
-                    }
+                    val outdated = module != null &&
+                        ModuleUpdate.isUpdate(module.version, module.versionCode, installed, code)
                     Column(
                         Modifier
                             .fillMaxWidth()
@@ -980,10 +984,8 @@ internal fun RepoDetailScreen(
     onAction: () -> Unit,
     onOpenStore: () -> Unit,
 ) {
-    val installedMatch = when {
-        installedVersionCode != null && module.versionCode > 0 -> installedVersionCode == module.versionCode
-        else -> installed != null && installed == module.version
-    }
+    val installedMatch = installed != null &&
+        !ModuleUpdate.isUpdate(module.version, module.versionCode, installed, installedVersionCode)
     val actionLabel = when {
         installed != null && installedMatch -> "已安装"
         cached -> "安装模块"

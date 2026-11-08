@@ -131,6 +131,5 @@ internal fun moduleSubtitle(module: ModuleInfo): String {
     val parts = mutableListOf<String>()
     if (module.versionName.isNotBlank()) parts.add(module.versionName)
     parts.add("已启用 ${module.enabledApps} 个应用")
-    parts.add(if (module.modernModule) "新版模块" else "旧版模块")
     return parts.joinToString(" · ")
 }

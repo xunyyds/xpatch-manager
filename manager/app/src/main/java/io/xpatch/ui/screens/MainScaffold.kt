@@ -79,6 +79,7 @@ import io.xpatch.data.EnvInfoCollector
 import io.xpatch.data.EventLog
 import io.xpatch.data.ManagerRepository
 import io.xpatch.data.ModuleApiStore
+import io.xpatch.data.ModuleUpdate
 import io.xpatch.data.PatchExportRef
 import io.xpatch.data.PatchHistoryStore
 import io.xpatch.data.PatchRecord
@@ -2009,8 +2010,8 @@ private fun buildRepoSnapshot(
     }
 
     val badge = cache.entries.count { entry ->
-        val name = runCatching { pm.getPackageInfo(entry.packageName, 0).versionName }.getOrNull()
-        name != entry.version
+        val info = runCatching { pm.getPackageInfo(entry.packageName, 0) }.getOrNull()
+        ModuleUpdate.isUpdate(entry.version, 0L, info?.versionName, info?.versionCode?.toLong())
     }
 
     return RepoInstallSnapshot(installed = installed, cache = cache, badge = badge)
