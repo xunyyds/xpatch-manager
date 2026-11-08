@@ -150,6 +150,72 @@ io 重定向与原生校验绕过的替代实现列入路线图（见 `docs/arch
 
 ---
 
+## 7. 引导桩配置键不匹配 → 闪退且无日志
+
+**现象**
+
+打完包的应用点开就闪退，管理器日志页一片空白，`Android/data/<包名>/.logs/` 下连
+`_framework` 目录都没有生成。`adb logcat` 里能看到类似
+`ClassNotFoundException: <应用自己的 Application 类>`，随后进程被杀。
+
+**根因**
+
+注入后的清单把 `android:appComponentFactory` 指向引导桩，原厂工厂的类名写在 APK 的
+`assets/xp/config.json` 里。两者的关系是：
+
+| 位置 | 内容 |
+| --- | --- |
+| `AndroidManifest.xml` → `<application android:appComponentFactory>` | `io.xpatch.stub.AppEntry`（固定值，由打包器改写） |
+| `assets/xp/config.json` → `app_component_name` | 原厂 `AppComponentFactory` 的类名（可能为空） |
+
+引导桩启动后先读 `config.json` 拿到原厂工厂，再把自己的
+`instantiateApplication / instantiateActivity / ...` 全部转交给它。
+历史版本的打包器写的是 `app_component_name`，而更早的引导桩只认 `factory`：
+键名对不上 → 读不到原厂工厂 → 走到 `super.instantiateApplication`。
+系统默认实现要求 Application 类就在传入的 ClassLoader 里，Tencent 系应用
+（壳类是 `QFixApplicationImplProxy` 这类）不满足这个前提，于是在 `makeApplication`
+阶段抛 `ClassNotFoundException`。此时内核 ClassLoader 还没建立，框架一条日志都写不出来——
+这就是「闪退且无日志」。
+
+**方案**
+
+引导桩按顺序尝试 `app_component_name`、`factory` 两个键，任意一个命中即可，旧产物仍然可用；
+配置缺失或指回自身（`io.xpatch.stub.AppEntry`）时**不委派**，避免无限递归，
+也不落到 `super` 那条必崩路径。
+
+**用 `bootstrap.log` 定位**
+
+引导阶段的崩溃由引导桩自己落盘，不依赖内核任何类：
+
+```
+/storage/emulated/0/Android/data/<包名>/.logs/_framework/bootstrap.log   # 与内核日志同目录
+/data/data/<包名>/xpatch-logs/bootstrap.log                              # 外部存储不可写时
+```
+
+```powershell
+adb shell cat /sdcard/Android/data/<包名>/.logs/_framework/bootstrap.log
+```
+
+文件里的 `Stub -> bootstrap failed at <阶段>` 直接指向分支：
+
+| 阶段 | 含义 / 处理 |
+| --- | --- |
+| `runtime dex missing` 或 `inject runtime into <包名>` | `assets/xp/core.dex` 没注进去或读不出来，与配置键无关，回去查打包产物 |
+| `super.instantiateApplication(<类名>)` | 原厂工厂没读到 → 核对 `config.json` 的键名与值 |
+| `delegate.instantiateApplication(<类名>)` | 原厂工厂拿到了，但它自己抛异常（原厂类被裁剪 / 混淆） |
+
+排查顺序：
+
+1. 先看 `bootstrap.log` 在不在。在 → 按上表定位，文件里同时记了包名、进程名、
+   `sourceDir`、Android 版本、设备型号与完整堆栈；
+2. 不在 → 说明崩得比引导桩更早（Zygote fork 或 ClassLoader 建立之前），
+   改看 `adb logcat | Select-String XPatch`；
+3. 核对配置：`unzip -p app.apk assets/xp/config.json`，`app_component_name` 应等于
+   原包清单里的 `android:appComponentFactory`；原包没有该属性时这个键应当为空，
+   而不是指向 `io.xpatch.stub.AppEntry`。
+
+---
+
 ## 经验
 
 - 判断"指令是否合法"不能只看崩溃点：`SIGILL` + `ESR=0` 往往意味着**执行到的内存与文件不一致**，

@@ -1,5 +1,8 @@
 # 构建
 
+> 沙箱 / CI 环境下的额外说明（`GRADLE_USER_HOME`、Kotlin 编译进程、
+> `problems-report.html` 报错但编译成功）见 [`build-notes.md`](build-notes.md)。
+
 ## 依赖
 
 - JDK 17 或更高（构建脚本需要 `java`）
