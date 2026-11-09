@@ -22,6 +22,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -33,6 +34,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import io.xpatch.data.ModuleGuardStore
 import io.xpatch.data.RestartCenter
 import io.xpatch.model.AppInfo
 import io.xpatch.ui.components.DialogAction
@@ -40,6 +42,7 @@ import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.PullRefreshBox
+import io.xpatch.ui.components.ModuleGuardHintBanner
 import io.xpatch.ui.components.RestartHintBanner
 import io.xpatch.ui.components.RestartListRows
 import io.xpatch.ui.components.RowDivider
@@ -56,12 +59,15 @@ internal fun HomeScreen(
     refreshing: Boolean,
     onRefresh: () -> Unit,
     onOpen: (AppInfo) -> Unit,
+    onOpenGuardLogs: (String, String) -> Unit,
 ) {
     val miuix = LocalMiuix.current
     val context = LocalContext.current
     val pendingRestarts by RestartCenter.pending.collectAsState()
     val bannerHidden by RestartCenter.bannerHidden.collectAsState()
     var showRestartList by remember { mutableStateOf(false) }
+    var guardEvents by remember { mutableStateOf(ModuleGuardStore.list(context)) }
+    LaunchedEffect(Unit) { guardEvents = ModuleGuardStore.list(context) }
 
     Column(Modifier.fillMaxSize()) {
         PullRefreshBox(
@@ -86,6 +92,19 @@ internal fun HomeScreen(
                             },
                             onOpenList = { showRestartList = true },
                             onHide = { RestartCenter.hideBanner() },
+                        )
+                    }
+                }
+                if (guardEvents.isNotEmpty()) {
+                    item {
+                        ModuleGuardHintBanner(
+                            events = guardEvents,
+                            onView = { event -> onOpenGuardLogs(event.appPackage, event.modulePackage) },
+                            onHide = {
+                                val first = guardEvents.first()
+                                ModuleGuardStore.dismiss(context, first.appPackage, first.modulePackage)
+                                guardEvents = ModuleGuardStore.list(context)
+                            },
                         )
                     }
                 }

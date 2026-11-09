@@ -32,6 +32,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.HookCore
 import io.xpatch.data.PatchRecord
+import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
 import io.xpatch.patch.PatchOptions
 import io.xpatch.patch.ShizukuInstaller
@@ -57,6 +58,32 @@ internal const val NO_SIGN_ID = "__no_sign__"
 
 private val NO_SIGN_PROFILE = SignatureStore.Profile(id = NO_SIGN_ID, name = "不签名", kind = SignatureStore.Kind.BUILTIN)
 
+private data class BypassMode(val key: String, val name: String, val desc: String)
+
+private val BYPASS_MODES = listOf(
+    BypassMode("none", "None", "不进行任何处理。应用若校验签名，可能直接闪退。"),
+    BypassMode("basic", "Basic", "处理 Java 层最常见的签名查询，覆盖大多数应用。"),
+    BypassMode("high", "High", "在 Basic 基础上恢复入口工厂，并处理更严格的签名校验。"),
+    BypassMode("extreme", "Extreme", "在 High 基础上接管 Binder/Parcel 中的签名信息，覆盖跨进程校验。"),
+    BypassMode("seccomp", "Seccomp", "基于 FPA 方案改进的 native 文件重定向，处理 openat 读取原 APK 的校验。"),
+    BypassMode("stealth", "Stealth", "在 Extreme 基础上隐藏入口 Hook，降低被检测概率。"),
+)
+
+private fun bypassModeKey(sigMode: String, bypass: Int): String = when {
+    sigMode == SettingsStore.SIG_MODE_JAVA_FILE -> "extreme"
+    sigMode == SettingsStore.SIG_MODE_DEEP -> "stealth"
+    sigMode == SettingsStore.SIG_MODE_OFF -> "none"
+    bypass == 1 -> "seccomp"
+    bypass == 2 -> "high"
+    else -> "basic"
+}
+
+private fun hookCoreDesc(core: HookCore): String = when (core) {
+    HookCore.XPLANT -> "默认注入引擎，兼容性最好。"
+    HookCore.NOINLINE -> "内联优化更保守，适合个别异常应用。"
+    HookCore.PINE -> "备选引擎，适合特殊加固与兼容场景。"
+}
+
 @Composable
 internal fun ConfigScreen(
     target: PatchTarget,
@@ -78,7 +105,13 @@ internal fun ConfigScreen(
     var fileProvider by remember { mutableStateOf(defaults.fileProvider) }
     var dynamicMode by remember { mutableStateOf(defaults.dynamicMode) }
     var forceOverwrite by remember { mutableStateOf(defaults.forceOverwrite) }
+    var sigMode by remember { mutableStateOf(defaults.sigMode) }
+    var entryHook by remember { mutableStateOf(defaults.entryHook) }
     var forceOverwriteError by remember { mutableStateOf<String?>(null) }
+    var showHookDialog by remember { mutableStateOf(false) }
+    var showBypassDialog by remember { mutableStateOf(false) }
+    var bypassKey by remember { mutableStateOf(bypassModeKey(sigMode, bypass)) }
+    var moreExpanded by remember { mutableStateOf(false) }
     val forceOverwriteNote = when {
         forceOverwrite && !forceOverwriteReady -> forceOverwriteBlockReason
         forceOverwrite -> "已启用：签名固定为 XPatch，安装时先保留数据卸载旧包"
@@ -125,6 +158,9 @@ internal fun ConfigScreen(
         forceOverwrite = forceOverwrite,
         versionName = versionName.trim().ifBlank { null },
         versionCode = versionCode.trim().toIntOrNull(),
+        sigMode = sigMode,
+        entryHook = entryHook,
+        embedSource = bypassKey == "extreme" || bypassKey == "stealth",
     )
     val reusable = findReusable(options)
     var reuseConfirm by remember { mutableStateOf<PatchRecord?>(null) }
@@ -137,24 +173,13 @@ internal fun ConfigScreen(
         ) {
             item {
                 SettingGroup("Hook 核心") {
-                    ChipRow(
-                        options = HookCore.entries.map { it to it.label },
-                        selected = hookCore,
-                        onSelect = { hookCore = it },
-                    )
+                    ChoiceRow(hookCore.label, hookCoreDesc(hookCore)) { showHookDialog = true }
                 }
             }
             item {
+                val mode = BYPASS_MODES.firstOrNull { it.key == bypassKey } ?: BYPASS_MODES[1]
                 SettingGroup("过签方案") {
-                    ChipRow(
-                        options = listOf(
-                            1 to "seccomp",
-                            2 to "hook",
-                            3 to "none",
-                        ),
-                        selected = bypass,
-                        onSelect = { bypass = it },
-                    )
+                    ChoiceRow(mode.name, mode.desc) { showBypassDialog = true }
                 }
             }
             item {
@@ -172,8 +197,13 @@ internal fun ConfigScreen(
                             }
                         },
                     )
+                    NoteText("选择同样的签名证书可以覆盖安装。")
                 }
             }
+            item {
+                MoreHeader(moreExpanded) { moreExpanded = !moreExpanded }
+            }
+            if (moreExpanded) {
             item {
                 SettingGroup("版本信息") {
                     VersionRow(
@@ -194,8 +224,8 @@ internal fun ConfigScreen(
             item {
                 SettingGroup("打包选项") {
                     SwitchLine(
-                        title = "File Provider",
-                        subtitle = "为模块提供文件访问入口",
+                        title = "文件提供器",
+                        subtitle = "提供给系统的文件访问组件，可在无 Root 权限时管理 data 目录文件（来自 MT 管理器）",
                         checked = fileProvider,
                         onChange = { fileProvider = it },
                     )
@@ -214,9 +244,9 @@ internal fun ConfigScreen(
                         subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
                         checked = forceOverwrite,
                         onChange = { on ->
-                            // 实时查询，避免刚授权返回、状态尚未重组时被旧值拦住
+                            
                             if (on && !ShizukuInstaller.forceOverwriteReady()) {
-                                // 环境不满足时明确反馈，不静默失败
+                                
                                 forceOverwriteError =
                                     ShizukuInstaller.forceOverwriteBlockReason().ifBlank {
                                         "当前环境不支持强行覆盖安装"
@@ -229,6 +259,7 @@ internal fun ConfigScreen(
                     )
                     NoteText(forceOverwriteNote)
                 }
+            }
             }
             item { NoteText("点「返回」会保留打包结果，不必重新打包。") }
         }
@@ -268,6 +299,36 @@ internal fun ConfigScreen(
                 onStart(options)
             }
         }
+    }
+
+    if (showHookDialog) {
+        ChoiceDialog(
+            title = "Hook 核心",
+            options = HookCore.entries.map { Triple(it, it.label, hookCoreDesc(it)) },
+            selected = hookCore,
+            onSelect = { hookCore = it },
+            onDismiss = { showHookDialog = false },
+        )
+    }
+    if (showBypassDialog) {
+        ChoiceDialog(
+            title = "过签方案",
+            options = BYPASS_MODES.map { Triple(it, it.name, it.desc) },
+            selected = BYPASS_MODES.firstOrNull { it.key == bypassKey } ?: BYPASS_MODES[1],
+            onSelect = { mode ->
+                bypassKey = mode.key
+                entryHook = mode.key == "stealth"
+                when (mode.key) {
+                    "none" -> { sigMode = SettingsStore.SIG_MODE_OFF; bypass = 3 }
+                    "basic" -> { sigMode = SettingsStore.SIG_MODE_JAVA; bypass = 3 }
+                    "high" -> { sigMode = SettingsStore.SIG_MODE_JAVA; bypass = 2 }
+                    "extreme" -> { sigMode = SettingsStore.SIG_MODE_JAVA_FILE; bypass = 2 }
+                    "seccomp" -> { sigMode = SettingsStore.SIG_MODE_JAVA; bypass = 1 }
+                    "stealth" -> { sigMode = SettingsStore.SIG_MODE_DEEP; bypass = 2 }
+                }
+            },
+            onDismiss = { showBypassDialog = false },
+        )
     }
 
     forceOverwriteError?.let { reason ->
@@ -572,6 +633,103 @@ private fun VersionRow(
                 placeholder = { Text(placeholder, style = MaterialTheme.typography.bodyMedium) },
                 shape = RoundedCornerShape(12.dp),
             )
+        }
+    }
+}
+
+
+@Composable
+private fun MoreHeader(expanded: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            "更多",
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            modifier = Modifier.weight(1f),
+        )
+        Text(
+            if (expanded) "收起" else "展开",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun ChoiceRow(value: String, subtitle: String, onClick: () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text(value, style = MaterialTheme.typography.bodyMedium)
+            Text(
+                subtitle,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(
+            "›",
+            style = MaterialTheme.typography.titleLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+    }
+}
+
+@Composable
+private fun <T> ChoiceDialog(
+    title: String,
+    options: List<Triple<T, String, String>>,
+    selected: T,
+    onSelect: (T) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = title,
+        actions = listOf(DialogAction("取消") { onDismiss() }),
+    ) {
+        Column {
+            options.forEach { (value, name, desc) ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable { onSelect(value); onDismiss() }
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            name,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = if (value == selected) FontWeight.SemiBold else FontWeight.Normal,
+                        )
+                        Text(
+                            desc,
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    if (value == selected) {
+                        Text(
+                            "✓",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
         }
     }
 }

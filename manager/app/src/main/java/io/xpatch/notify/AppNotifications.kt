@@ -17,6 +17,7 @@ object AppNotifications {
 
     const val CHANNEL_RESTART = "xp_restart"
     const val CHANNEL_DOWNLOAD = "xp_download"
+    const val CHANNEL_MODULE = "xp_module_v2"
 
     const val ACTION_RESTART_APP = "io.xpatch.action.RESTART_APP"
     const val ACTION_IGNORE_RESTART = "io.xpatch.action.IGNORE_RESTART"
@@ -30,6 +31,7 @@ object AppNotifications {
     const val EXTRA_REASON = "reason"
 
     const val ID_RESTART = 2001
+    const val ID_MODULE_CRASH = 2100
     private const val DOWNLOAD_ID_BASE = 3000
 
     fun ensureChannels(context: Context) {
@@ -44,6 +46,12 @@ object AppNotifications {
             NotificationChannel(CHANNEL_DOWNLOAD, "下载", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "模块与版本更新的下载进度，可在通知内暂停或取消"
                 setShowBadge(false)
+            },
+        )
+        runCatching { manager.deleteNotificationChannel("xp_module") }
+        manager.createNotificationChannel(
+            NotificationChannel(CHANNEL_MODULE, "模块保护", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "模块导致应用频繁闪退时，自动移除并通知"
             },
         )
     }
@@ -113,6 +121,27 @@ object AppNotifications {
             .setContentIntent(pending)
             .build()
     }
+
+    fun moduleCrash(context: Context, moduleLabel: String, appLabel: String): Notification =
+        NotificationCompat.Builder(context, CHANNEL_MODULE)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentTitle("发现模块导致「$appLabel」频繁闪退")
+            .setContentText("已自动移除模块「$moduleLabel」")
+            .setStyle(
+                NotificationCompat.BigTextStyle().bigText(
+                    "发现模块「$moduleLabel」导致「$appLabel」频繁闪退，已自动将其从该应用的作用域移除，本次启动已跳过。" +
+                        "如需恢复，可在模块作用域页重新勾选。",
+                ),
+            )
+            .setContentIntent(openAppIntent(context))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ERROR)
+            .setAutoCancel(true)
+            .setOnlyAlertOnce(true)
+            .build()
+
+    fun moduleCrashId(appPackage: String): Int =
+        ID_MODULE_CRASH + (appPackage.hashCode() and 0x7FFFFFFF) % 900
 
     fun post(context: Context, id: Int, notification: Notification) {
         if (!enabled(context)) return

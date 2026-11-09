@@ -25,7 +25,7 @@ data class ManagerSettings(
     val showSystemApps: Boolean,
     val injectSignature: Boolean,
     val dynamicMode: Boolean = false,
-    val fileProvider: Boolean = true,
+    val fileProvider: Boolean = false,
     val bottomBarStyle: Int = SettingsStore.BOTTOM_BAR_STANDARD,
     val uiStyle: UiStyle = UiStyle.MATERIAL3,
     val exportTreeUri: String = "",
@@ -40,6 +40,8 @@ data class ManagerSettings(
     val updateCheckCache: String = "",
     val updateGoodSource: String = "",
     val forceOverwrite: Boolean = false,
+    val sigMode: String = SettingsStore.SIG_MODE_DEFAULT,
+    val entryHook: Boolean = false,
 )
 
 class SettingsStore(context: Context) {
@@ -48,13 +50,13 @@ class SettingsStore(context: Context) {
 
     fun load(): ManagerSettings = ManagerSettings(
         themeMode = prefs.getInt(KEY_THEME, THEME_SYSTEM),
-        signatureBypassLevel = prefs.getInt(KEY_BYPASS_LEVEL, 1),
+        signatureBypassLevel = prefs.getInt(KEY_BYPASS_LEVEL, 3),
         hookCore = HookCore.entries.firstOrNull { it.index == prefs.getInt(KEY_HOOK_CORE, 0) }
             ?: HookCore.XPLANT,
         showSystemApps = prefs.getBoolean(KEY_SHOW_SYSTEM, false),
         injectSignature = prefs.getBoolean(KEY_INJECT_SIGNATURE, true),
         dynamicMode = prefs.getBoolean(KEY_DYNAMIC_MODE, false),
-        fileProvider = prefs.getBoolean(KEY_FILE_PROVIDER, true),
+        fileProvider = prefs.getBoolean(KEY_FILE_PROVIDER, false),
         bottomBarStyle = prefs.getInt(KEY_BOTTOM_BAR, SettingsStore.BOTTOM_BAR_STANDARD),
         uiStyle = UiStyle.of(prefs.getInt(KEY_UI_STYLE, UiStyle.MATERIAL3.index)),
         exportTreeUri = prefs.getString(KEY_EXPORT_TREE, "").orEmpty(),
@@ -70,6 +72,8 @@ class SettingsStore(context: Context) {
         updateCheckCache = prefs.getString(KEY_UPDATE_CACHE, "").orEmpty(),
         updateGoodSource = prefs.getString(KEY_UPDATE_SOURCE, "").orEmpty(),
         forceOverwrite = prefs.getBoolean(KEY_FORCE_OVERWRITE, false),
+        sigMode = normalizedSigMode(prefs.getString(KEY_SIG_MODE, "").orEmpty()),
+        entryHook = prefs.getBoolean(KEY_ENTRY_HOOK, false),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -129,6 +133,12 @@ class SettingsStore(context: Context) {
     fun setForceOverwrite(enabled: Boolean) =
         prefs.edit().putBoolean(KEY_FORCE_OVERWRITE, enabled).apply()
 
+    fun setSigMode(mode: String) =
+        prefs.edit().putString(KEY_SIG_MODE, normalizedSigMode(mode)).apply()
+
+    fun setEntryHook(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_ENTRY_HOOK, enabled).apply()
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
@@ -137,6 +147,30 @@ class SettingsStore(context: Context) {
         const val HISTORY_LIMIT_DEFAULT = 50
         const val HISTORY_LIMIT_MIN = 1
         const val HISTORY_LIMIT_MAX = 500
+
+        const val SIG_MODE_OFF = "off"
+        const val SIG_MODE_JAVA = "java"
+        const val SIG_MODE_JAVA_FILE = "java_file"
+        const val SIG_MODE_DEEP = "deep"
+        const val SIG_MODE_DEFAULT = SIG_MODE_JAVA
+
+        val SIG_MODE_OPTIONS = listOf(
+            SIG_MODE_OFF to "关闭",
+            SIG_MODE_JAVA to "标准",
+            SIG_MODE_JAVA_FILE to "增强",
+            SIG_MODE_DEEP to "深度",
+        )
+
+        val SIG_MODES: List<String> = SIG_MODE_OPTIONS.map { it.first }
+
+        fun sigModeLabel(mode: String): String =
+            SIG_MODE_OPTIONS.firstOrNull { it.first == normalizedSigMode(mode) }?.second
+                ?: SIG_MODE_OPTIONS.first { it.first == SIG_MODE_DEFAULT }.second
+
+        private fun normalizedSigMode(raw: String): String {
+            val value = raw.trim().lowercase()
+            return if (value in SIG_MODES) value else SIG_MODE_DEFAULT
+        }
 
         private const val KEY_THEME = "theme_mode"
         private const val KEY_BYPASS_LEVEL = "bypass_level"
@@ -159,6 +193,8 @@ class SettingsStore(context: Context) {
         private const val KEY_UPDATE_CACHE = "update_check_cache"
         private const val KEY_UPDATE_SOURCE = "update_good_source"
         private const val KEY_FORCE_OVERWRITE = "force_overwrite"
+        private const val KEY_SIG_MODE = "sig_mode"
+        private const val KEY_ENTRY_HOOK = "entry_hook"
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
     }

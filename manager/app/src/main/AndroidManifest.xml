@@ -44,6 +44,13 @@
         <receiver
             android:name="io.xpatch.notify.NotificationActionReceiver"
             android:exported="false" />
+        <receiver
+            android:name="io.xpatch.notify.ModuleCrashReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="io.xpatch.action.MODULE_CRASH" />
+            </intent-filter>
+        </receiver>
         <provider
             android:name="rikka.shizuku.ShizukuProvider"
             android:authorities="${applicationId}.shizuku"

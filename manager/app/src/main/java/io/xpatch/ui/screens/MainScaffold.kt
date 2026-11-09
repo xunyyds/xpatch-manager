@@ -278,6 +278,8 @@ fun MainScaffold(
         settingsStore.setFileProvider(options.fileProvider)
         settingsStore.setDynamicMode(options.dynamicMode)
         settingsStore.setForceOverwrite(options.forceOverwrite)
+        settingsStore.setSigMode(options.sigMode)
+        settingsStore.setEntryHook(options.entryHook)
         settings = settings.copy(
             hookCore = options.hookCore,
             signatureBypassLevel = options.bypassLevel,
@@ -285,6 +287,8 @@ fun MainScaffold(
             fileProvider = options.fileProvider,
             dynamicMode = options.dynamicMode,
             forceOverwrite = options.forceOverwrite,
+            sigMode = options.sigMode,
+            entryHook = options.entryHook,
         )
         val sourceKey = patchSourceKey(target)
         val fingerprint = PatchFingerprint.of(sourceKey, options)
@@ -1076,6 +1080,12 @@ fun MainScaffold(
                             }
                         },
                         onOpen = { nav.navigate(Page.AppScope(it)) },
+                        onOpenGuardLogs = { app, module ->
+                            logsState.tab = LogsTab.Runtime
+                            logsState.apps = setOf(app)
+                            logsState.query = module
+                            nav.openLogs()
+                        },
                     )
 
                     Tab.Modules -> ModulesScreen(
@@ -1612,28 +1622,42 @@ fun MainScaffold(
                         )
                     },
                     onLaunch = {
-                        runCatching { ShizukuBridge.launch(context, current.app.packageName) }
-                            .onSuccess { eventLog.add("已启动 ${current.app.packageName}") }
-                            .onFailure { eventLog.add("启动失败 ${it.message}") }
-                        token++
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching { ShizukuBridge.launch(context, current.app.packageName) }
+                            }
+                            result.onSuccess { eventLog.add("已启动 ${current.app.packageName}") }
+                                .onFailure { eventLog.add("启动失败 ${it.message}") }
+                            token++
+                        }
                     },
                     onForceStop = {
-                        runCatching { ShizukuBridge.forceStop(current.app.packageName) }
-                            .onSuccess { eventLog.add("已强制停止 ${current.app.packageName}") }
-                            .onFailure { eventLog.add("停止失败：请先授权 Shizuku") }
-                        token++
+                        scope.launch {
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching { ShizukuBridge.forceStop(current.app.packageName) }
+                            }
+                            result.onSuccess { eventLog.add("已强制停止 ${current.app.packageName}") }
+                                .onFailure { eventLog.add("停止失败：请先授权 Shizuku") }
+                            token++
+                        }
                     },
                     onRestart = {
-                        eventLog.add("正在重启 ${current.app.packageName}")
-                        runCatching { ShizukuBridge.restart(context, current.app.packageName) }
-                            .onSuccess { eventLog.add("已重启 ${current.app.packageName}") }
-                            .onFailure { eventLog.add("重启失败：请先授权 Shizuku") }
-                        token++
+                        scope.launch {
+                            eventLog.add("正在重启 ${current.app.packageName}")
+                            val result = withContext(Dispatchers.IO) {
+                                runCatching { ShizukuBridge.restart(context, current.app.packageName) }
+                            }
+                            result.onSuccess { eventLog.add("已重启 ${current.app.packageName}") }
+                                .onFailure { eventLog.add("重启失败：请先授权 Shizuku") }
+                            token++
+                        }
                     },
                     onDexopt = {
                         scope.launch {
                             busyText = "正在执行 Dexopt…"
-                            val ok = runCatching { ShizukuBridge.dexopt(current.app.packageName) }.getOrDefault(false)
+                            val ok = withContext(Dispatchers.IO) {
+                                runCatching { ShizukuBridge.dexopt(current.app.packageName) }.getOrDefault(false)
+                            }
                             busyText = null
                             eventLog.add(
                                 if (ok) "Dexopt 优化完成 ${current.app.packageName}"

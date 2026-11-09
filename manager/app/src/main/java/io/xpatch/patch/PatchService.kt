@@ -3,6 +3,7 @@ package io.xpatch.patch
 import android.content.Context
 import io.xpatch.data.HookCore
 import io.xpatch.data.PatchRecord
+import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
 import io.xpatch.model.AppInfo
 import kotlinx.coroutines.Dispatchers
@@ -11,15 +12,17 @@ import java.io.File
 
 data class PatchOptions(
     val hookCore: HookCore = HookCore.XPLANT,
-    val bypassLevel: Int = 1,
+    val bypassLevel: Int = 3,
     val injectSignature: Boolean = true,
-    val fileProvider: Boolean = true,
+    val fileProvider: Boolean = false,
     val dynamicMode: Boolean = false,
     val signatureProfile: SignatureStore.Profile? = null,
     val versionName: String? = null,
     val versionCode: Int? = null,
     val embedSource: Boolean = false,
     val forceOverwrite: Boolean = false,
+    val sigMode: String = "java",
+    val entryHook: Boolean = false,
 )
 
 class PatchService(private val context: Context) {
@@ -31,7 +34,7 @@ class PatchService(private val context: Context) {
         val bootDex: String,
         val originalFactory: String?,
         val config: String,
-        /** 该产物打包时是否选择了强行覆盖安装，安装入口据此选择安装方式。 */
+        
         val forceOverwrite: Boolean = false,
     )
 
@@ -94,6 +97,10 @@ class PatchService(private val context: Context) {
         val signed = File(workDir, "$packageName-xpatch.apk")
         unsigned.delete()
         signed.delete()
+        onLog("签名校验：" + SettingsStore.sigModeLabel(options.sigMode))
+        if (options.entryHook) {
+            onLog("入口 Hook 已开启（实验）：不改清单，需重新打包后生效")
+        }
         val result = ApkPatcher(context).patch(
             source,
             unsigned,
@@ -106,6 +113,8 @@ class PatchService(private val context: Context) {
                 versionName = options.versionName,
                 versionCode = options.versionCode,
                 embedSource = options.embedSource,
+                sigMode = options.sigMode,
+                entryHook = options.entryHook,
             ),
             onProgress = onProgress,
             onLog = onLog,

@@ -94,6 +94,107 @@ class AxmlEditor(private val source: ByteArray) {
         return assemble(pool.build(), body)
     }
 
+    fun addProvider(className: String, authority: String): ByteArray {
+        val pool = StringPool.parse(source)
+        val application = findElement(pool, "application") ?: error("manifest 中没有 <application>")
+        val androidNs = pool.strings.indexOf(ANDROID_NS).takeIf { it >= 0 } ?: pool.append(ANDROID_NS)
+        val provider = pool.strings.indexOf("provider").takeIf { it >= 0 } ?: pool.append("provider")
+        val attrName = pool.strings.indexOf("name").takeIf { it >= 0 } ?: pool.append("name")
+        val attrAuthorities = pool.strings.indexOf("authorities").takeIf { it >= 0 } ?: pool.append("authorities")
+        val attrExported = pool.strings.indexOf("exported").takeIf { it >= 0 } ?: pool.append("exported")
+        val classIndex = pool.append(className)
+        val authorityIndex = pool.append(authority)
+
+        val oldBodyStart = 8 + pool.chunkSize
+        require(u16(oldBodyStart) == CHUNK_RESOURCE_MAP) { "缺少资源映射" }
+        val oldMapSize = i32(oldBodyStart + 4)
+        val oldIds = ArrayList<Int>()
+        var pos = oldBodyStart + 8
+        while (pos < oldBodyStart + oldMapSize) {
+            oldIds.add(i32(pos))
+            pos += 4
+        }
+        val newPool = pool.build()
+        val mapCount = maxOf(oldIds.size, pool.count)
+        val ids = IntArray(mapCount)
+        oldIds.forEachIndexed { index, value -> if (index < ids.size) ids[index] = value }
+        ids[attrName] = 0x01010003
+        ids[attrAuthorities] = 0x01010018
+        ids[attrExported] = 0x01010010
+
+        val map = ByteBuffer.allocate(8 + ids.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        map.putShort(0, CHUNK_RESOURCE_MAP.toShort())
+        map.putShort(2, 8)
+        map.putInt(4, 8 + ids.size * 4)
+        ids.forEachIndexed { index, value -> map.putInt(8 + index * 4, value) }
+
+        val rest = source.copyOfRange(oldBodyStart + oldMapSize, source.size)
+        val body = ByteArray(map.capacity() + rest.size)
+        System.arraycopy(map.array(), 0, body, 0, map.capacity())
+        System.arraycopy(rest, 0, body, map.capacity(), rest.size)
+
+        val appOffset = application.start - (oldBodyStart + oldMapSize) + map.capacity()
+        val insertAt = appOffset + application.headerSize + application.attrStart + application.attrCount * ATTRIBUTE_SIZE
+        val attrCount = 3
+        val startSize = 36 + attrCount * ATTRIBUTE_SIZE
+        val start = ByteBuffer.allocate(startSize).order(ByteOrder.LITTLE_ENDIAN)
+        start.putShort(0, CHUNK_START_ELEMENT.toShort())
+        start.putShort(2, 16)
+        start.putInt(4, startSize)
+        start.putInt(8, 0)
+        start.putInt(12, -1)
+        start.putInt(16, androidNs)
+        start.putInt(20, provider)
+        start.putShort(24, 20)
+        start.putShort(26, ATTRIBUTE_SIZE.toShort())
+        start.putShort(28, attrCount.toShort())
+        start.putShort(30, 0)
+        start.putShort(32, 0)
+        start.putShort(34, 0)
+        putStringAttribute(start, 36, androidNs, attrName, classIndex)
+        putStringAttribute(start, 56, androidNs, attrAuthorities, authorityIndex)
+        putIntAttribute(start, 76, androidNs, attrExported, 0x01010010, 0)
+
+        val end = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
+        end.putShort(0, 0x0103.toShort())
+        end.putShort(2, 16)
+        end.putInt(4, 24)
+        end.putInt(8, 0)
+        end.putInt(12, -1)
+        end.putInt(16, -1)
+        end.putInt(20, provider)
+
+        val result = ByteArray(8 + newPool.size + body.size + startSize + 24)
+        System.arraycopy(source, 0, result, 0, 8)
+        System.arraycopy(newPool, 0, result, 8, newPool.size)
+        System.arraycopy(body, 0, result, 8 + newPool.size, insertAt)
+        System.arraycopy(start.array(), 0, result, 8 + newPool.size + insertAt, startSize)
+        System.arraycopy(end.array(), 0, result, 8 + newPool.size + insertAt + startSize, 24)
+        System.arraycopy(body, insertAt, result, 8 + newPool.size + insertAt + startSize + 24, body.size - insertAt)
+        putInt(result, 4, result.size)
+        return result
+    }
+
+    private fun putStringAttribute(buffer: ByteBuffer, offset: Int, ns: Int, name: Int, value: Int) {
+        buffer.putInt(offset, ns)
+        buffer.putInt(offset + 4, name)
+        buffer.putInt(offset + 8, value)
+        buffer.putShort(offset + 12, ATTRIBUTE_SIZE.toShort())
+        buffer.put(offset + 14, 0)
+        buffer.put(offset + 15, TYPE_STRING.toByte())
+        buffer.putInt(offset + 16, value)
+    }
+
+    private fun putIntAttribute(buffer: ByteBuffer, offset: Int, ns: Int, name: Int, raw: Int, value: Int) {
+        buffer.putInt(offset, ns)
+        buffer.putInt(offset + 4, name)
+        buffer.putInt(offset + 8, raw)
+        buffer.putShort(offset + 12, ATTRIBUTE_SIZE.toShort())
+        buffer.put(offset + 14, 0)
+        buffer.put(offset + 15, TYPE_INT_DEC.toByte())
+        buffer.putInt(offset + 16, value)
+    }
+
     private fun injectAttribute(
         pool: StringPool,
         elementName: String,
@@ -204,6 +305,7 @@ class AxmlEditor(private val source: ByteArray) {
         private const val CHUNK_AXML_FILE = 0x0003
         private const val CHUNK_STRING_POOL = 0x0001
         private const val CHUNK_START_ELEMENT = 0x0102
+        private const val CHUNK_RESOURCE_MAP = 0x0180
         private const val TYPE_STRING = 0x03
         private const val TYPE_INT_DEC = 0x10
         private const val ATTRIBUTE_SIZE = 20

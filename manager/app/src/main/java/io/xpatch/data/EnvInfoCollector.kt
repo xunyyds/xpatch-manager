@@ -85,7 +85,7 @@ object EnvInfoCollector {
         appendLine("签名绕过等级: " + settings.signatureBypassLevel)
         appendLine("注入签名: " + onOff(settings.injectSignature))
         appendLine("动态模式: " + onOff(settings.dynamicMode))
-        appendLine("文件提供者: " + onOff(settings.fileProvider))
+        appendLine("文件提供器: " + onOff(settings.fileProvider))
         appendLine(
             "底栏样式: " + if (settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID) "液态" else "标准",
         )

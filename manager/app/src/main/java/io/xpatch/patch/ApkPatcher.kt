@@ -3,6 +3,9 @@ package io.xpatch.patch
 import android.content.Context
 import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
+import android.content.pm.Signature
+import android.content.pm.SigningInfo
+import android.os.Build
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -23,14 +26,16 @@ import java.util.zip.Inflater
 class ApkPatcher(private val context: Context) {
 
     data class Options(
-        val bypassLevel: Int = 1,
+        val bypassLevel: Int = 3,
         val hookCore: Int = 0,
         val dynamicMode: Boolean = false,
-        val fileProvider: Boolean = true,
+        val fileProvider: Boolean = false,
         val injectSignature: Boolean = true,
         val versionName: String? = null,
         val versionCode: Int? = null,
         val embedSource: Boolean = false,
+        val sigMode: String = "java",
+        val entryHook: Boolean = false,
     )
 
     data class Result(
@@ -108,8 +113,13 @@ class ApkPatcher(private val context: Context) {
             val manifestEntry = entries.firstOrNull { it.name == MANIFEST }
                 ?: error("APK 缺少 AndroidManifest.xml")
             val editor = AxmlEditor(readEntry(source, manifestEntry))
+            val manifestPackage = editor.readAttribute("manifest", "package").orEmpty()
             originalFactory = sanitizeFactory(editor.readApplicationAttribute(ATTR_FACTORY_NAME), onLog)
-            var patched = editor.setApplicationAttribute(ATTR_FACTORY_NAME, STUB_CLASS)
+            var patched = if (options.entryHook && manifestPackage.isNotBlank()) {
+                editor.addProvider("io.xpatch.stub.XpProvider", "$manifestPackage.xpatch")
+            } else {
+                editor.setApplicationAttribute(ATTR_FACTORY_NAME, STUB_CLASS)
+            }
             options.versionName?.takeIf { it.isNotBlank() }?.let { name ->
                 patched = AxmlEditor(patched).setStringAttribute("manifest", "versionName", name)
             }
@@ -129,7 +139,7 @@ class ApkPatcher(private val context: Context) {
 
         val bootDexName = "classes${nextBootDexIndex(entries)}.dex"
         val packageInfo = packageInfoOf(effectiveSource)
-        val config = buildConfig(packageInfo, originalFactory, options)
+        val config = buildConfig(packageInfo, originalFactory, options, effectiveSource)
 
         val embeddedCrc = AtomicLong()
         val embeddedFailure = AtomicReference<Throwable?>()
@@ -178,13 +188,6 @@ class ApkPatcher(private val context: Context) {
         )
     }
 
-    /**
-     * 从原清单里读到的 appComponentFactory 不能直接当作“原厂工厂”记录：
-     *
-     * - 若源包本身已被我们打补丁（重复打包、或用户拿已补丁包再次打包），
-     *   读到的就是我们自己的桩类，写进配置会让引导桩委派给它自己 → 无限递归；
-     * - 空串等价于“原应用没有自定义工厂”，应显式记为 null，交给 super 默认实现。
-     */
     private fun sanitizeFactory(factory: String?, onLog: (String) -> Unit): String? {
         if (factory.isNullOrBlank()) return null
         if (factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES) {
@@ -833,11 +836,19 @@ class ApkPatcher(private val context: Context) {
         return max + 1
     }
 
-    private fun buildConfig(info: PackageInfo?, originalFactory: String?, options: Options): String {
+    private fun buildConfig(
+        info: PackageInfo?,
+        originalFactory: String?,
+        options: Options,
+        apk: File,
+    ): String {
         val json = JSONObject()
         json.put("hook_core", options.hookCore)
         json.put("app_component_name", originalFactory.orEmpty())
         json.put("sign", signaturesJson(info))
+        json.put("sig_mode", normalizeSigMode(options.sigMode))
+        json.put("entry_hook", options.entryHook)
+        json.put("signing_details", signingDetailsJson(apk))
         json.put("ver", RUNTIME_VERSION)
         json.put("build_nonce", nonce())
         json.put("bypass_sign_type", options.bypassLevel)
@@ -857,9 +868,63 @@ class ApkPatcher(private val context: Context) {
         return array.toString()
     }
 
-    private fun packageInfoOf(apk: File): PackageInfo? = runCatching {
+    fun signingDetailsJson(apk: File): String {
+        val json = JSONObject()
+        @Suppress("NewApi")
+        val signing = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfoOf(apk, PackageManager.GET_SIGNING_CERTIFICATES)?.signingInfo
+            } else {
+                null
+            }
+        }.getOrNull()
+        if (signing != null) {
+            @Suppress("NewApi")
+            val apkCerts = runCatching { signing.apkContentsSigners }.getOrNull()
+            @Suppress("NewApi")
+            val history = runCatching { signing.signingCertificateHistory }.getOrNull()
+            val current = if (apkCerts.isNullOrEmpty()) legacySignatures(apk) else apkCerts
+            json.put("scheme", signingSchemeVersion(signing))
+            json.put("apk", certificatesJson(current))
+            json.put("history", certificatesJson(if (history.isNullOrEmpty()) current else history))
+            return json.toString()
+        }
+        val legacy = legacySignatures(apk)
+        json.put("scheme", 1)
+        json.put("apk", certificatesJson(legacy))
+        json.put("history", certificatesJson(legacy))
+        return json.toString()
+    }
+
+    @Suppress("NewApi")
+    private fun signingSchemeVersion(info: SigningInfo): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.P) return 1
+        val value = runCatching { info.schemeVersion }.getOrDefault(0)
+        return if (value > 0) value else 3
+    }
+
+    private fun legacySignatures(apk: File): Array<Signature>? =
+        runCatching { packageInfoOf(apk)?.signatures }.getOrNull()
+
+    private fun certificatesJson(signatures: Array<Signature>?): String {
+        val array = JSONArray()
+        signatures?.forEach { array.put(it.toByteArray().toHex()) }
+        return array.toString()
+    }
+
+    private fun normalizeSigMode(mode: String): String {
+        val value = mode.trim().lowercase()
+        return if (value in SIG_MODES) value else SIG_MODE_DEFAULT
+    }
+
+    private fun packageInfoOf(apk: File): PackageInfo? {
         @Suppress("DEPRECATION")
-        context.packageManager.getPackageArchiveInfo(apk.absolutePath, PackageManager.GET_SIGNATURES)
+        val flags = PackageManager.GET_SIGNATURES
+        return packageInfoOf(apk, flags)
+    }
+
+    private fun packageInfoOf(apk: File, flags: Int): PackageInfo? = runCatching {
+        context.packageManager.getPackageArchiveInfo(apk.absolutePath, flags)
     }.getOrNull()
 
     private fun nonce(): String {
@@ -938,7 +1003,10 @@ class ApkPatcher(private val context: Context) {
         const val ATTR_FACTORY_NAME = "appComponentFactory"
         const val RUNTIME_VERSION = 42
 
-        /** 历史版本用过的引导桩类名，从清单/META 里读到时都视为“我们自己的桩”。 */
+        val SIG_MODES = setOf("off", "java", "java_file", "deep")
+        const val SIG_MODE_DEFAULT = "java"
+
+        
         val LEGACY_STUB_CLASSES = setOf(
             "fpa.AppEntry",
             "xpt.stub.AppEntry",

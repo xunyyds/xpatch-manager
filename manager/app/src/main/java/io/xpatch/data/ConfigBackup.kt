@@ -96,7 +96,7 @@ class ConfigBackup(private val context: Context) {
             settingsStore.setShowSystemApps(settings.optBoolean("showSystemApps", false))
             settingsStore.setSignatureBypassLevel(settings.optInt("bypassLevel", 1))
             settingsStore.setInjectSignature(settings.optBoolean("injectSignature", true))
-            settingsStore.setFileProvider(settings.optBoolean("fileProvider", true))
+            settingsStore.setFileProvider(settings.optBoolean("fileProvider", false))
             settingsStore.setDynamicMode(settings.optBoolean("dynamicMode", false))
             if (settings.has("uiStyle")) {
                 settingsStore.setUiStyle(UiStyle.of(settings.optInt("uiStyle", UiStyle.MATERIAL3.index)))

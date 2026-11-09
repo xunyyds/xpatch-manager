@@ -34,7 +34,7 @@ object PatchFingerprint {
         } else {
             "不签名"
         }
-        val provider = if (options.fileProvider) "FileProvider" else "无 FileProvider"
+        val provider = if (options.fileProvider) "文件提供器" else "无文件提供器"
         val mode = if (options.dynamicMode) "动态" else "静态"
         val parts = mutableListOf(core, bypass, sign, provider, mode)
         if (options.forceOverwrite) parts.add("强行覆盖")
