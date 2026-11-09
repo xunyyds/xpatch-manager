@@ -33,3 +33,6 @@ work/
 
 # 实验性构建输出目录
 manager/app/build-alt/
+
+# canary build artifacts
+tools/canary/out/

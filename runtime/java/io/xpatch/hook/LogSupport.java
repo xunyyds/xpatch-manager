@@ -67,13 +67,13 @@ public class LogSupport {
             bytes = (format.format(Long.valueOf(System.currentTimeMillis()))
                     + " " + processTag() + " " + str2 + "\n").getBytes("UTF-8");
         } catch (Throwable th) {
-            reportFailure("encode failed", th);
+            reportFailure("日志编码失败", th);
             return;
         }
         if (writeToDisk(str, bytes)) {
             return;
         }
-        reportFailure("no writable log dir for module=" + str, null);
+        reportFailure("模块日志无可用目录：" + str, null);
     }
 
     
@@ -145,7 +145,7 @@ public class LogSupport {
     private static void reportFailure(String message, Throwable th) {
         if (reportedFailure) return;
         reportedFailure = true;
-        Log.e(TAG, "log persistence unavailable: " + message, th);
+        Log.e(TAG, "日志无法落盘：" + message, th);
     }
 
     

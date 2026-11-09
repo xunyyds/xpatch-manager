@@ -160,7 +160,6 @@ internal fun ConfigScreen(
         versionCode = versionCode.trim().toIntOrNull(),
         sigMode = sigMode,
         entryHook = entryHook,
-        embedSource = bypassKey == "extreme" || bypassKey == "stealth",
     )
     val reusable = findReusable(options)
     var reuseConfirm by remember { mutableStateOf<PatchRecord?>(null) }

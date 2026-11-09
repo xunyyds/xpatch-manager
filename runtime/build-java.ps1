@@ -37,7 +37,10 @@ javac -encoding UTF-8 -nowarn -source 8 -target 8 -bootclasspath $env:ANDROID_JA
 if ($LASTEXITCODE -ne 0) { throw "运行时编译失败" }
 
 $classes = Get-ChildItem "$work\maincls" -Recurse -Filter '*.class' | Select-Object -ExpandProperty FullName
-& $d8 --release --min-api 29 --output "$work\main-dex" $classes
+# Windows 命令行长度上限约 32K；类文件变多后必须走 @argfile，否则 d8 报 "The command line is too long."
+$classList = Join-Path $work 'main-classes.txt'
+$classes | Set-Content -Path $classList -Encoding UTF8
+& $d8 --release --min-api 29 --output "$work\main-dex" "@$classList"
 if ($LASTEXITCODE -ne 0) { throw "d8 主 dex 失败" }
 
 $manifestXml = Join-Path $work 'AndroidManifest.xml'

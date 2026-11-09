@@ -65,13 +65,13 @@ public class ModuleLoader {
                         } finally {
                             inputStream.close();
                         }
-                        XpHook.log0(TAG, "preloaded wrapper dex " + str);
+                        XpHook.log0(TAG, "已预载 wrapper dex " + str);
                     } catch (Throwable th) {
-                        XpHook.log0(TAG, "preload wrapper dex failed " + str + "\n" + Log.getStackTraceString(th));
+                        XpHook.log0(TAG, "预载 wrapper dex 失败：" + str + "\n" + Log.getStackTraceString(th));
                     }
                 }
             } catch (Throwable th) {
-                XpHook.log0(TAG, "preload wrapper dex failed: cannot open " + AppEnv.selfApk + "\n" + Log.getStackTraceString(th));
+                XpHook.log0(TAG, "预载 wrapper dex 失败：无法打开 " + AppEnv.selfApk + "\n" + Log.getStackTraceString(th));
             } finally {
                 if (zipFile != null) {
                     try {
@@ -103,23 +103,23 @@ public class ModuleLoader {
             try {
                 iResolveApiLevel = resolveApiLevel(str, str2);
             } catch (Throwable th) {
-                XpHook.log0(TAG, "load module failed " + str + "\n" + Log.getStackTraceString(th));
+                XpHook.log0(TAG, "加载模块失败：" + str + "\n" + Log.getStackTraceString(th));
                 return;
             }
         }
         WrapperLoadPlan wrapperLoadPlanCreateWrapperLoadPlan = createWrapperLoadPlan(iResolveApiLevel);
         String[] plannedWrappers = wrapperLoadPlanCreateWrapperLoadPlan.wrapperNames;
-        StringBuilder sb = new StringBuilder("Loading module from ");
+        StringBuilder sb = new StringBuilder("正在加载模块：");
         sb.append(str);
         if (TextUtils.isEmpty(str2)) {
             str3 = "";
         } else {
-            str3 = ", package=" + str2;
+            str3 = "，包名=" + str2;
         }
         sb.append(str3);
-        sb.append(", apiLevel=");
+        sb.append("，API 级别=");
         sb.append(iResolveApiLevel);
-        sb.append(", wrappers=");
+        sb.append("，wrapper=");
         sb.append(Arrays.toString(plannedWrappers));
         XpHook.log0(TAG, sb.toString());
         try {
@@ -128,16 +128,16 @@ public class ModuleLoader {
             Method declaredMethod = classLoaderCreateModuleClassLoader.loadClass(WRAPPER_ENTRY_CLASS).getDeclaredMethod(WRAPPER_ENTRY_METHOD, String.class, ClassLoader.class);
             declaredMethod.setAccessible(true);
             declaredMethod.invoke(null, str, classLoaderCreateModuleClassLoader);
-            StringBuilder sb2 = new StringBuilder("load module success path=");
+            StringBuilder sb2 = new StringBuilder("加载模块成功：路径=");
             sb2.append(str);
-            sb2.append(", apiLevel=");
+            sb2.append("，API 级别=");
             sb2.append(iResolveApiLevel);
-            sb2.append(", wrappers=");
+            sb2.append("，wrapper=");
             sb2.append(Arrays.toString(plannedWrappers));
-            sb2.append(i > 0 ? ", source=request" : ", source=auto");
+            sb2.append(i > 0 ? "，来源=请求" : "，来源=自动");
             XpHook.log0(TAG, sb2.toString());
         } catch (Throwable th) {
-            XpHook.log0(TAG, "load module failed " + str + "\n" + Log.getStackTraceString(th));
+            XpHook.log0(TAG, "加载模块失败：" + str + "\n" + Log.getStackTraceString(th));
         }
     }
 
@@ -181,7 +181,7 @@ public class ModuleLoader {
             i++;
         }
         if (constructor == null) {
-            throw new IllegalStateException("DexFile(ByteBuffer[], ClassLoader, ...) constructor not found");
+            throw new IllegalStateException("找不到 DexFile(ByteBuffer[], ClassLoader, ...) 构造方法");
         }
         constructor.setAccessible(true);
         return (DexFile) constructor.newInstance(new ByteBuffer[]{ByteBuffer.wrap(bArr)}, classLoader, null);
@@ -238,7 +238,7 @@ public class ModuleLoader {
         }
         zipFile.close();
         if (arrayList.isEmpty()) {
-            throw new IllegalStateException("no dex found in module apk: " + str);
+            throw new IllegalStateException("模块 APK 中没有 dex：" + str);
         }
         ByteBuffer[] byteBufferArr = new ByteBuffer[arrayList.size()];
         for (int i2 = 0; i2 < arrayList.size(); i2++) {
@@ -257,7 +257,7 @@ public class ModuleLoader {
         try {
             ZipEntry entry = zipFile.getEntry(str);
             if (entry == null) {
-                throw new IllegalStateException("missing payload entry: " + str);
+                throw new IllegalStateException("缺少 payload 条目：" + str);
             }
             InputStream inputStream = zipFile.getInputStream(entry);
             try {
@@ -353,7 +353,7 @@ public class ModuleLoader {
                 throw th3;
             }
         } catch (Exception e) {
-            XpHook.log0(TAG, "inspect module config failed " + str + "\n" + Log.getStackTraceString(e));
+            XpHook.log0(TAG, "检查模块配置失败：" + str + "\n" + Log.getStackTraceString(e));
         }
         int installedLegacyApiLevel = readInstalledLegacyApiLevel(str2);
         if (installedLegacyApiLevel <= 0) {

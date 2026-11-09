@@ -152,7 +152,7 @@ public final class RemoteAccessBridge {
         } catch (Throwable th) {
             remoteService = NoOpRemoteAccessService.INSTANCE;
             lastResolvedFallback = true;
-            Log.w(TAG, "Failed to resolve remote access binder", th);
+            Log.w(TAG, "无法解析远程访问 Binder", th);
         }
     }
 
@@ -165,7 +165,7 @@ public final class RemoteAccessBridge {
                 }
             }, 0);
         } catch (Throwable th) {
-            Log.w(TAG, "Failed to watch remote binder death", th);
+            Log.w(TAG, "无法监听远程 Binder 死亡", th);
         }
     }
 
@@ -177,7 +177,7 @@ public final class RemoteAccessBridge {
     private static void onRemoteFailure(RemoteException remoteException) {
         remoteService = NoOpRemoteAccessService.INSTANCE;
         lastResolvedFallback = true;
-        Log.w(TAG, "Remote access call failed", remoteException);
+        Log.w(TAG, "远程访问调用失败", remoteException);
     }
 
     static final class NoOpRemoteAccessService extends IRemoteAccessService.Stub {

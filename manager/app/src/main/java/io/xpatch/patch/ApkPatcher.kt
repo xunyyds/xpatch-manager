@@ -58,6 +58,7 @@ class ApkPatcher(private val context: Context) {
         var effectiveSource = sourceApk
         var entries: List<Entry>
         var manifest: ByteArray
+        var originalManifest: ByteArray
         val originalFactory: String?
         val temps = ArrayList<File>()
 
@@ -112,7 +113,8 @@ class ApkPatcher(private val context: Context) {
         RandomAccessFile(effectiveSource, "r").use { source ->
             val manifestEntry = entries.firstOrNull { it.name == MANIFEST }
                 ?: error("APK 缺少 AndroidManifest.xml")
-            val editor = AxmlEditor(readEntry(source, manifestEntry))
+            originalManifest = readEntry(source, manifestEntry)
+            val editor = AxmlEditor(originalManifest)
             val manifestPackage = editor.readAttribute("manifest", "package").orEmpty()
             originalFactory = sanitizeFactory(editor.readApplicationAttribute(ATTR_FACTORY_NAME), onLog)
             var patched = if (options.entryHook && manifestPackage.isNotBlank()) {
@@ -164,6 +166,7 @@ class ApkPatcher(private val context: Context) {
                 outputApk = outputApk,
                 entries = entries,
                 manifest = manifest,
+                originalManifest = originalManifest,
                 bootDexName = bootDexName,
                 config = config,
                 packageName = packageInfo?.packageName.orEmpty(),
@@ -401,6 +404,7 @@ class ApkPatcher(private val context: Context) {
         outputApk: File,
         entries: List<Entry>,
         manifest: ByteArray,
+        originalManifest: ByteArray,
         bootDexName: String,
         config: String,
         packageName: String,
@@ -412,6 +416,7 @@ class ApkPatcher(private val context: Context) {
         embedSource: Boolean,
     ) {
         val added = buildList {
+            add(Added("xp/source.manifest", DEFLATED) { originalManifest })
             add(Added(bootDexName, DEFLATED) { asset("xp/stub.dex") })
             add(Added(CORE_ENTRY, DEFLATED) { asset("xp/runtime.dex") })
             add(Added(HOOK_DEX_ENTRY, DEFLATED) { asset("xp/hook_core.dex") })

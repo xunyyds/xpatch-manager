@@ -17,6 +17,8 @@ object PatchFingerprint {
             "versionCode=${options.versionCode ?: -1}",
             "embed=${options.embedSource}",
             "forceOverwrite=${options.forceOverwrite}",
+            "sigMode=${options.sigMode}",
+            "entryHook=${options.entryHook}",
         ).joinToString("|")
         return sha256(raw)
     }

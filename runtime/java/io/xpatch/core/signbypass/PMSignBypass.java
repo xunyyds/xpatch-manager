@@ -185,8 +185,11 @@ public class PMSignBypass {
         if (origin == null || origin.length() == 0) {
             return null;
         }
+        if (apkPath.contains("/cache/android_id/source-")) {
+            return AppEnv.selfApk;
+        }
         if (origin.equals(apkPath)) {
-            return null;
+            return AppEnv.selfApk;
         }
         if (apkPath.equals(AppEnv.selfApk)) {
             return origin;

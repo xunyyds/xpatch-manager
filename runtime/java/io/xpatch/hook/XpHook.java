@@ -44,7 +44,7 @@ public abstract class XpHook {
                 }
             };
         }
-        log0("XpHook", "doHook failed: " + member);
+        log0("XpHook", "hook 失败：" + member);
         return null;
     }
 
@@ -65,14 +65,14 @@ public abstract class XpHook {
     public static Object invoke0(Member member, Object obj, Object... objArr) throws IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         XpHook xpHook = sXpHook;
         if (xpHook == null) {
-            throw new UnsupportedOperationException("hook core is not ready");
+            throw new UnsupportedOperationException("hook 内核尚未就绪");
         }
         return xpHook.invoke(member, obj, objArr);
     }
 
     public static Object invoke0(Member member, int i, Object obj, Object... objArr) throws IllegalAccessException, IllegalArgumentException, InvocationTargetException {
         if (sXpHook == null) {
-            throw new UnsupportedOperationException("hook core is not ready");
+            throw new UnsupportedOperationException("hook 内核尚未就绪");
         }
         return XpHookDispatcher.invoke(member, i, obj, objArr);
     }
@@ -80,7 +80,7 @@ public abstract class XpHook {
     public static void deopt0(Member member) throws UnsupportedOperationException {
         XpHook xpHook = sXpHook;
         if (xpHook == null) {
-            throw new UnsupportedOperationException("hook core is not ready");
+            throw new UnsupportedOperationException("hook 内核尚未就绪");
         }
         xpHook.deopt(member);
     }
@@ -98,7 +98,7 @@ public abstract class XpHook {
     }
 
     public static void logModule0(String str, String str2, String str3) {
-        Log.i("XPatch", "XPATCH LOG: " + str2 + " -> " + str3);
+        Log.i("XPatch", "XPatch 日志：" + str2 + " -> " + str3);
         LogSupport.writeLine(normalizeLogModulePackage(str), str2 + " -> " + str3);
     }
 

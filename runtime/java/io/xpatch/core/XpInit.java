@@ -24,6 +24,7 @@ import io.xpatch.core.signbypass.PMSignBypass;
 import io.xpatch.core.signbypass.SignBypass;
 import io.xpatch.core.signbypass.SignatureFacade;
 import io.xpatch.core.signbypass.SigningDetailsData;
+import io.xpatch.core.signbypass.SourceReconstructor;
 import io.xpatch.hook.AppEnv;
 import io.xpatch.hook.XpHelper;
 import io.xpatch.hook.XpHook;
@@ -137,6 +138,11 @@ public class XpInit {
                 }
             }
             DeferredSignHooks.schedule();
+            if ((AppEnv.SIG_MODE_JAVA_FILE.equals(mode) || AppEnv.SIG_MODE_DEEP.equals(mode)
+                    || AppEnv.sign_bypass_type == 1)
+                    && (AppEnv.source_apk_path == null || AppEnv.source_apk_path.length() == 0)) {
+                AppEnv.source_apk_path = SourceReconstructor.rebuild();
+            }
             if ((AppEnv.SIG_MODE_JAVA_FILE.equals(mode) || AppEnv.SIG_MODE_DEEP.equals(mode)
                     || AppEnv.sign_bypass_type == 1)
                     && AppEnv.source_apk_path != null && AppEnv.source_apk_path.length() > 0) {

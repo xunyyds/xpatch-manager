@@ -32,7 +32,7 @@ class LocalStoreModuleProvider implements IModuleProvider {
             try {
                 return RemoteModuleProvider.parseModules(FileUtils.readString(str));
             } catch (Exception e) {
-                XpHook.log0(TAG, "read scope file failed " + str + " " + e);
+                XpHook.log0(TAG, "读取作用域文件失败：" + str + " " + e);
             }
         }
         return Collections.emptyList();
@@ -46,7 +46,7 @@ class LocalStoreModuleProvider implements IModuleProvider {
         try {
             refreshScopeFile(scopeFile);
         } catch (Exception e) {
-            XpHook.log0(TAG, "refresh scope module paths failed " + scopeFile + " " + e);
+            XpHook.log0(TAG, "刷新模块路径失败：" + scopeFile + " " + e);
         }
     }
 
@@ -115,7 +115,7 @@ class LocalStoreModuleProvider implements IModuleProvider {
                                 }
                             }
                             z2 = true;
-                            XpHook.log0(TAG, "refresh module apk path " + strOptString + " -> " + strResolveLatestApkPath);
+                            XpHook.log0(TAG, "更新模块 apk 路径： " + strOptString + " -> " + strResolveLatestApkPath);
                         }
                     }
                 }
