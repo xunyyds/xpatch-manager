@@ -13,11 +13,41 @@ public class CoreEntry {
         AppEnv.baseApp = applicationInfo;
         AppEnv.packageName = applicationInfo.packageName;
         AppEnv.selfApk = applicationInfo.sourceDir;
-        Log.d("XPatch", "XPatch Load InPack: pkg=" + AppEnv.packageName + ",proc=" + AppEnv.processName);
-        if (Process.myUid() % 100000 == 0) {
-            Log.d("XPatch", "do not init isolated process");
+        Log.d("XPatch", "XPatch 载入：包=" + AppEnv.packageName + "，进程=" + AppEnv.processName);
+        if (isIsolatedProcess()) {
+            Log.d("XPatch", "跳过 isolated 进程：进程=" + AppEnv.processName
+                    + "，uid=" + Process.myUid());
         } else {
             XpInit.startInit();
         }
     }
+
+    private static boolean isIsolatedProcess() {
+        try {
+            if (Process.isIsolated()) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            int uid = Process.myUid();
+            if (uid >= ISOLATED_UID_LOW && uid <= ISOLATED_UID_HIGH) {
+                return true;
+            }
+        } catch (Throwable ignored) {
+        }
+        String name = AppEnv.processName;
+        if (name != null) {
+            if (name.contains(":sandboxed_process")
+                    || name.contains(":sandboxed_privilege_process")
+                    || name.contains(":sandboxed_compute")
+                    || name.contains(":webview_sandboxed")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static final int ISOLATED_UID_LOW = 90000;
+    private static final int ISOLATED_UID_HIGH = 99999;
 }

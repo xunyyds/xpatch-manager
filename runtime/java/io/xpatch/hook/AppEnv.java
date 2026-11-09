@@ -7,6 +7,11 @@ import io.xpatch.core.module.RemoteModule;
 import java.util.List;
 
 public class AppEnv {
+    public static final String SIG_MODE_OFF = "off";
+    public static final String SIG_MODE_JAVA = "java";
+    public static final String SIG_MODE_JAVA_FILE = "java_file";
+    public static final String SIG_MODE_DEEP = "deep";
+
     public static ClassLoader appClassLoader = null;
     public static Context appContext = null;
     public static ApplicationInfo baseApp = null;
@@ -24,6 +29,11 @@ public class AppEnv {
     public static int sign_bypass_type;
     public static Signature[] signatures;
     public static String source_apk_path;
+
+    public static String sig_mode = SIG_MODE_JAVA;
+    public static boolean sig_mode_explicit = false;
+    public static String signing_details = null;
+
 
     public static boolean isInMainProc() {
         return processName.equals(packageName);

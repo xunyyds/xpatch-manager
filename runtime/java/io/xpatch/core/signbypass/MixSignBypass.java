@@ -13,6 +13,6 @@ class MixSignBypass extends BaseNativeSignBypass {
         PMSignBypass.enableSignBypassByHook();
         String redirectTarget = getRedirectTarget();
         NativeCalls.enable_io_redirect_mix(AppEnv.selfApk, redirectTarget);
-        XpHook.log0("XPatch", "mix native redirect enabled from " + AppEnv.selfApk + " to " + redirectTarget);
+        XpHook.log0("XPatch", "混合 native 重定向已启用：从 " + AppEnv.selfApk + " to " + redirectTarget);
     }
 }
