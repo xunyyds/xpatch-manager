@@ -83,6 +83,11 @@ object EnvInfoCollector {
         )
         appendLine("Hook 内核: " + settings.hookCore.label)
         appendLine("签名绕过等级: " + settings.signatureBypassLevel)
+        // 过签模式与入口 Hook 是排查"产物为什么还是被查签名/模块为什么不生效"的第一手信息，
+        // 少了这两行，用户贴出来的环境信息无法区分标准/增强/文件层/原生层。
+        appendLine("过签模式: " + describeSigMode(settings))
+        appendLine("入口 Hook: " + onOff(settings.entryHook))
+        appendLine("强制覆盖产物: " + onOff(settings.forceOverwrite))
         appendLine("注入签名: " + onOff(settings.injectSignature))
         appendLine("动态模式: " + onOff(settings.dynamicMode))
         appendLine("文件提供器: " + onOff(settings.fileProvider))
@@ -106,4 +111,12 @@ object EnvInfoCollector {
     }
 
     private fun onOff(value: Boolean): String = if (value) "开" else "关"
+
+    /**
+     * 形如"标准（java，等级 3）"。带上原始 sig_mode 与 bypass_level，避免只看到本地化词
+     * （"标准/增强/深度"这三个词在不同版本的档位表里指的不是同一件事）。
+     */
+    private fun describeSigMode(settings: ManagerSettings): String =
+        SettingsStore.sigModeLabel(settings.sigMode) +
+            "（" + settings.sigMode + "，等级 " + settings.signatureBypassLevel + "）"
 }

@@ -158,7 +158,7 @@ class SettingsStore(context: Context) {
             SIG_MODE_OFF to "关闭",
             SIG_MODE_JAVA to "标准",
             SIG_MODE_JAVA_FILE to "增强",
-            SIG_MODE_DEEP to "深度",
+            SIG_MODE_DEEP to "极致",
         )
 
         val SIG_MODES: List<String> = SIG_MODE_OPTIONS.map { it.first }

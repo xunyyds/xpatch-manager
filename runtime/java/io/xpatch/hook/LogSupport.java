@@ -110,7 +110,11 @@ public class LogSupport {
     private static boolean writeToDisk(String module, byte[] bytes) {
         String key = XpHook.normalizeLogModulePackage(module);
         File cached = activeFiles.get(key);
-        if (cached != null && append(cached, bytes)) {
+        // 缓存命中也必须校验 16 MB 上限：pickFile 只在首次写入时参与判定，
+        // 少了这一条，同一进程内 logs.log 会无限增长（S-P1-3）
+        if (cached != null
+                && cached.length() + bytes.length <= MAX_LOG_FILE_SIZE
+                && append(cached, bytes)) {
             return true;
         }
         if (cached != null) {
