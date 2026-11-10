@@ -45,17 +45,37 @@ public class ModuleLoader {
 
 
 
+    /**
+     * Android 17 的 ZipFile.getEntry 在部分动态包装包上会返回 null（明明 unzip 能看到条目）；
+     * 这里加一次全表遍历兜底，避免运行层 wrapper dex 被误判为缺失。
+     */
+    private static ZipEntry findEntry(ZipFile zipFile, String name) {
+        ZipEntry entry = zipFile.getEntry(name);
+        if (entry != null) {
+            return entry;
+        }
+        java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
+        while (entries.hasMoreElements()) {
+            ZipEntry candidate = entries.nextElement();
+            if (name.equals(candidate.getName())) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
     public static void preloadWrapperDexes() {
         synchronized (WRAPPER_DEX_CACHE) {
             ZipFile zipFile = null;
             try {
-                zipFile = new ZipFile(AppEnv.selfApk);
+                String apk = AppEnv.selfApk;
+                zipFile = new ZipFile(apk);
                 for (String str : WRAPPER_NAMES) {
                     if (WRAPPER_DEX_CACHE.containsKey(str)) {
                         continue;
                     }
                     try {
-                        ZipEntry entry = zipFile.getEntry(WRAPPER_DEX_DIR + str + ".dex");
+                        ZipEntry entry = findEntry(zipFile, WRAPPER_DEX_DIR + str + ".dex");
                         if (entry == null) {
                             throw new IllegalStateException("missing payload entry: " + WRAPPER_DEX_DIR + str + ".dex");
                         }
@@ -67,7 +87,11 @@ public class ModuleLoader {
                         }
                         XpHook.log0(TAG, "已预载 wrapper dex " + str);
                     } catch (Throwable th) {
-                        XpHook.log0(TAG, "预载 wrapper dex 失败：" + str + "\n" + Log.getStackTraceString(th));
+                        XpHook.log0(TAG, "预载 wrapper dex 失败：" + str
+                                + "（selfApk=" + AppEnv.selfApk + "，size=" + zipFile.size()
+                                + "，baseDir="
+                                + (AppEnv.baseApp == null ? "null" : AppEnv.baseApp.sourceDir) + "）\n"
+                                + Log.getStackTraceString(th));
                     }
                 }
             } catch (Throwable th) {
@@ -83,18 +107,19 @@ public class ModuleLoader {
         }
     }
 
-    public static void loadModule(RemoteModule remoteModule) {
+    /** 返回 true 表示模块入口执行成功；false 表示模块没装上（调用方据此决定是否清崩溃计数）。 */
+    public static boolean loadModule(RemoteModule remoteModule) {
         if (remoteModule == null || TextUtils.isEmpty(remoteModule.apkPath)) {
-            return;
+            return false;
         }
-        loadModule(remoteModule.apkPath, remoteModule.packageName, remoteModule.useApiLevel);
+        return loadModule(remoteModule.apkPath, remoteModule.packageName, remoteModule.useApiLevel);
     }
 
-    public static void loadModule(String str) {
-        loadModule(str, null, 0);
+    public static boolean loadModule(String str) {
+        return loadModule(str, null, 0);
     }
 
-    public static void loadModule(String str, String str2, int i) {
+    public static boolean loadModule(String str, String str2, int i) {
         int iResolveApiLevel;
         String str3;
         if (i > 0) {
@@ -104,7 +129,7 @@ public class ModuleLoader {
                 iResolveApiLevel = resolveApiLevel(str, str2);
             } catch (Throwable th) {
                 XpHook.log0(TAG, "加载模块失败：" + str + "\n" + Log.getStackTraceString(th));
-                return;
+                return false;
             }
         }
         WrapperLoadPlan wrapperLoadPlanCreateWrapperLoadPlan = createWrapperLoadPlan(iResolveApiLevel);
@@ -136,8 +161,10 @@ public class ModuleLoader {
             sb2.append(Arrays.toString(plannedWrappers));
             sb2.append(i > 0 ? "，来源=请求" : "，来源=自动");
             XpHook.log0(TAG, sb2.toString());
+            return true;
         } catch (Throwable th) {
             XpHook.log0(TAG, "加载模块失败：" + str + "\n" + Log.getStackTraceString(th));
+            return false;
         }
     }
 
@@ -200,8 +227,12 @@ public class ModuleLoader {
         throw new NoSuchFieldException(str);
     }
 
+    /**
+     * 只探测模块 APK 里有没有 dex，不把 dex 读进堆：模块类由 PathClassLoader 按路径加载，
+     * 预先解压整包 dex 完全用不到（多 dex 模块可达 30-100 MB，启动路径上有 OOM 风险，P2-27）。
+     */
     private static ClassLoader createModuleClassLoader(String str, String[] wrapperNames) throws Exception {
-        ArrayList arrayList = new ArrayList();
+        int dexCount = 0;
         ZipFile zipFile = new ZipFile(str);
         int i = 1;
         while (true) {
@@ -210,23 +241,8 @@ public class ModuleLoader {
                 if (entry == null) {
                     break;
                 }
-                InputStream inputStream = zipFile.getInputStream(entry);
-                try {
-                    arrayList.add(DataUtils.readAllBytes(inputStream));
-                    if (inputStream != null) {
-                        inputStream.close();
-                    }
-                    i++;
-                } catch (Throwable th) {
-                    if (inputStream != null) {
-                        try {
-                            inputStream.close();
-                        } catch (Throwable th2) {
-                            th.addSuppressed(th2);
-                        }
-                    }
-                    throw th;
-                }
+                dexCount++;
+                i++;
             } catch (Throwable th3) {
                 try {
                     zipFile.close();
@@ -237,12 +253,8 @@ public class ModuleLoader {
             }
         }
         zipFile.close();
-        if (arrayList.isEmpty()) {
+        if (dexCount == 0) {
             throw new IllegalStateException("模块 APK 中没有 dex：" + str);
-        }
-        ByteBuffer[] byteBufferArr = new ByteBuffer[arrayList.size()];
-        for (int i2 = 0; i2 < arrayList.size(); i2++) {
-            byteBufferArr[i2] = ByteBuffer.wrap((byte[]) arrayList.get(i2));
         }
         String str2 = str + "!/lib/arm64-v8a/";
         ByteBuffer[] wrapperBuffers = new ByteBuffer[wrapperNames.length];
@@ -253,7 +265,8 @@ public class ModuleLoader {
     }
 
     private static byte[] readSelfEntryBytes(String str) throws Exception {
-        ZipFile zipFile = new ZipFile(AppEnv.selfApk);
+        String apk = AppEnv.selfApk;
+        ZipFile zipFile = new ZipFile(apk);
         try {
             ZipEntry entry = zipFile.getEntry(str);
             if (entry == null) {
