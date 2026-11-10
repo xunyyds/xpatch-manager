@@ -66,8 +66,10 @@ internal fun HomeScreen(
     val pendingRestarts by RestartCenter.pending.collectAsState()
     val bannerHidden by RestartCenter.bannerHidden.collectAsState()
     var showRestartList by remember { mutableStateOf(false) }
-    var guardEvents by remember { mutableStateOf(ModuleGuardStore.list(context)) }
-    LaunchedEffect(Unit) { guardEvents = ModuleGuardStore.list(context) }
+    // 熔断事件走 StateFlow：广播（内核在目标进程发出）落地后首页立刻刷新，
+    // 旧实现只在 LaunchedEffect(Unit) 里读一次 prefs，横幅要等页面重建才出现。
+    val guardEvents by ModuleGuardStore.events.collectAsState()
+    LaunchedEffect(Unit) { ModuleGuardStore.init(context) }
 
     Column(Modifier.fillMaxSize()) {
         PullRefreshBox(
@@ -100,11 +102,8 @@ internal fun HomeScreen(
                         ModuleGuardHintBanner(
                             events = guardEvents,
                             onView = { event -> onOpenGuardLogs(event.appPackage, event.modulePackage) },
-                            onHide = {
-                                val first = guardEvents.first()
-                                ModuleGuardStore.dismiss(context, first.appPackage, first.modulePackage)
-                                guardEvents = ModuleGuardStore.list(context)
-                            },
+                            // "×" = 全部忽略：一次清空所有事件，与"「A」等 N 个应用"的标题保持一致。
+                            onHide = { ModuleGuardStore.clear(context) },
                         )
                     }
                 }

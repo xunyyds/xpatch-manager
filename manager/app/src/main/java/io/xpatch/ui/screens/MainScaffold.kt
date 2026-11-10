@@ -13,6 +13,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,6 +24,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
@@ -60,6 +62,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -120,6 +123,7 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -561,7 +565,7 @@ fun MainScaffold(
             logsRefreshing = true
             logsRuntime = logsRuntime.copy(loading = true, error = null)
             try {
-                val snapshot = withContext(Dispatchers.IO) {
+                val loaded = withContext(Dispatchers.IO) {
                     val targets = repository.patchedPackageNames()
                     val merged = if (ShizukuBridge.hasPermission()) {
                         runCatching {
@@ -574,16 +578,13 @@ fun MainScaffold(
                     } else {
                         null
                     }
-                    var acc = merged ?: runCatching { logStore.loadFirstPage(targets) }.getOrNull()
-                    var guard = 0
-                    while (acc != null && acc.hasMore && guard < MAX_LOG_PAGES) {
-                        val next = runCatching { logStore.loadMore(acc) }.getOrNull()
-                        if (next == null) break
-                        acc = next
-                        guard++
-                    }
-                    acc
+                    // 首屏只读第一页：不再 while (hasMore) 把磁盘日志一路读到底（S-P1-1：
+                    // 400 页 × 256 KB ≈ 100 MB 入堆，且每页都全量 merge+sort）。
+                    // 更早的日志由滚动到底/分页脚注按页补，每页都受 capLogSnapshot 的硬上限约束。
+                    val firstPage = merged ?: runCatching { logStore.loadFirstPage(targets) }.getOrNull()
+                    firstPage?.let { capLogSnapshot(it) }
                 }
+                val snapshot = loaded?.first
                 logsRuntime = if (snapshot != null) {
                     RuntimeLogsState(
                         snapshot = snapshot,
@@ -593,6 +594,10 @@ fun MainScaffold(
                     )
                 } else {
                     logsRuntime.copy(loading = false, error = "读取运行日志失败")
+                }
+                if (loaded?.second == true) {
+                    eventLog.add("运行日志已达单次载入上限（$MAX_LOG_ENTRIES 条 / 约 32 MB），更早的日志未载入")
+                    logs = eventLog.entries()
                 }
             } catch (error: Throwable) {
                 logsRuntime = logsRuntime.copy(
@@ -615,11 +620,19 @@ fun MainScaffold(
                     runCatching { logStore.loadMore(current) }.getOrNull()
                 }
                 if (next != null) {
+                    // 补页同样受硬上限约束：触顶后 done=true，不会再无限追加。
+                    val (capped, truncated) = capLogSnapshot(next)
                     logsRuntime = logsRuntime.copy(
-                        snapshot = next,
+                        snapshot = capped,
                         loadingMore = false,
                         error = null,
                     )
+                    if (truncated) {
+                        eventLog.add(
+                            "运行日志已达单次载入上限（$MAX_LOG_ENTRIES 条 / 约 32 MB），更早的日志未载入",
+                        )
+                        logs = eventLog.entries()
+                    }
                 } else {
                     logsRuntime = logsRuntime.copy(
                         loadingMore = false,
@@ -628,7 +641,8 @@ fun MainScaffold(
                 }
             } finally {
                 logsLoadingMore = false
-            }        }
+            }
+        }
     }
 
     LaunchedEffect(Unit) {
@@ -692,6 +706,37 @@ fun MainScaffold(
                 loadRuntimeLogs()
             }
         }
+    }
+
+    // 日志分页（S-P1-1）：首屏只加载一页，滚到列表接近底部时自动补下一页。
+    // 列表状态来自 LogsScreen 共用的 LogsState.runtimeList；hasMore + 互斥判断保证不会重复补页，
+    // first > 0 保证内容确实铺满一屏后才自动补，所以不会再把磁盘上的日志一次性读到底。
+    // 只在「最新在上」时自动补：反向显示时底部是最新日志、补页会插到列表前面，交给分页脚注手动触发。
+    LaunchedEffect(nav.tab, logsState.tab, logsState.timeOrder) {
+        if (nav.tab != Tab.Logs || logsState.tab != LogsTab.Runtime) return@LaunchedEffect
+        if (logsState.timeOrder != TimeOrder.NewestFirst) return@LaunchedEffect
+        snapshotFlow {
+            val info = logsState.runtimeList.layoutInfo
+            Triple(
+                // LazyListLayoutInfo 没有 firstVisibleItemIndex（那是 LazyListState 的成员）；
+                // 布局信息里取 visibleItemsInfo 的首项，空列表时退回 state 的索引。
+                info.visibleItemsInfo.firstOrNull()?.index ?: logsState.runtimeList.firstVisibleItemIndex,
+                info.visibleItemsInfo.lastOrNull()?.index ?: -1,
+                info.totalItemsCount,
+            )
+        }
+            .distinctUntilChanged()
+            .collect { (first, last, total) ->
+                val nearBottom = total > 0 && last >= total - 2
+                // 列表没铺满一屏（first=0 且最后一项就是 total-1）时也要继续补页，
+                // 否则首屏只有几条日志、又滚不动，用户永远看不到更早的日志。
+                val allVisible = total > 0 && first == 0 && last >= total - 1
+                if ((first > 0 || allVisible) && nearBottom && logsRuntime.hasMore &&
+                    !logsLoadingMore && !logsRuntime.loading
+                ) {
+                    loadMoreRuntimeLogs()
+                }
+            }
     }
 
     BackHandler(enabled = nav.canBack) { nav.back() }
@@ -1459,6 +1504,18 @@ fun MainScaffold(
                         eventLog.add(if (on) "已开启强行覆盖安装" else "已关闭强行覆盖安装")
                         logs = eventLog.entries()
                     },
+                    onSignatureModeChange = { mode, level, hook ->
+                        // 档位/入口 Hook 一变更就落盘并同步 settings：否则重新进本页时 defaults 还是旧值，
+                        // 界面显示与实际下发的 (sig_mode, bypass, entry_hook) 会再次脱钩。
+                        settingsStore.setSigMode(mode)
+                        settingsStore.setSignatureBypassLevel(level)
+                        settingsStore.setEntryHook(hook)
+                        settings = settings.copy(
+                            sigMode = mode,
+                            signatureBypassLevel = level,
+                            entryHook = hook,
+                        )
+                    },
                     findReusable = { options ->
                         val pkg = patchPackageName(current.target)
                         if (pkg.isBlank()) {
@@ -1623,32 +1680,49 @@ fun MainScaffold(
                     },
                     onLaunch = {
                         scope.launch {
-                            val result = withContext(Dispatchers.IO) {
+                            // ShizukuBridge.launch 返回 Boolean：没有启动入口/startActivity 抛异常都会是 false，
+                            // 旧写法把它包成 Result 后 onFailure 永远不触发，失败也照写"已启动"。
+                            val hasEntry = runCatching {
+                                context.packageManager.getLaunchIntentForPackage(current.app.packageName) != null
+                            }.getOrDefault(false)
+                            val ok = withContext(Dispatchers.IO) {
                                 runCatching { ShizukuBridge.launch(context, current.app.packageName) }
+                                    .getOrDefault(false)
                             }
-                            result.onSuccess { eventLog.add("已启动 ${current.app.packageName}") }
-                                .onFailure { eventLog.add("启动失败 ${it.message}") }
+                            eventLog.add(
+                                when {
+                                    ok -> "已启动 ${current.app.packageName}"
+                                    !hasEntry -> "启动失败：${current.app.packageName} 没有可启动的入口"
+                                    else -> "启动失败：无法调起 ${current.app.packageName}"
+                                },
+                            )
                             token++
                         }
                     },
                     onForceStop = {
                         scope.launch {
-                            val result = withContext(Dispatchers.IO) {
+                            val ok = withContext(Dispatchers.IO) {
                                 runCatching { ShizukuBridge.forceStop(current.app.packageName) }
+                                    .getOrDefault(false)
                             }
-                            result.onSuccess { eventLog.add("已强制停止 ${current.app.packageName}") }
-                                .onFailure { eventLog.add("停止失败：请先授权 Shizuku") }
+                            eventLog.add(
+                                if (ok) "已强制停止 ${current.app.packageName}"
+                                else "停止失败：请先安装并授权 Shizuku",
+                            )
                             token++
                         }
                     },
                     onRestart = {
                         scope.launch {
                             eventLog.add("正在重启 ${current.app.packageName}")
-                            val result = withContext(Dispatchers.IO) {
+                            val ok = withContext(Dispatchers.IO) {
                                 runCatching { ShizukuBridge.restart(context, current.app.packageName) }
+                                    .getOrDefault(false)
                             }
-                            result.onSuccess { eventLog.add("已重启 ${current.app.packageName}") }
-                                .onFailure { eventLog.add("重启失败：请先授权 Shizuku") }
+                            eventLog.add(
+                                if (ok) "已重启 ${current.app.packageName}"
+                                else "重启失败：请先安装并授权 Shizuku",
+                            )
                             token++
                         }
                     },
@@ -1661,7 +1735,7 @@ fun MainScaffold(
                             busyText = null
                             eventLog.add(
                                 if (ok) "Dexopt 优化完成 ${current.app.packageName}"
-                                else "Dexopt 失败：请先授权 Shizuku",
+                                else "Dexopt 失败：请先安装并授权 Shizuku",
                             )
                             token++
                         }
@@ -2137,4 +2211,34 @@ private fun patchSourceKey(target: PatchTarget): String = when (target) {
     ).joinToString("|")
 }
 
-private const val MAX_LOG_PAGES = 400
+/**
+ * 日志分页硬上限（S-P1-1）：单次进入日志页累计载入的条目数/估算字符量都有上限，防止低端机 OOM。
+ * entries 按时间倒序，尾端最旧，触顶时截断尾端并把 done 置 true——不再 hasMore 无限追加，
+ * 也不会像旧 while 循环那样把磁盘上的日志全量读进堆。第二个返回值表示本次是否发生截断。
+ */
+private fun capLogSnapshot(
+    snapshot: RuntimeLogStore.Snapshot,
+): Pair<RuntimeLogStore.Snapshot, Boolean> {
+    var chars = 0L
+    var keep = 0
+    for (entry in snapshot.entries) {
+        val cost = (entry.message.length + entry.detail.length + LOG_ENTRY_OVERHEAD_CHARS).toLong()
+        if (keep >= MAX_LOG_ENTRIES || chars + cost > MAX_LOG_CHARS) break
+        chars += cost
+        keep++
+    }
+    if (keep >= snapshot.entries.size) return snapshot to false
+    return snapshot.copy(
+        entries = snapshot.entries.subList(0, keep).toList(),
+        done = true,
+    ) to true
+}
+
+/** 单次载入的条目硬上限。 */
+private const val MAX_LOG_ENTRIES = 20_000
+
+/** 单次载入的字符预算：中文日志按 UTF-16 每字符 2 字节算，16 M 字符 ≈ 32 MB 堆占用。 */
+private const val MAX_LOG_CHARS = 16L * 1024 * 1024
+
+/** 每条日志除 message/detail 之外的固定开销（id、时间、模块名、来源路径等）估算。 */
+private const val LOG_ENTRY_OVERHEAD_CHARS = 160

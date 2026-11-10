@@ -1,7 +1,7 @@
 package io.xpatch.ui.screens
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -20,6 +20,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -27,6 +28,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -37,17 +39,12 @@ import io.xpatch.data.SignatureStore
 import io.xpatch.patch.PatchOptions
 import io.xpatch.patch.ShizukuInstaller
 import io.xpatch.ui.components.AppIcon
-import io.xpatch.ui.components.Chip
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
-import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.material3.TextButton
-import androidx.compose.ui.draw.clip
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
@@ -58,25 +55,74 @@ internal const val NO_SIGN_ID = "__no_sign__"
 
 private val NO_SIGN_PROFILE = SignatureStore.Profile(id = NO_SIGN_ID, name = "不签名", kind = SignatureStore.Kind.BUILTIN)
 
-private data class BypassMode(val key: String, val name: String, val desc: String)
-
-private val BYPASS_MODES = listOf(
-    BypassMode("none", "None", "不进行任何处理。应用若校验签名，可能直接闪退。"),
-    BypassMode("basic", "Basic", "处理 Java 层最常见的签名查询，覆盖大多数应用。"),
-    BypassMode("high", "High", "在 Basic 基础上恢复入口工厂，并处理更严格的签名校验。"),
-    BypassMode("extreme", "Extreme", "在 High 基础上接管 Binder/Parcel 中的签名信息，覆盖跨进程校验。"),
-    BypassMode("seccomp", "Seccomp", "基于 FPA 方案改进的 native 文件重定向，处理 openat 读取原 APK 的校验。"),
-    BypassMode("stealth", "Stealth", "在 Extreme 基础上隐藏入口 Hook，降低被检测概率。"),
+/**
+ * 「过签方案」六档：每一项都直接对应最终写进 xp/config.json 的 (sig_mode, bypass_level)。
+ * 描述按 XpInit.installSignBypass() 的真实分支写——旧版 high/extreme/stealth 把功劳记错了层
+ * （Parcel hook 在 basic 就有、入口工厂与 bypass 无关、stealth 实际是新增清单 provider），这里逐条改正。
+ * 档位不是单调强度阶梯：strict 比 seccomp 多了严格校验，seccomp 比 file 多了 native openat；
+ * 最高档 extreme 才是严格校验 + 文件层 + dobby/inline 混合 native 的三层叠加。
+ */
+private data class BypassMode(
+    val key: String,
+    val name: String,
+    val desc: String,
+    val sigMode: String,
+    val bypassLevel: Int,
 )
 
-private fun bypassModeKey(sigMode: String, bypass: Int): String = when {
-    sigMode == SettingsStore.SIG_MODE_JAVA_FILE -> "extreme"
-    sigMode == SettingsStore.SIG_MODE_DEEP -> "stealth"
-    sigMode == SettingsStore.SIG_MODE_OFF -> "none"
-    bypass == 1 -> "seccomp"
-    bypass == 2 -> "high"
-    else -> "basic"
-}
+private val BYPASS_MODES = listOf(
+    BypassMode(
+        key = "none",
+        name = "None（关闭）",
+        desc = "关闭签名伪装：不安装任何签名 hook，也不接管文件层。应用只要校验签名就会失败。",
+        sigMode = SettingsStore.SIG_MODE_OFF,
+        bypassLevel = 3,
+    ),
+    BypassMode(
+        key = "basic",
+        name = "Basic（Java 层）",
+        desc = "Java 层签名伪装：Signature 比较、PackageInfo、checkSignatures 都返回原证书，覆盖大多数应用（默认档）。",
+        sigMode = SettingsStore.SIG_MODE_JAVA,
+        bypassLevel = 3,
+    ),
+    BypassMode(
+        key = "strict",
+        name = "Strict（+ 严格校验）",
+        desc = "在 Basic 之上打开 hasSigningCertificate 严格校验（Android 11+ 自校验常用 API），应对更严格的签名查询。",
+        sigMode = SettingsStore.SIG_MODE_JAVA,
+        bypassLevel = 2,
+    ),
+    BypassMode(
+        key = "file",
+        name = "File（+ 文件层）",
+        desc = "在 Strict 之上把代码/资源路径重定向到内嵌的原始安装包，处理按 APK 文件路径读签名的校验；必须内嵌原包，产物更大。",
+        sigMode = SettingsStore.SIG_MODE_JAVA_FILE,
+        bypassLevel = 2,
+    ),
+    BypassMode(
+        key = "seccomp",
+        name = "Seccomp（native 重定向）",
+        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件层；同样需要内嵌原包，但不含 hasSigningCertificate 严格校验。",
+        sigMode = SettingsStore.SIG_MODE_JAVA,
+        bypassLevel = 1,
+    ),
+    BypassMode(
+        key = "extreme",
+        name = "Extreme（最高档）",
+        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件层路径重定向 + dobby/inline 混合 native 重定向三层叠加；必须内嵌原始安装包，产物最大。",
+        sigMode = SettingsStore.SIG_MODE_DEEP,
+        bypassLevel = 3,
+    ),
+)
+
+/**
+ * 反向映射：界面显示的档位只由 (sigMode, bypassLevel) 纯函数派生，不再另存 remember state。
+ * 旧写法 `var bypassKey by remember { mutableStateOf(bypassModeKey(...)) }` 会让显示与真正下发的参数脱钩
+ * （导入备份后出现过"显示 Stealth、实际 strict=false + 原生重定向"）。
+ * 组合不属于六档（旧配置 sig_mode=deep、手改的备份）时返回 null，由界面显示「自定义」。
+ */
+private fun bypassModeKey(sigMode: String, bypassLevel: Int): String? =
+    BYPASS_MODES.firstOrNull { it.sigMode == sigMode && it.bypassLevel == bypassLevel }?.key
 
 private fun hookCoreDesc(core: HookCore): String = when (core) {
     HookCore.XPLANT -> "默认注入引擎，兼容性最好。"
@@ -94,6 +140,9 @@ internal fun ConfigScreen(
     onStart: (PatchOptions) -> Unit,
     onPickSignature: (SignatureStore.Profile) -> Unit,
     onForceOverwriteChange: (Boolean) -> Unit,
+    // 档位/入口 Hook 一变更就落盘 SettingsStore 并同步 MainScaffold 的 settings：
+    // 只在本页攒 state、直到点「开始 Patch」才写，会出现"设置了却没保存"和 settings.copy 脱钩。
+    onSignatureModeChange: (sigMode: String, bypassLevel: Int, entryHook: Boolean) -> Unit,
     forceOverwriteReady: Boolean,
     forceOverwriteBlockReason: String,
     findReusable: (PatchOptions) -> PatchRecord?,
@@ -110,8 +159,11 @@ internal fun ConfigScreen(
     var forceOverwriteError by remember { mutableStateOf<String?>(null) }
     var showHookDialog by remember { mutableStateOf(false) }
     var showBypassDialog by remember { mutableStateOf(false) }
-    var bypassKey by remember { mutableStateOf(bypassModeKey(sigMode, bypass)) }
     var moreExpanded by remember { mutableStateOf(false) }
+    // 派生值：界面显示的档位 = 即将写进 config.json 的 (sigMode, bypass)，两者不可能再脱钩。
+    val bypassKey = bypassModeKey(sigMode, bypass)
+    val bypassMode = BYPASS_MODES.firstOrNull { it.key == bypassKey }
+    val bypassTitle = bypassMode?.name ?: "自定义"
     val forceOverwriteNote = when {
         forceOverwrite && !forceOverwriteReady -> forceOverwriteBlockReason
         forceOverwrite -> "已启用：签名固定为 XPatch，安装时先保留数据卸载旧包"
@@ -172,13 +224,16 @@ internal fun ConfigScreen(
         ) {
             item {
                 SettingGroup("Hook 核心") {
-                    ChoiceRow(hookCore.label, hookCoreDesc(hookCore)) { showHookDialog = true }
+                    ChoiceRow(hookCore.label) { showHookDialog = true }
                 }
             }
             item {
-                val mode = BYPASS_MODES.firstOrNull { it.key == bypassKey } ?: BYPASS_MODES[1]
                 SettingGroup("过签方案") {
-                    ChoiceRow(mode.name, mode.desc) { showBypassDialog = true }
+                    ChoiceRow(bypassTitle) { showBypassDialog = true }
+                    if (bypassMode == null) {
+                        // 非预设组合（旧 deep 配置或手改过的备份）：明说它不在六档内，避免被当成最近的一档。
+                        NoteText("预设档位见「过签方案」列表，重新选择任意档位会把它改回预设组合。")
+                    }
                 }
             }
             item {
@@ -196,69 +251,77 @@ internal fun ConfigScreen(
                             }
                         },
                     )
-                    NoteText("选择同样的签名证书可以覆盖安装。")
                 }
             }
             item {
                 MoreHeader(moreExpanded) { moreExpanded = !moreExpanded }
             }
             if (moreExpanded) {
-            item {
-                SettingGroup("版本信息") {
-                    VersionRow(
-                        title = "版本名",
-                        placeholder = if (installedName.isBlank()) "保持原值" else installedName,
-                        value = versionName,
-                        onValueChange = { versionName = it },
-                    )
-                    VersionRow(
-                        title = "版本号",
-                        placeholder = if (installedCode > 0) installedCode.toString() else "保持原值",
-                        value = versionCode,
-                        onValueChange = { versionCode = it.filter { ch -> ch.isDigit() } },
-                    )
-                    NoteText("留空则沿用当前应用的真实版本信息。")
+                item {
+                    SettingGroup("版本信息") {
+                        VersionRow(
+                            title = "版本名",
+                            placeholder = if (installedName.isBlank()) "保持原值" else installedName,
+                            value = versionName,
+                            onValueChange = { versionName = it },
+                        )
+                        VersionRow(
+                            title = "版本号",
+                            placeholder = if (installedCode > 0) installedCode.toString() else "保持原值",
+                            value = versionCode,
+                            onValueChange = { versionCode = it.filter { ch -> ch.isDigit() } },
+                        )
+                        NoteText("留空则沿用当前应用的真实版本信息。")
+                    }
                 }
-            }
-            item {
-                SettingGroup("打包选项") {
-                    SwitchLine(
-                        title = "文件提供器",
-                        subtitle = "提供给系统的文件访问组件，可在无 Root 权限时管理 data 目录文件（来自 MT 管理器）",
-                        checked = fileProvider,
-                        onChange = { fileProvider = it },
-                    )
-                    SwitchLine(
-                        title = "动态模式",
-                        subtitle = "内核动态接管类加载",
-                        checked = dynamicMode,
-                        onChange = { dynamicMode = it },
-                    )
+                item {
+                    SettingGroup("打包选项") {
+                        SwitchLine(
+                            title = "文件提供器",
+                            subtitle = "提供给系统的文件访问组件，可在无 Root 权限时管理 data 目录文件（来自 MT 管理器）",
+                            checked = fileProvider,
+                            onChange = { fileProvider = it },
+                        )
+                        SwitchLine(
+                            title = "动态模式",
+                            subtitle = "内核动态接管类加载",
+                            checked = dynamicMode,
+                            onChange = { dynamicMode = it },
+                        )
+                    }
                 }
-            }
-            item {
-                SettingGroup("实验性") {
-                    SwitchLine(
-                        title = "强行覆盖安装",
-                        subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
-                        checked = forceOverwrite,
-                        onChange = { on ->
-                            
-                            if (on && !ShizukuInstaller.forceOverwriteReady()) {
-                                
-                                forceOverwriteError =
-                                    ShizukuInstaller.forceOverwriteBlockReason().ifBlank {
-                                        "当前环境不支持强行覆盖安装"
-                                    }
-                            } else {
-                                forceOverwrite = on
-                                onForceOverwriteChange(on)
-                            }
-                        },
-                    )
-                    NoteText(forceOverwriteNote)
+                item {
+                    SettingGroup("实验性") {
+                        // 入口 Hook 不再是"隐藏入口/降低检测"：它只是在工厂注入之外**额外**插一个
+                        // ContentProvider 备用入口（会新增清单组件），因此默认关、且与档位彻底解耦。
+                        SwitchLine(
+                            title = "入口 Hook",
+                            subtitle = "实验：额外插入 ContentProvider 备用入口，仍保留工厂注入。",
+                            checked = entryHook,
+                            onChange = { on ->
+                                entryHook = on
+                                onSignatureModeChange(sigMode, bypass, on)
+                            },
+                        )
+                        SwitchLine(
+                            title = "强行覆盖安装",
+                            subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
+                            checked = forceOverwrite,
+                            onChange = { on ->
+                                if (on && !ShizukuInstaller.forceOverwriteReady()) {
+                                    forceOverwriteError =
+                                        ShizukuInstaller.forceOverwriteBlockReason().ifBlank {
+                                            "当前环境不支持强行覆盖安装"
+                                        }
+                                } else {
+                                    forceOverwrite = on
+                                    onForceOverwriteChange(on)
+                                }
+                            },
+                        )
+                        NoteText(forceOverwriteNote)
+                    }
                 }
-            }
             }
             item { NoteText("点「返回」会保留打包结果，不必重新打包。") }
         }
@@ -310,20 +373,20 @@ internal fun ConfigScreen(
         )
     }
     if (showBypassDialog) {
+        // 选中值直接用派生出来的 bypassKey（非预设组合传空串，五档都不打勾）；
+        // 选中后只改 (sigMode, bypassLevel) 两项，入口 Hook 不再被档位顺手重置成 true。
         ChoiceDialog(
             title = "过签方案",
-            options = BYPASS_MODES.map { Triple(it, it.name, it.desc) },
-            selected = BYPASS_MODES.firstOrNull { it.key == bypassKey } ?: BYPASS_MODES[1],
-            onSelect = { mode ->
-                bypassKey = mode.key
-                entryHook = mode.key == "stealth"
-                when (mode.key) {
-                    "none" -> { sigMode = SettingsStore.SIG_MODE_OFF; bypass = 3 }
-                    "basic" -> { sigMode = SettingsStore.SIG_MODE_JAVA; bypass = 3 }
-                    "high" -> { sigMode = SettingsStore.SIG_MODE_JAVA; bypass = 2 }
-                    "extreme" -> { sigMode = SettingsStore.SIG_MODE_JAVA_FILE; bypass = 2 }
-                    "seccomp" -> { sigMode = SettingsStore.SIG_MODE_JAVA; bypass = 1 }
-                    "stealth" -> { sigMode = SettingsStore.SIG_MODE_DEEP; bypass = 2 }
+            options = BYPASS_MODES.map { Triple(it.key, it.name, it.desc) },
+            selected = bypassKey ?: "",
+            onSelect = { key ->
+                BYPASS_MODES.firstOrNull { it.key == key }?.let { mode ->
+                    sigMode = mode.sigMode
+                    bypass = mode.bypassLevel
+                    // 需要内嵌的档位默认走 FPA 动态加载（产物只保留原包 + 运行层），
+                    // 避免"原条目 + xp/source.apk"双份体积；可在「更多」里手动关掉。
+                    dynamicMode = mode.key == "file" || mode.key == "seccomp" || mode.key == "extreme"
+                    onSignatureModeChange(mode.sigMode, mode.bypassLevel, entryHook)
                 }
             },
             onDismiss = { showBypassDialog = false },
@@ -441,32 +504,6 @@ private fun AppHeaderCard(icon: android.graphics.drawable.Drawable?, name: Strin
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun <T> ChipRow(
-    options: List<Pair<T, String>>,
-    selected: T,
-    onSelect: (T) -> Unit,
-) {
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        options.forEach { (value, label) ->
-            Box(Modifier.weight(1f)) {
-                Chip(
-                    text = label,
-                    selected = value == selected,
-                    onClick = { onSelect(value) },
-                    fill = true,
                 )
             }
         }
@@ -661,7 +698,7 @@ private fun MoreHeader(expanded: Boolean, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ChoiceRow(value: String, subtitle: String, onClick: () -> Unit) {
+private fun ChoiceRow(value: String, subtitle: String = "", onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -671,11 +708,14 @@ private fun ChoiceRow(value: String, subtitle: String, onClick: () -> Unit) {
     ) {
         Column(Modifier.weight(1f)) {
             Text(value, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                subtitle,
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            // 描述只在选择弹窗里展示；折叠态只留档位名，避免一屏全是说明文字。
+            if (subtitle.isNotBlank()) {
+                Text(
+                    subtitle,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
         Spacer(Modifier.width(12.dp))
         Text(
