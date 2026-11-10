@@ -32,7 +32,18 @@ public class AppEntry extends AppComponentFactory {
     private static final String CONFIG_ENTRY = "xp/config.json";
     private static final String RUNTIME_CLASS = "io.xpatch.core.CoreEntry";
 
+    /**
+     * 只表示"已经注入成功"。注入失败时保持 false，允许后续入口（provider 的 onCreate、
+     * 另一个 ClassLoader 的 factory 回调）重试；旧实现先置位再注入，一次失败就永久静默。
+     */
     private static volatile boolean injected;
+    /**
+     * 注入进行中标记（与 injected 分开）：XpProvider.onCreate 可能在
+     * CoreEntry.loadAppInPack → startInit 的同一次调用栈里重入 inject()；
+     * synchronized 对同线程可重入，只靠 injected 会创建第二个 runtime dex
+     * classloader，导致 XpInit/静态状态各跑一遍，模拟器上直接 SIGSEGV。
+     */
+    private static volatile boolean injecting;
     private static AppComponentFactory delegate;
     private static ApplicationInfo selfInfo;
 
@@ -42,32 +53,59 @@ public class AppEntry extends AppComponentFactory {
         return cl;
     }
 
-    public static synchronized void ensureInjected(ClassLoader cl, ApplicationInfo info) {
-        inject(cl, info);
+    public static synchronized boolean ensureInjected(ClassLoader cl, ApplicationInfo info) {
+        return inject(cl, info);
     }
 
-    private static synchronized void inject(ClassLoader cl, ApplicationInfo info) {
+    /**
+     * 注入内核运行时 dex。
+     *
+     * @return true 表示 CoreEntry.loadAppInPack 已经执行完成；调用方（XpProvider）据此决定
+     *         onCreate 的返回值，用户侧才能从"provider 创建失败"看到降级，而不是假装正常。
+     */
+    private static synchronized boolean inject(ClassLoader cl, ApplicationInfo info) {
         if (injected) {
-            return;
+            return true;
         }
-        injected = true;
-        selfInfo = info;
+        if (injecting) {
+            // 同线程重入（provider.onCreate 在 startInit 调用栈里再次触发）：
+            // 复用正在进行的注入，绝不能再建一个 runtime dex classloader。
+            Log.i(TAG, "注入进行中，跳过重入调用");
+            return true;
+        }
+        injecting = true;
         try {
-            byte[] dex = readEntry(info.sourceDir, RUNTIME_ENTRY);
-            if (dex == null || dex.length == 0) {
-                Log.e(TAG, "运行时 dex 缺失");
-                fatal("运行时 dex 缺失：" + RUNTIME_ENTRY, new IllegalStateException("empty entry"));
-                return;
+            if (info == null) {
+                info = resolveApplicationInfo();
             }
-            ClassLoader runtime = new dalvik.system.InMemoryDexClassLoader(
-                    new ByteBuffer[]{ByteBuffer.wrap(dex)}, null, ClassLoader.getSystemClassLoader());
-            Class<?> entry = Class.forName(RUNTIME_CLASS, true, runtime);
-            Method method = entry.getMethod("loadAppInPack", ClassLoader.class, ApplicationInfo.class);
-            method.invoke(null, cl, info);
-            Log.i(TAG, "运行时已注入：" + info.packageName);
-        } catch (Throwable t) {
-            Log.e(TAG, "运行时注入失败", t);
-            fatal("注入运行时到 " + info.packageName, t);
+            if (info == null) {
+                Log.e(TAG, "缺少 ApplicationInfo，无法注入");
+                fatal("注入运行时：无法解析 ApplicationInfo", new IllegalStateException("no ApplicationInfo"));
+                return false;
+            }
+            selfInfo = info;
+            try {
+                byte[] dex = readEntry(info.sourceDir, RUNTIME_ENTRY);
+                if (dex == null || dex.length == 0) {
+                    Log.e(TAG, "运行时 dex 缺失");
+                    fatal("运行时 dex 缺失：" + RUNTIME_ENTRY, new IllegalStateException("empty entry"));
+                    return false;
+                }
+                ClassLoader runtime = new dalvik.system.InMemoryDexClassLoader(
+                        new ByteBuffer[]{ByteBuffer.wrap(dex)}, null, ClassLoader.getSystemClassLoader());
+                Class<?> entry = Class.forName(RUNTIME_CLASS, true, runtime);
+                Method method = entry.getMethod("loadAppInPack", ClassLoader.class, ApplicationInfo.class);
+                method.invoke(null, cl, info);
+                injected = true;
+                Log.i(TAG, "运行时已注入：" + info.packageName);
+                return true;
+            } catch (Throwable t) {
+                Log.e(TAG, "运行时注入失败", t);
+                fatal("注入运行时到 " + info.packageName, t);
+                return false;
+            }
+        } finally {
+            injecting = false;
         }
     }
 
@@ -87,9 +125,9 @@ public class AppEntry extends AppComponentFactory {
             Log.w(TAG, "读取原厂工厂名失败：" + t);
         }
         if (name == null || name.length() == 0 || isSelf(name)) {
-            
-            
-            
+            // 配置缺失或指回自身时不要委派：指回自身会造成无限递归；配置缺失时落到 super
+            // 会因为"应用 Application 类不在该 ClassLoader 中"而抛 ClassNotFoundException，
+            // 两者都是打开即闪退。
             if (name != null && name.length() > 0) {
                 Log.w(TAG, "忽略指回自身的工厂：" + name);
             }
@@ -108,29 +146,26 @@ public class AppEntry extends AppComponentFactory {
         return factory;
     }
 
+    /** 判断配置里的工厂名是否指回引导桩自身（指回自身必须拒绝，否则无限递归）。 */
     private static boolean isSelf(String name) {
         return AppEntry.class.getName().equals(name)
             || "io.xpatch.stub.AppEntry".equals(name);
     }
 
-    
-
-
-
-
-
-
-
-
-
-
-
+    /**
+     * 引导失败留证。
+     *
+     * 不变量：这里绝不允许依赖内核里的任何类，也绝不允许抛异常——此刻内核可能根本没加载起来，
+     * 而"闪退后还能问话"全靠这个文件。所以只用最朴素的 FileOutputStream 独立落盘，写入全程吞异常。
+     * 行首必须是 [yyyy-MM-dd'T'HH:mm:ss.SSS]，时间戳紧跟 ']'、中间不能有空格，
+     * 否则管理器 RuntimeLogStore.headerStamp 会判成"不是一条日志的开头"，整段（含堆栈）被丢弃。
+     */
     private static void fatal(String stage, Throwable t) {
         Log.e(TAG, "引导失败：" + stage, t);
         try {
             ApplicationInfo info = selfInfo;
-            
-            
+            // 引导阶段可能还没拿到 ApplicationInfo（instantiateClassLoader 之前就崩），
+            // 这时从当前进程的 ActivityThread 兜底解析。
             if (info == null) {
                 info = resolveApplicationInfo();
             }
@@ -143,7 +178,7 @@ public class AppEntry extends AppComponentFactory {
             }
             String text = "[" + new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS", Locale.US)
                 .format(new Date())
-                + " ] 引导桩 -> 引导失败于 " + stage
+                + "] 引导桩 -> 引导失败于 " + stage
                 + "\n包名: " + pkg
                 + "\n进程: " + readProcessName()
                 + "\nsourceDir: " + (info != null ? info.sourceDir : "?")
@@ -163,11 +198,11 @@ public class AppEntry extends AppComponentFactory {
                 }
             }
         } catch (Throwable ignored) {
-            
+            // 日志本身绝不允许成为新的崩溃源。
         }
     }
 
-    
+    /** 从 ActivityThread 读取 ApplicationInfo（隐藏 API，失败即返回 null）。 */
     private static ApplicationInfo resolveApplicationInfo() {
         try {
             Class<?> at = Class.forName("android.app.ActivityThread");
@@ -203,7 +238,7 @@ public class AppEntry extends AppComponentFactory {
         return null;
     }
 
-    
+    /** 从 /proc/self/cmdline 推断包名，作为最后的兜底。 */
     private static String guessPackageName() {
         String proc = readProcessName();
         if (proc == null || proc.length() == 0 || "?".equals(proc)) {
@@ -273,10 +308,9 @@ public class AppEntry extends AppComponentFactory {
         try {
             return super.instantiateApplication(cl, className);
         } catch (Throwable t) {
-            
-            
-            
-            
+            // 原厂工厂没拿到时，系统默认实现要求 Application 类就在传入的 ClassLoader 里；
+            // Tencent 系应用（QFixApplicationImplProxy）恰好不满足，于是进程在 makeApplication
+            // 阶段直接崩掉，表现就是"打开无限闪退且没有任何日志"——这条分支正是 fatal() 存在的理由。
             fatal("super.instantiateApplication(" + className + ")", t);
             throw t;
         }
@@ -322,14 +356,11 @@ public class AppEntry extends AppComponentFactory {
         return super.instantiateProvider(cl, className);
     }
 
-    
-
-
-
-
-
-
-
+    /**
+     * xp/config.json 里"原厂工厂类名"的两个历史键。历史版本打包器写的是 app_component_name，
+     * 后来的版本写 factory；旧版引导桩只认其中一个，会静默读不到原厂工厂。
+     * 这里按顺序全部尝试，是兼容性约束，不要"清理"成单键。
+     */
     private static final String[] FACTORY_KEYS = {
         "app_component_name",
         "factory",

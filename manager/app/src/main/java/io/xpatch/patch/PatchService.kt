@@ -97,9 +97,35 @@ class PatchService(private val context: Context) {
         val signed = File(workDir, "$packageName-xpatch.apk")
         unsigned.delete()
         signed.delete()
-        onLog("签名校验：" + SettingsStore.sigModeLabel(options.sigMode))
-        if (options.entryHook) {
-            onLog("入口 Hook 已开启（实验）：不改清单，需重新打包后生效")
+        onLog("过签模式：" + SettingsStore.sigModeLabel(options.sigMode))
+        // 不变量：只要不是"纯 Java 门面 + bypass>=2"，产物必须自带字节级原包。
+        // 文件层（java_file）与原生 openat 重定向（bypass=1）没有 xp/source.apk 就无法工作，
+        // 所以这里不看 UI 开关，直接强制内嵌，避免"选了增强档却静默降级"。
+        val sigMode = options.sigMode.trim().lowercase()
+        val embedSource = options.embedSource ||
+            (sigMode != SettingsStore.SIG_MODE_JAVA && sigMode != SettingsStore.SIG_MODE_OFF) ||
+            (options.bypassLevel == 1 && sigMode != SettingsStore.SIG_MODE_OFF)
+        // FPA 的动态加载方式：产物只保留清单/资源/原生库 + xp/source.apk，
+        // 应用代码与 assets 由原包提供；这样不会出现"原条目 + 原包"双份体积。
+        // File/Seccomp/Extreme 这些必须内嵌的档位默认开启；用户显式关掉才走旧的静态双份。
+        val dynamicMode = options.dynamicMode || embedSource
+        val effectiveEmbed = embedSource || dynamicMode
+        if (dynamicMode) {
+            onLog("动态加载已开启（FPA 方式）：产物只保留原包 + 运行层，避免体积翻倍")
+        }
+        if (effectiveEmbed) {
+            onLog(
+                if (options.embedSource || dynamicMode) {
+                    "已内嵌原始安装包（动态加载/按设置）"
+                } else {
+                    "已内嵌原始安装包（文件层需要）"
+                },
+            )
+        }
+        if (options.entryHook && !dynamicMode) {
+            onLog("入口 Hook 已开启（实验）：额外插入 io.xpatch.stub.XpProvider 备用入口，工厂注入保持不变")
+        } else if (options.entryHook) {
+            onLog("动态加载：provider 备用入口已关闭（切换后 stub 不在原包里），仅保留工厂注入")
         }
         val result = ApkPatcher(context).patch(
             source,
@@ -107,12 +133,12 @@ class PatchService(private val context: Context) {
             ApkPatcher.Options(
                 bypassLevel = options.bypassLevel,
                 hookCore = options.hookCore.index,
-                dynamicMode = options.dynamicMode,
+                dynamicMode = dynamicMode,
                 fileProvider = options.fileProvider,
                 injectSignature = options.injectSignature,
                 versionName = options.versionName,
                 versionCode = options.versionCode,
-                embedSource = options.embedSource,
+                embedSource = effectiveEmbed,
                 sigMode = options.sigMode,
                 entryHook = options.entryHook,
             ),
@@ -125,6 +151,11 @@ class PatchService(private val context: Context) {
         } else {
             null
         }
+        // signature 级 MODULE_CRASH 权限只在"目标应用与管理器同证书"时授予；非内置签名档
+        // （FPA/NPatch/自定义）下模块熔断广播会被系统静默丢弃，必须让用户在产物日志里看到。
+        if (profile != null && profile.kind != SignatureStore.Kind.BUILTIN) {
+            onLog("提示：非内置签名档下，模块保护通知可能无法送达管理器（signature 权限不跨证书授予）")
+        }
         if (profile != null) {
             onLog("重打包完成，开始签名")
             onProgress(85)
@@ -132,7 +163,7 @@ class PatchService(private val context: Context) {
             onLog("已用「${profile.name}」完成 V2+V3 签名")
             onProgress(92)
         } else {
-            onLog("跳过签名，产物保持原签名")
+            onLog("未签名产物通常无法安装；如需安装请选择签名")
             onProgress(92)
             unsigned.copyTo(signed, overwrite = true)
         }

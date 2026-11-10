@@ -60,12 +60,22 @@ class ApkPatcher(private val context: Context) {
         var manifest: ByteArray
         var originalManifest: ByteArray
         val originalFactory: String?
+        var providerReady = false
         val temps = ArrayList<File>()
 
         RandomAccessFile(sourceApk, "r").use { source ->
             entries = readCentralDirectory(source, sourceApk.length())
         }
         onLog("解析完成，共 ${entries.size} 个条目")
+
+        // 上一版产物里留存的原始清单。重复打包时输入清单可能已经被我们改写过，
+        // 直接把它写回 xp/source.manifest 会让"重建原包"带着 io.xpatch.stub 的痕迹（审查 P2-17），
+        // 所以在剥离前先把这份正确值读出来备用。
+        val recordedManifest = runCatching {
+            RandomAccessFile(sourceApk, "r").use { src ->
+                entries.firstOrNull { it.name == ORIGINAL_MANIFEST_ENTRY }?.let { readEntry(src, it) }
+            }
+        }.getOrNull()
 
         var depth = 0
         while (
@@ -102,6 +112,23 @@ class ApkPatcher(private val context: Context) {
             depth++
         }
 
+        // 兜底闸门：要内嵌原包时，最终源自身还带 xp/source.apk 说明上面的剥离没真正
+        // 还原到原始包；此时再写一份 source.apk 就是把上一代补丁包嵌套进来，体积逐次翻倍。
+        // 宁可让这次打包失败并报错，也不能生成一个会无限膨胀的产物。
+        if (options.embedSource) {
+            val stillInjected = runCatching {
+                java.util.zip.ZipFile(effectiveSource).use { zip ->
+                    java.util.Collections.list(zip.entries()).any { entry ->
+                        INJECTED_PREFIXES.any { entry.name.startsWith(it) }
+                    }
+                }
+            }.getOrDefault(false)
+            check(!stillInjected) {
+                "源包内仍含 XPatch 注入条目，无法还原原始安装包；拒绝内嵌以避免产物逐次翻倍。" +
+                    "请改用原始 APK 作为输入，或先卸载后重新选择安装包。"
+            }
+        }
+
         if (effectiveSource != sourceApk) {
             onLog("剥离完成，共 $depth 层，最终源 ${effectiveSource.length() / 1024 / 1024} MB")
         }
@@ -110,17 +137,50 @@ class ApkPatcher(private val context: Context) {
         }
         assertClean(entries, effectiveSource, onLog)
 
+        // FPA 动态加载：代码由 xp/source.apk 在运行时提供；除 classes*.dex 和签名文件外，
+        // 其余条目全部保留。不能只保留 res/assets/lib：MT 管理器这类加固包把资源 XML
+        // 放在 APK 根目录（如 ܽۨ֫.xml），只按 res/ 前缀过滤会直接 Resources$NotFoundException。
+        if (options.dynamicMode && options.embedSource) {
+            val before = entries.size
+            entries = entries.filter { entry ->
+                !isBootDexName(entry.name) &&
+                    !entry.name.startsWith("META-INF/") &&
+                    entry.name != "stamp-cert-sha256"
+            }
+            onLog("动态加载：保留 ${entries.size}/$before 个条目（清单/资源/assets/原生库/根目录资源），代码由原包提供")
+        }
+
         RandomAccessFile(effectiveSource, "r").use { source ->
             val manifestEntry = entries.firstOrNull { it.name == MANIFEST }
                 ?: error("APK 缺少 AndroidManifest.xml")
-            originalManifest = readEntry(source, manifestEntry)
-            val editor = AxmlEditor(originalManifest)
+            val inputManifest = readEntry(source, manifestEntry)
+            val editor = AxmlEditor(inputManifest)
             val manifestPackage = editor.readAttribute("manifest", "package").orEmpty()
-            originalFactory = sanitizeFactory(editor.readApplicationAttribute(ATTR_FACTORY_NAME), onLog)
-            var patched = if (options.entryHook && manifestPackage.isNotBlank()) {
-                editor.addProvider("io.xpatch.stub.XpProvider", "$manifestPackage.xpatch")
-            } else {
-                editor.setApplicationAttribute(ATTR_FACTORY_NAME, STUB_CLASS)
+            // 编辑永远基于"输入清单"；写回 xp/source.manifest 的才是"原始清单"，两者不能混用。
+            originalManifest = pickOriginalManifest(
+                recorded = if (effectiveSource == sourceApk) recordedManifest else null,
+                input = inputManifest,
+                expectedPackage = manifestPackage,
+                onLog = onLog,
+            )
+            val inputFactory = sanitizeFactory(editor.readApplicationAttribute(ATTR_FACTORY_NAME), onLog)
+            originalFactory = inputFactory ?: recoverFactory(originalManifest, onLog)
+
+            // 工厂注入始终写入：它在每个进程的 instantiateClassLoader 阶段就生效，既早于
+            // Application.attachBaseContext，也天然覆盖多进程；provider 只是 entryHook 的备用入口
+            // （审查 P2-1/P2-16：provider.onCreate 晚于 attachBaseContext，且只覆盖主进程）。
+            var patched = editor.setApplicationAttribute(ATTR_FACTORY_NAME, STUB_CLASS)
+            if (options.entryHook && !options.dynamicMode) {
+                if (manifestPackage.isBlank()) {
+                    onLog("清单缺少 package 属性，无法生成 provider authority，仅保留工厂注入")
+                } else {
+                    val authority = "$manifestPackage.xpatch"
+                    if (editor.hasProvider(XP_PROVIDER_CLASS, authority)) {
+                        onLog("清单已含 $XP_PROVIDER_CLASS，复用既有 provider，不重复插入")
+                    }
+                    patched = AxmlEditor(patched).addProvider(XP_PROVIDER_CLASS, authority)
+                    providerReady = true
+                }
             }
             options.versionName?.takeIf { it.isNotBlank() }?.let { name ->
                 patched = AxmlEditor(patched).setStringAttribute("manifest", "versionName", name)
@@ -130,7 +190,10 @@ class ApkPatcher(private val context: Context) {
             }
             manifest = patched
         }
-        onLog("已改写 appComponentFactory 与版本信息")
+        onLog(if (providerReady) "已写入工厂注入（+ provider 备用入口）" else "已写入工厂注入")
+        // 最后一步再补权限声明：它只影响"模块熔断广播能否送达管理器"，失败时保留其它注入
+        // （工厂 / provider / 版本），理由见 injectModuleCrashPermission 的注释。
+        manifest = injectModuleCrashPermission(manifest, onLog)
         if (options.versionName?.isNotBlank() == true || options.versionCode != null) {
             onLog("自定义版本：" + listOfNotNull(
                 options.versionName?.takeIf { it.isNotBlank() }?.let { "versionName=$it" },
@@ -139,7 +202,8 @@ class ApkPatcher(private val context: Context) {
         }
         onProgress(25)
 
-        val bootDexName = "classes${nextBootDexIndex(entries)}.dex"
+        val bootDexIndex = nextBootDexIndex(entries)
+        val bootDexName = if (bootDexIndex <= 1) "classes.dex" else "classes$bootDexIndex.dex"
         val packageInfo = packageInfoOf(effectiveSource)
         val config = buildConfig(packageInfo, originalFactory, options, effectiveSource)
 
@@ -198,6 +262,83 @@ class ApkPatcher(private val context: Context) {
             return null
         }
         return factory
+    }
+
+    /**
+     * 选出要写回 `xp/source.manifest` 的"原始清单"。
+     *
+     * 不变量：这个条目描述的是**未注入**的清单，否则文件层重建出的"原包"会带着
+     * `io.xpatch.stub.AppEntry` / 我们的 provider，任何清单级自校验都会命中（审查 P2-17）。
+     * 因此优先复用上一版记录的值；只有它缺失或解析失败时才退回输入清单。
+     */
+    private fun pickOriginalManifest(
+        recorded: ByteArray?,
+        input: ByteArray,
+        expectedPackage: String,
+        onLog: (String) -> Unit,
+    ): ByteArray {
+        if (recorded == null) return input
+        val parsed = runCatching { AxmlEditor(recorded) }.getOrNull()
+        val packageName = parsed?.let { runCatching { it.readAttribute("manifest", "package") }.getOrNull() }
+        if (parsed == null || packageName == null) {
+            onLog("xp/source.manifest 解析失败，退回输入清单作为原始清单")
+            return input
+        }
+        // 记录值优先，但包名必须与输入清单一致，否则宁可用退化值也不写错包。
+        if (expectedPackage.isNotBlank() && packageName != expectedPackage) {
+            onLog("xp/source.manifest 的包名 $packageName 与输入清单不一致，退回输入清单")
+            return input
+        }
+        val factory = runCatching { parsed.readApplicationAttribute(ATTR_FACTORY_NAME) }.getOrNull()
+        if (factory != null && (factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES)) {
+            onLog("xp/source.manifest 已含引导桩工厂，更早的原始清单已不可恢复")
+        } else {
+            onLog("复用上一版记录的原始清单 xp/source.manifest")
+        }
+        return recorded
+    }
+
+    /**
+     * 输入清单的 appComponentFactory 若是上一版写入的引导桩，[sanitizeFactory] 会丢弃它；
+     * 此时从原始清单把真实工厂名找回来，避免 config 的 app_component_name 退化成空串。
+     */
+    private fun recoverFactory(originalManifest: ByteArray, onLog: (String) -> Unit): String? {
+        val factory = runCatching {
+            AxmlEditor(originalManifest).readApplicationAttribute(ATTR_FACTORY_NAME)
+        }.getOrNull()
+        if (factory.isNullOrBlank() || factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES) return null
+        onLog("从原始清单恢复 appComponentFactory=$factory")
+        return factory
+    }
+
+    /**
+     * 往目标清单注入模块保护权限（[MODULE_CRASH_PERMISSION]）。
+     *
+     * 为什么需要：W5 的 `ModuleCrashReceiver` 声明了 signature 级 `android:permission`，
+     * 而 `Context.sendBroadcast(intent, permission)` 校验的是**发送方是否持有该权限**。
+     * 被注入的应用自己不在清单里声明 `<uses-permission>` 就拿不到授予，广播会被系统丢弃，
+     * 模块熔断完全失效——且这条链路失效是静默的（系统丢广播，运行时没有任何报错）。
+     *
+     * 不变量：注入失败**不中断打包**。缺这条声明只降级"模块熔断通知"这一条链路，
+     * 清单里其它注入（工厂 / provider / 版本）仍然有效；把整个打包 fail 掉会让用户
+     * 连"已安装但收不到熔断事件"这个可诊断状态都拿不到。代价必须是可见的日志，
+     * 所以失败分支明确写出后果，而不是只写"跳过"。
+     */
+    private fun injectModuleCrashPermission(manifest: ByteArray, onLog: (String) -> Unit): ByteArray {
+        val editor = AxmlEditor(manifest)
+        return try {
+            if (editor.hasUsesPermission(MODULE_CRASH_PERMISSION)) {
+                onLog("清单已含 $MODULE_CRASH_PERMISSION，跳过权限注入")
+                manifest
+            } else {
+                val patched = editor.addUsesPermission(MODULE_CRASH_PERMISSION)
+                onLog("已写入权限声明 $MODULE_CRASH_PERMISSION")
+                patched
+            }
+        } catch (error: Exception) {
+            onLog("清单注入权限失败，模块保护广播可能不可达（${error.javaClass.simpleName}: ${error.message}）")
+            manifest
+        }
     }
 
     private fun readRawEntry(source: RandomAccessFile, entry: Entry): ByteArray {
@@ -295,15 +436,24 @@ class ApkPatcher(private val context: Context) {
     ): File? = runCatching {
         val outerSize = sourceApk.length()
 
-        val candidates = entries            .filter { it.name.endsWith(APK_SUFFIX, ignoreCase = true) }
-            .filter { it.uncompressedSize >= MIN_EMBEDDED }
+        // xp/source.apk 是明确的内嵌原始包标记：优先且无条件下选它。
+        // 不能只靠 score/100KB 阈值——小应用的原包可能只有几十 KB，被阈值挡掉后
+        // 就会退回“把整个已补丁 APK 再内嵌一次”，每打一次包体积翻一倍。
+        val preferred = entries.firstOrNull {
+            it.name == SOURCE_ENTRY && it.uncompressedSize > 0
+        }
+        val candidates = entries
+            .filter { it.name.endsWith(APK_SUFFIX, ignoreCase = true) }
+            .filter { it.name == SOURCE_ENTRY || it.uncompressedSize >= MIN_EMBEDDED }
             .mapNotNull { entry ->
                 val score = scoreEmbedded(entry, outerSize)
                 if (score < MIN_EMBEDDED_SCORE) null else entry to score
             }
             .sortedByDescending { it.second }
 
-        val chosen = candidates.firstOrNull() ?: return@runCatching null
+        val chosen = preferred?.let { it to Int.MAX_VALUE }
+            ?: candidates.firstOrNull()
+            ?: return@runCatching null
         val embedded = chosen.first
         val target = File(
             sourceApk.parentFile,
@@ -342,7 +492,7 @@ class ApkPatcher(private val context: Context) {
             }
         }
 
-        if (target.length() < MIN_EMBEDDED) {
+        if (embedded.name != SOURCE_ENTRY && target.length() < MIN_EMBEDDED) {
             target.delete()
             return@runCatching null
         }
@@ -416,11 +566,15 @@ class ApkPatcher(private val context: Context) {
         embedSource: Boolean,
     ) {
         val added = buildList {
-            add(Added("xp/source.manifest", DEFLATED) { originalManifest })
+            add(Added(ORIGINAL_MANIFEST_ENTRY, DEFLATED) { originalManifest })
             add(Added(bootDexName, DEFLATED) { asset("xp/stub.dex") })
             add(Added(CORE_ENTRY, DEFLATED) { asset("xp/runtime.dex") })
             add(Added(HOOK_DEX_ENTRY, DEFLATED) { asset("xp/hook_core.dex") })
             add(Added(HOOK_SO_ENTRY, STORED) { asset("xp/hook_core.so") })
+            // x86_64 模拟器 / 平板的备用原生库。loader 按 Build.SUPPORTED_ABIS 优先找
+            // xp/hook_core_<abi>.so，找不到才回退上面的通用 arm64 资产；两个都注入，
+            // 单包约 +1.15 MB，仍比修复前的单个 1.9 MB 未 strip 资产小。
+            add(Added("xp/hook_core_x86_64.so", STORED) { asset("xp/hook_core_x86_64.so") })
             add(Added("xp/xp89.dex", DEFLATED) { asset("xp/xp89.dex") })
             add(Added("xp/xp100.dex", DEFLATED) { asset("xp/xp100.dex") })
             add(Added("xp/xp101.dex", DEFLATED) { asset("xp/xp101.dex") })
@@ -428,7 +582,7 @@ class ApkPatcher(private val context: Context) {
             if (embedSource) add(Added(SOURCE_ENTRY, STORED, null))
             add(Added(CONFIG_ENTRY, DEFLATED) { config.toByteArray() })
             add(Added("xp/pkg", DEFLATED) { packageName.toByteArray() })
-            add(Added("xp/file_provider", DEFLATED) { ByteArray(0) })
+            add(Added("xp/file_provider", DEFLATED) { asset("xp/file_provider.dex") })
         }
 
         val addedNames = added.mapTo(HashSet()) { it.name }
@@ -828,17 +982,22 @@ class ApkPatcher(private val context: Context) {
     private fun asset(name: String): ByteArray = context.assets.open(name).use { it.readBytes() }
 
     private fun nextBootDexIndex(entries: List<Entry>): Int {
-        var max = 1
+        var max = 0
+        var found = false
         for (entry in entries) {
             val name = entry.name
             if (name == "classes.dex") {
+                found = true
                 max = maxOf(max, 1)
             } else if (name.startsWith("classes") && name.endsWith(".dex")) {
                 val index = name.removePrefix("classes").removeSuffix(".dex").toIntOrNull() ?: continue
+                found = true
                 max = maxOf(max, index)
             }
         }
-        return max + 1
+        // 动态加载产物会丢掉原 classes*.dex：此时必须把引导桩写成 classes.dex，
+        // 否则只有 classes2.dex，ART 不会加载它，应用启动即 ClassNotFoundException。
+        return if (!found) 1 else max + 1
     }
 
     private fun buildConfig(
@@ -852,13 +1011,15 @@ class ApkPatcher(private val context: Context) {
         json.put("app_component_name", originalFactory.orEmpty())
         json.put("sign", signaturesJson(info))
         json.put("sig_mode", normalizeSigMode(options.sigMode))
-        json.put("entry_hook", options.entryHook)
+        json.put("entry_hook", options.entryHook && !options.dynamicMode)
         json.put("signing_details", signingDetailsJson(apk))
         json.put("ver", RUNTIME_VERSION)
         json.put("build_nonce", nonce())
         json.put("bypass_sign_type", options.bypassLevel)
         json.put("dynamic_mode", options.dynamicMode)
         json.put("file_provider", options.fileProvider)
+        // 运行时用它决定崩溃广播发给谁；管理器的包名不一定是 io.xpatch（可能有渠道后缀）。
+        json.put("manager_package", context.packageName)
         json.put("real_version_code", info?.longVersionCode ?: 0L)
         json.put("module_paths", JSONArray())
         return json.toString()
@@ -1000,11 +1161,16 @@ class ApkPatcher(private val context: Context) {
     private companion object {
         const val MANIFEST = "AndroidManifest.xml"
         const val SOURCE_ENTRY = "xp/source.apk"
+        const val ORIGINAL_MANIFEST_ENTRY = "xp/source.manifest"
         const val CORE_ENTRY = "xp/core.dex"
         const val CONFIG_ENTRY = "xp/config.json"
         const val HOOK_DEX_ENTRY = "xp/hook_core.dex"
         const val HOOK_SO_ENTRY = "xp/hook_core.so"
         const val STUB_CLASS = "io.xpatch.stub.AppEntry"
+        const val XP_PROVIDER_CLASS = "io.xpatch.stub.XpProvider"
+
+        /** W5 的 ModuleCrashReceiver 是 signature 级权限的接收端；发送方（本产物）必须自己声明。 */
+        const val MODULE_CRASH_PERMISSION = "io.xpatch.permission.MODULE_CRASH"
         const val ATTR_FACTORY_NAME = "appComponentFactory"
         const val RUNTIME_VERSION = 42
 
@@ -1022,12 +1188,14 @@ class ApkPatcher(private val context: Context) {
             "xp/core.dex",
             "xp/hook_core.dex",
             "xp/hook_core.so",
+            "xp/hook_core_x86_64.so",
             "xp/xp89.dex",
             "xp/xp100.dex",
             "xp/xp101.dex",
             "xp/xp102.dex",
             "xp/source.apk",
             "xp/o_app.apk",
+            ORIGINAL_MANIFEST_ENTRY,
             "xp/config.json",
             "xp/pkg",
             "xp/fp",
