@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    API 30 及以下的自动备份规则（android:fullBackupContent）。
+    API 31+ 走 data_extraction_rules.xml，两份必须保持一致，否则老设备仍会把
+    自定义签名私钥 / 模块熔断事件备份上云。
+-->
+<full-backup-content>
+    <exclude domain="sharedpref" path="signatures.xml" />
+    <exclude domain="sharedpref" path="module_guard.xml" />
+    <exclude domain="file" path="signatures/" />
+</full-backup-content>

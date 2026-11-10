@@ -1,5 +1,51 @@
 # 更新日志
 
+## 0.1.7（未发布）
+
+**过签 / 打包**
+
+- 「过签方案」新增最高档 `Extreme`：`deep + bypass=3`，同时打开严格校验
+  （`hasSigningCertificate`）、文件层路径重定向与 dobby/inline 混合 native 重定向；
+  旧版 `extreme` 只是名字，Mix 分支实际不可达，这次是真正三层叠加；
+- 折叠态配置卡只保留档位名，长描述移到选择弹窗；签名卡下多余的「覆盖安装」提示删除；
+- 修复重复打包体积翻倍：`xp/source.apk` 优先剥离（不再受 100 KB 阈值影响），
+  并在内嵌前校验最终源不再含 XPatch 注入条目；无法还原原始包时直接失败并提示，
+  不再把上一代补丁包嵌套进下一代产物；
+- File/Seccomp/Extreme 改为 FPA 式动态加载产物：只保留清单、资源表、`res/`、`lib/`
+  和 `xp/*`、`xp/source.apk`，不再复制原应用 `classes*.dex` 与 assets；运行时由
+  `dynamic_mode`/文件层从原包加载，首次打包也不会出现"原包 + 原条目"双份；动态档
+  关闭 provider 备用入口，仅保留工厂注入；
+- 动态档在 native io 重定向前预载 `xp/xp89..xp102` 与 `file_provider.dex`：
+  重定向后 `open(selfApk)` 会读到 `xp/source.apk`，之前模块 wrapper 会误报 missing；
+- `xp/file_provider` 不再是 0 字节：编译 `androidx.core.content.FileProvider` 为 12,888 B dex，
+  文件提供器开关真正可用；
+- 动态包装保留除 `classes*.dex`/`META-INF`/签名外的全部条目，MT 管理器这类把资源 XML
+  放在 APK 根目录的加固包不再 `Resources$NotFoundException`；
+- 日志页保持原 UI，只保留首屏分页和滚动/未铺满时自动补页的后端行为。
+
+**构建链**
+
+- `minSdk` 由 26 提到 29：与 README 的「兼容 Android 10 ~ 17」、内核 `--min-api 29`、
+  引导桩依赖的三参 `InMemoryDexClassLoader`（API 29 起）对齐。Android 8/9 不再能安装——
+  以前能装、能打包，但注入的产物在那些系统上根本不生效；
+- `buildStubDex` 不再把 javac/d8 的编译失败降级成警告：工具链齐全后编译失败直接让构建失败，
+  只有「构建机没装 SDK/javac」才仍按警告跳过并沿用已入库的 `stub.dex`。陈旧 `stub.dex` 会让
+  入口 Hook 产物在目标机上启动即 `ClassNotFoundException`，这种包一旦装出去无法回收；
+- `verifyStubDex` 默认严格（`xp.stub.verifyStrict=true`）并纳入 `assembleRelease`；
+  没有 `stub-dex.sha256` 基线时改为按 dex 内容校验（桩类描述符是否齐全），不再用修改时间判断——
+  新 clone 上以前必然误报，真正的陈旧反而抓不到；
+- `runtime/build-java.ps1` 的 `@argfile` 改为写无 BOM 的 UTF-8：Windows PowerShell 5.1 的
+  `Set-Content -Encoding UTF8` 会写 BOM，而 d8 遇到 BOM 直接 `InvalidPathException` 退出 1；
+  写出后还会断言 BOM 不存在。脚本本身改为 UTF-8 带 BOM 保存，5.1 才能正确解码中文注释；
+- 注释里的命令行上限改为实测值：`cmd.exe` 是 8,191 字符（不是 32K）；
+- 新增构建期版本门禁 `checkRuntimeVersion`（挂 `check` / `assembleRelease`）：
+  管理器 `ApkPatcher.RUNTIME_VERSION` 与内核 `CoreEntry.RUNTIME_VERSION` 不一致时构建失败，
+  避免「管理器写 42、内核是 43」这种错配流到用户手里。
+
+**说明**
+
+- 本段是 0.1.7 的发布前草稿：`versionCode`/`versionName` 仍是 7 / 0.1.6，发布时一并提升。
+
 ## 0.1.6
 
 **日志**

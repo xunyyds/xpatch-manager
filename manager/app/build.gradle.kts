@@ -38,7 +38,10 @@ android {
 
     defaultConfig {
         applicationId = "io.xpatch"
-        minSdk = 26
+        // 29 = Android 10。三个口径必须一致：README「兼容 Android 10 ~ 17」、内核 d8 --min-api 29、
+        // 引导桩依赖的三参 InMemoryDexClassLoader（API 29 起才有）。以前 minSdk=26 时 Android 8/9
+        // 能装能打包、产物却完全不注入（P2-30），与其假装支持不如在安装期就拒绝。
+        minSdk = 29
         targetSdk = 37
         versionCode = 7
         versionName = "0.1.6"
@@ -120,16 +123,21 @@ configurations.all {
 // 二进制，改了 java 却忘了重新编译很容易发生，所以这里把它接进构建：
 //
 //   buildStubDex : javac 编译 manager/stub/**/*.java → SDK 的 d8 生成 assets/xp/stub.dex
-//   verifyStubDex: 对比 stub.dex / 源码与 build/stub-dex.sha256，源码变了就提示重新生成
+//   verifyStubDex: 校验 stub.dex 确实由当前 manager/stub 源码生成
 //
-// 工具链缺失（找不到 SDK d8、javac 或 android.jar）时只打印警告并跳过，
-// 继续沿用已入库的 stub.dex，保证 assembleRelease 不会因此失败。
+// 失败策略（S-P1-2）分两类，不能混为一谈：
+//   - 「工具链缺失」（找不到 SDK d8、javac 或 android.jar）只是构建机环境问题，打 WARN 跳过，
+//     继续沿用已入库的 stub.dex；
+//   - 「工具链齐全但构建失败」（javac/d8 非 0 退出、编译错误、产物缺失/为空）一律
+//     throw GradleException。stub.dex 会被注入到第三方 APK：陈旧 dex 在工厂模式下只是少日志，
+//     在 entryHook 模式下清单里的 <provider> 指向不存在的类，目标应用启动即 ClassNotFoundException，
+//     用户只能卸载。这种包不该被构建出来。
 //
 // 开关（gradle.properties 或 -P 项目属性）：
 //   xp.stub.autoBuild    = true  是否在构建期自动生成 stub.dex，false 完全关闭
-//   xp.stub.verifyStrict = false verifyStubDex 不一致时是否让 check 失败（默认仅提示）
+//   xp.stub.verifyStrict = true  verifyStubDex 不一致时是否让构建失败（默认严格，已挂 assembleRelease）
 //   xp.stub.javaVersion  = 11    javac 的 source/target
-//   xp.stub.minApi       = 29    d8 --min-api（与内核一致，XPatch 支持 Android 10+）
+//   xp.stub.minApi       = 29    d8 --min-api（与内核 --min-api 及 app 的 minSdk 一致）
 //   xp.stub.sdkDir       = -     覆盖 local.properties 里的 sdk.dir
 // ---------------------------------------------------------------------------
 
@@ -160,7 +168,8 @@ val xpStubAutoBuild: Boolean = providers.gradleProperty("xp.stub.autoBuild").orN
 val xpStubVerifyStrict: Boolean = providers.gradleProperty("xp.stub.verifyStrict").orNull
     ?.trim()?.lowercase()
     ?.let { it == "true" || it == "on" || it == "1" || it == "yes" }
-    ?: false
+    // 默认严格：verifyStubDex 已挂到 check 与 assembleRelease，不一致就别发版（S-P1-2）。
+    ?: true
 
 val xpStubJavaVersion: String = providers.gradleProperty("xp.stub.javaVersion").orNull
     ?.trim()?.takeIf { it.isNotEmpty() }
@@ -194,11 +203,14 @@ val buildStubDexTask = tasks.register<BuildStubDexTask>("buildStubDex") {
 
 val verifyStubDexTask = tasks.register<VerifyStubDexTask>("verifyStubDex") {
     group = "xp"
-    description = "校验 assets/xp/stub.dex 与 build/stub-dex.sha256 记录是否一致（挂到 check，不阻塞 assemble）"
+    description = "校验 assets/xp/stub.dex 确实由 manager/stub 当前源码生成（默认严格，挂 check 与 assembleRelease）"
     if (xpStubSourceDir.isDirectory) sourceDir.fileValue(xpStubSourceDir)
     dexFile.set(xpStubDexFile)
     checksumFile.set(xpStubChecksumFile)
     strict.set(xpStubVerifyStrict)
+    // 先让 buildStubDex 跑一遍：这样校验的是「本次构建要打进 APK 的那份 dex」，
+    // 而不是上一次构建遗留的产物（两者只在 build/ 里重叠，容易看错对象）。
+    dependsOn(buildStubDexTask)
 }
 
 // 资源合并之前先产出 dex：preBuild 覆盖所有变体，merge*Assets 作为兜底
@@ -209,10 +221,12 @@ tasks.matching { it.name == "preBuild" }.configureEach {
 tasks.matching { it.name.startsWith("merge") && it.name.endsWith("Assets") }.configureEach {
     dependsOn(buildStubDexTask)
 }
-// 一致性校验只挂 check，assembleRelease / assembleDebug 不受影响。
-tasks.matching { it.name == "check" }.configureEach {
-    dependsOn(verifyStubDexTask)
-}
+// 一致性校验挂 check 与 release 打包路径（S-P1-2）：出厂的 APK 不允许带陈旧 stub.dex，
+// 而 debug 构建保持轻量，只会在显式跑 check / verifyStubDex 时才校验。
+tasks.matching { it.name == "check" || it.name == "assembleRelease" || it.name == "bundleRelease" }
+    .configureEach {
+        dependsOn(verifyStubDexTask)
+    }
 
 // ---------------------------------------------------------------------------
 // 引导桩构建链的工具函数
@@ -344,6 +358,53 @@ object XpStubDex {
         return hex(digest.digest())
     }
 
+    /** 读桩源码里的 `package a.b.c;`，没有包声明时返回空串。 */
+    private val packagePattern = Regex("""^\s*package\s+([\w.]+)\s*;""", RegexOption.MULTILINE)
+
+    fun packageOf(file: File): String =
+        packagePattern.find(file.readText(Charsets.UTF_8))?.groupValues?.get(1).orEmpty()
+
+    /**
+     * 每个桩源文件应该出现在 dex 里的类描述符（`Lio/xpatch/stub/AppEntry;`）。
+     *
+     * 用作「没有 sha256 基线时」的内容级判据：git 检出会把所有文件 mtime 设成检出时刻，
+     * 按 mtime 比较在新 clone 上必然误报（审查 P3-18），而类描述符是否存在与 mtime 无关。
+     */
+    fun expectedDescriptors(sourcesRoot: File): List<String> =
+        sourcesRoot.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".java") }
+            .map { file ->
+                val pkg = packageOf(file)
+                val simpleName = file.name.removeSuffix(".java")
+                if (pkg.isEmpty()) "L$simpleName;" else "L${pkg.replace('.', '/')}/$simpleName;"
+            }
+            .sorted()
+            .toList()
+
+    /** 返回 dex 里**找不到**的桩类描述符；空列表表示内容级校验通过。 */
+    fun missingDescriptors(dex: File, sourcesRoot: File): List<String> {
+        val bytes = dex.readBytes()
+        return expectedDescriptors(sourcesRoot).filter { descriptor ->
+            !containsBytes(bytes, descriptor.toByteArray(Charsets.UTF_8))
+        }
+    }
+
+    /** 子串查找（dex 的字符串表是明文，类描述符可以直接按字节找）。 */
+    private fun containsBytes(haystack: ByteArray, needle: ByteArray): Boolean {
+        if (needle.isEmpty() || haystack.size < needle.size) return false
+        val last = haystack.size - needle.size
+        var start = 0
+        while (start <= last) {
+            if (haystack[start] == needle[0]) {
+                var offset = 1
+                while (offset < needle.size && haystack[start + offset] == needle[offset]) offset++
+                if (offset == needle.size) return true
+            }
+            start++
+        }
+        return false
+    }
+
     fun tail(text: String, limit: Int = 1600): String =
         if (text.length <= limit) text else "…" + text.takeLast(limit)
 }
@@ -351,7 +412,9 @@ object XpStubDex {
 /**
  * 编译引导桩并生成 assets/xp/stub.dex。
  *
- * 任何一步失败都只记警告、保留已入库的 dex，避免把「构建机没装 SDK」升级成构建失败。
+ * 失败策略：工具链缺失只 WARN 跳过（构建机环境问题，继续沿用已入库的 dex）；工具链齐全后
+ * javac/d8 非 0 退出、编译错误、产物缺失一律抛 GradleException（源码/产物问题，静默沿用旧
+ * dex 会让 entryHook 产物在目标机上启动即 ClassNotFoundException）。
  */
 @DisableCachingByDefault(because = "写回源码树里的 assets，且依赖本机的 SDK 工具链")
 abstract class BuildStubDexTask : DefaultTask() {
@@ -479,7 +542,9 @@ abstract class BuildStubDexTask : DefaultTask() {
                 .filter { it.isFile && it.name.endsWith(".class") }
                 .sortedBy { it.path }
                 .toList()
-            if (classFiles.isEmpty()) error("javac 没有产出任何 .class 文件")
+            if (classFiles.isEmpty()) {
+                throw GradleException("buildStubDex: javac 退出码 0 但没有产出任何 .class（$classes）")
+            }
 
             runTool(
                 listOf(
@@ -493,10 +558,13 @@ abstract class BuildStubDexTask : DefaultTask() {
             )
 
             val produced = File(dexOut, "classes.dex")
-            if (!produced.isFile || produced.length() == 0L) error("d8 没有产出 classes.dex")
+            if (!produced.isFile || produced.length() == 0L) {
+                throw GradleException("buildStubDex: d8 退出码 0 但没有产出 classes.dex（$dexOut）")
+            }
 
             // 先写临时文件再原子替换：中途失败时已入库的 stub.dex 不会被截断。
-            val parent = dex.parentFile ?: error("assets/xp 目录不存在")
+            val parent = dex.parentFile
+                ?: throw GradleException("buildStubDex: assets/xp 目录不存在：${dex.absolutePath}")
             parent.mkdirs()
             val previousHash = if (dex.isFile) XpStubDex.sha256(dex) else null
             val temp = File(parent, dex.name + ".tmp")
@@ -542,11 +610,15 @@ abstract class BuildStubDexTask : DefaultTask() {
                 "buildStubDex: 已生成 ${dex.absolutePath}（${dex.length()} 字节，" +
                     "${sources.size} 个源文件，javac ${javaVersion.get()} / min-api ${minApi.get()}）"
             )
+        } catch (error: GradleException) {
+            // 工具链齐全之后的失败：必须失败，不能沿用旧 dex（见类注释的失败策略）。
+            throw error
         } catch (error: Exception) {
-            logger.warn(
-                "buildStubDex: 生成失败，已跳过并沿用已入库的 ${dex.name}：${error.message}"
+            // 其余异常（IO、磁盘、属性缺失等）同样意味着这次没产出新 dex，一并失败并带上原因。
+            throw GradleException(
+                "buildStubDex: 生成引导桩 dex 失败，不再沿用已入库的 ${dex.name}：${error.message}",
+                error,
             )
-            logger.info("buildStubDex: 失败详情", error)
         }
     }
 
@@ -567,16 +639,22 @@ abstract class BuildStubDexTask : DefaultTask() {
         }
         if (result.exitValue != 0) {
             val text = XpStubDex.tail(output.toString(Charsets.UTF_8.name()))
-            error("$label 退出码 ${result.exitValue}\n$text")
+            throw GradleException("buildStubDex: $label 退出码 ${result.exitValue}\n$text")
         }
     }
 }
 
 /**
- * 轻量一致性校验：stub.dex 是否由当前 manager/stub 源码生成。
+ * 一致性校验：assets/xp/stub.dex 是否由当前 manager/stub 源码生成。
  *
- * 基线是 build/stub-dex.sha256（由 buildStubDex 写出）。不一致时默认只提示，
- * 不阻塞任何构建；需要严格门禁时设置 -Pxp.stub.verifyStrict=true。
+ * 判据分两层：
+ *   1. 有 build/stub-dex.sha256 基线时，比对「dex 哈希 + 源码摘要」（精确）；
+ *   2. 没有基线（刚 clone、还没跑过 buildStubDex，或构建机没工具链）时改为内容级判据：
+ *      dex 里必须能找到每个桩源文件对应的类描述符（`Lio/xpatch/stub/AppEntry;`）。
+ *      以前这里退化按 mtime 比较，而 git 检出会把所有文件 mtime 设成同一时刻，
+ *      新 clone 上必然误报（P3-18），所以不再用 mtime 当判据。
+ *
+ * 默认严格（xp.stub.verifyStrict=true）且已挂到 check / assembleRelease。
  */
 @DisableCachingByDefault(because = "只做一致性校验，没有可缓存的输出")
 abstract class VerifyStubDexTask : DefaultTask() {
@@ -612,52 +690,47 @@ abstract class VerifyStubDexTask : DefaultTask() {
         }
 
         val baseline = checksumFile.orNull?.asFile
-        if (baseline == null || !baseline.isFile) {
-            // 没有基线（刚 clone、还没跑过 buildStubDex）时退化为比较修改时间，
-            // 至少能抓到「改了源码却没重新生成 dex」。
-            if (newestSource(sourcesRoot) > dex.lastModified()) {
-                report(listOf("stub 源码已变更，请重新生成 dex（./gradlew :app:buildStubDex）"))
-            } else {
-                logger.lifecycle(
-                    "verifyStubDex: 尚无 stub-dex.sha256 基线（先跑 :app:buildStubDex 可精确比对）；" +
-                        "按修改时间判断未见异常"
-                )
-            }
-            return
-        }
-
-        val recorded = readBaseline(baseline)
-        val actualDex = XpStubDex.sha256(dex)
-        val actualSources = XpStubDex.sourceDigest(sourcesRoot)
+        val recorded: Map<String, String> =
+            if (baseline != null && baseline.isFile) readBaseline(baseline) else emptyMap()
         val expectedDex = recorded["dex"]
         val expectedSources = recorded["sources"]
+        val actualDex = XpStubDex.sha256(dex)
 
         val problems = mutableListOf<String>()
         if (expectedDex != null && !expectedDex.equals(actualDex, ignoreCase = true)) {
-            problems += "stub.dex 的 sha256 与记录不一致（可能被手工替换）：" +
+            problems += "stub.dex 的 sha256 与基线记录不一致（可能被手工替换）：" +
                 "当前 $actualDex，记录 $expectedDex"
         }
-        if (expectedSources != null) {
-            if (!expectedSources.equals(actualSources, ignoreCase = true)) {
-                problems += "stub 源码已变更，请重新生成 dex（./gradlew :app:buildStubDex）"
+        if (expectedSources != null &&
+            !expectedSources.equals(XpStubDex.sourceDigest(sourcesRoot), ignoreCase = true)
+        ) {
+            problems += "stub 源码已变更，请重新生成 dex（在 manager/ 下跑 gradle :app:buildStubDex）"
+        }
+
+        // 基线缺失或只有半份（旧格式只写 dex 哈希、没有 sources）时，用类描述符兜底：
+        // 缺类 = 这份 dex 一定是旧的，而且注入后清单里的组件会 CNFE，必须拦住。
+        if (expectedDex == null || expectedSources == null) {
+            val missing = XpStubDex.missingDescriptors(dex, sourcesRoot)
+            if (missing.isNotEmpty()) {
+                problems += "stub.dex 里缺少桩类 ${missing.joinToString("、")}：" +
+                    "注入后会 ClassNotFoundException，请重新生成 dex（在 manager/ 下跑 gradle :app:buildStubDex）"
+            } else {
+                logger.lifecycle(
+                    "verifyStubDex: 没有完整的 stub-dex.sha256 基线，已改按 dex 内容校验通过" +
+                        "（${XpStubDex.expectedDescriptors(sourcesRoot).size} 个桩类齐全）；" +
+                        "跑一次 :app:buildStubDex 可得到精确的哈希基线"
+                )
             }
-        } else if (newestSource(sourcesRoot) > dex.lastModified()) {
-            // 旧格式基线只有 dex 哈希：退化为比较源码与 dex 的修改时间。
-            problems += "stub 源码已变更，请重新生成 dex（./gradlew :app:buildStubDex）"
         }
 
         if (problems.isEmpty()) {
-            logger.lifecycle("verifyStubDex: stub.dex 与源码一致（sha256 $actualDex）")
+            if (expectedDex != null && expectedSources != null) {
+                logger.lifecycle("verifyStubDex: stub.dex 与源码一致（sha256 $actualDex）")
+            }
             return
         }
         report(problems)
     }
-
-    private fun newestSource(dir: File): Long =
-        dir.walkTopDown()
-            .filter { it.isFile && it.name.endsWith(".java") }
-            .maxOfOrNull { it.lastModified() }
-            ?: 0L
 
     private fun report(problems: List<String>) {
         val message = problems.joinToString("\n")
@@ -683,3 +756,129 @@ abstract class VerifyStubDexTask : DefaultTask() {
         return result
     }
 }
+
+// ---------------------------------------------------------------------------
+// 版本门禁：管理器写进 xp/config.json 的 ver 必须等于内核的编译期常量
+//
+// 背景（审查 P3-3 / P3-15）：ApkPatcher.RUNTIME_VERSION 会写进 xp/config.json 的 "ver"，
+// 内核 CoreEntry 侧有同名常量，但全仓没有任何比较——两份二进制各自 bump 时，
+// 「管理器写 42、内核是 43」这种错配只能等用户装到手机上才发现。
+// 这里在构建期做一条最轻的断言：两个常量必须相同，否则 check / assembleRelease 直接失败。
+//
+// 升级内核版本时，下面两处必须一起改：
+//   manager/app/src/main/java/io/xpatch/patch/ApkPatcher.kt（private companion object）
+//   runtime/java/io/xpatch/core/CoreEntry.java（public static final int RUNTIME_VERSION）
+// ---------------------------------------------------------------------------
+
+/**
+ * 从源码文本里读版本常量。
+ *
+ * 用正则而不是解析 Kotlin/Java 语法：这是「构建期防止两处常量漂移」的门禁，不是编译器；
+ * 只要能稳定读出唯一的整数值即可，容错目标是注释里出现同名字样时不至于误判。
+ */
+object XpVersionGate {
+
+    /** `const val RUNTIME_VERSION = 42`（Kotlin，ApkPatcher 的 private companion object）。 */
+    val MANAGER_PATTERN = Regex("""const\s+val\s+RUNTIME_VERSION\s*(?::\s*Int\s*)?=\s*(\d+)""")
+
+    /** `public static final int RUNTIME_VERSION = 42;`（Java，内核编译期常量）。 */
+    val RUNTIME_PATTERN = Regex("""static\s+(?:final\s+)?int\s+RUNTIME_VERSION\s*=\s*(\d+)\s*;""")
+
+    /** 界面上的「旧，建议重新打包」阈值（ScopeScreens 的第三份拷贝），只做警告。 */
+    val LATEST_PATTERN = Regex("""const\s+val\s+LATEST_RUNTIME_VERSION\s*(?::\s*Int\s*)?=\s*(\d+)""")
+
+    fun readConstant(file: File, pattern: Regex, label: String): Int {
+        if (!file.isFile) {
+            throw GradleException("版本门禁失败：找不到 $label 的源码文件：${file.absolutePath}")
+        }
+        val values = pattern.findAll(file.readText(Charsets.UTF_8))
+            .mapNotNull { it.groupValues[1].toIntOrNull() }
+            .distinct()
+            .toList()
+        return when {
+            values.isEmpty() -> throw GradleException(
+                "版本门禁失败：${file.absolutePath} 里找不到 $label 的常量声明" +
+                    "（期望形如 `" + pattern.pattern + "`）"
+            )
+            values.size > 1 -> throw GradleException(
+                "版本门禁失败：$label 在 ${file.absolutePath} 里有多个不同取值：" +
+                    values.joinToString("、")
+            )
+            else -> values.single()
+        }
+    }
+}
+
+/** 断言管理器与内核的 RUNTIME_VERSION 一致；不一致（或任一侧缺失）直接让构建失败。 */
+@DisableCachingByDefault(because = "只做源码文本断言，没有可缓存的输出")
+abstract class CheckRuntimeVersionTask : DefaultTask() {
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val patcherFile: RegularFileProperty
+
+    @get:InputFile
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val coreEntryFile: RegularFileProperty
+
+    // 第三份拷贝（界面阈值）只警告，用 @Internal：文件缺失也不该在这个任务上挂掉。
+    @get:Internal
+    abstract val latestLabelFile: RegularFileProperty
+
+    @TaskAction
+    fun check() {
+        val manager = XpVersionGate.readConstant(
+            patcherFile.get().asFile,
+            XpVersionGate.MANAGER_PATTERN,
+            "ApkPatcher.RUNTIME_VERSION",
+        )
+        val runtime = XpVersionGate.readConstant(
+            coreEntryFile.get().asFile,
+            XpVersionGate.RUNTIME_PATTERN,
+            "CoreEntry.RUNTIME_VERSION",
+        )
+        if (manager != runtime) {
+            throw GradleException(
+                "版本门禁失败：管理器 ApkPatcher.RUNTIME_VERSION=$manager，" +
+                    "内核 CoreEntry.RUNTIME_VERSION=$runtime。\n" +
+                    "管理器把这个值写进 xp/config.json 的 ver，内核用它判断补丁是不是当前内核生成的；" +
+                    "两边不一致时，新打的补丁会被当成旧内核产物。升级内核版本请同时改这两处常量。"
+            )
+        }
+
+        val labelFile = latestLabelFile.orNull?.asFile
+        if (labelFile != null && labelFile.isFile) {
+            val label = runCatching {
+                XpVersionGate.readConstant(
+                    labelFile,
+                    XpVersionGate.LATEST_PATTERN,
+                    "LATEST_RUNTIME_VERSION",
+                )
+            }.getOrNull()
+            if (label != null && label != manager) {
+                logger.warn(
+                    "checkRuntimeVersion: ScopeScreens.LATEST_RUNTIME_VERSION=$label 与 " +
+                        "RUNTIME_VERSION=$manager 不一致，界面会把最新补丁标成「旧，建议重新打包」"
+                )
+            }
+        }
+        logger.lifecycle("checkRuntimeVersion: 管理器与内核的 RUNTIME_VERSION 一致（$manager）")
+    }
+}
+
+/** 内核源码在仓库根的 runtime/ 下：manager 是独立的 Gradle 根工程，rootProject 只到 manager/。 */
+val xpRepoRoot: File = rootProject.projectDir.parentFile ?: rootProject.projectDir
+
+val checkRuntimeVersionTask = tasks.register<CheckRuntimeVersionTask>("checkRuntimeVersion") {
+    group = "xp"
+    description = "校验 ApkPatcher.RUNTIME_VERSION 与内核 CoreEntry.RUNTIME_VERSION 一致"
+    patcherFile.set(file("src/main/java/io/xpatch/patch/ApkPatcher.kt"))
+    coreEntryFile.set(File(xpRepoRoot, "runtime/java/io/xpatch/core/CoreEntry.java"))
+    latestLabelFile.set(file("src/main/java/io/xpatch/ui/screens/ScopeScreens.kt"))
+}
+
+// 版本门禁同样挂在 check 与 release 打包路径上：错配的产物一旦发出去，用户侧无法回滚。
+tasks.matching { it.name == "check" || it.name == "assembleRelease" || it.name == "bundleRelease" }
+    .configureEach {
+        dependsOn(checkRuntimeVersionTask)
+    }
