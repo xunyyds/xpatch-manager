@@ -38,11 +38,19 @@ public final class SigningDetailsData {
         try {
             JSONObject object = new JSONObject(text);
             int scheme = object.optInt("scheme", SCHEME_UNKNOWN);
-            Signature[] apk = parseSignatures(object.optJSONArray("apk"));
+            // signing_details 是可信基线：任何一张证书解析失败都视为整份不可信（返回 null），
+            // 由调用方退回 legacy sign；绝不能静默缩表，否则按位置配对会映射成另一张证书。
+            Signature[] apk = parseSignatures(object.optJSONArray("apk"), "apk");
+            if (apk == null) {
+                return null;
+            }
             if (apk.length == 0) {
                 return null;
             }
-            Signature[] history = parseSignatures(object.optJSONArray("history"));
+            Signature[] history = parseSignatures(object.optJSONArray("history"), "history");
+            if (history == null) {
+                return null;
+            }
             if (history.length == 0) {
                 history = apk;
             }
@@ -64,10 +72,6 @@ public final class SigningDetailsData {
         SigningDetailsData parsed = fromJson(json);
         if (parsed == null) {
             parsed = fromSignatures(legacySignatures);
-        } else if (legacySignatures != null && legacySignatures.length > 0) {
-            if (parsed.history.length == 0) {
-                parsed = new SigningDetailsData(parsed.scheme, parsed.apk, legacySignatures, true);
-            }
         }
         current = parsed;
     }
@@ -89,7 +93,7 @@ public final class SigningDetailsData {
                 + "，来源=" + (fromConfig ? "signing_details" : "legacy sign")
                 + "，证书数=" + apk.length
                 + "，历史数=" + history.length
-                + "，首证指纹=" + sha256Prefix(apk.length > 0 ? apk[0].toByteArray() : null);
+                + "，首证指纹=" + sha256Prefix(apk.length > 0 && apk[0] != null ? apk[0].toByteArray() : null);
     }
 
     public static String sha256Prefix(byte[] data) {
@@ -124,20 +128,31 @@ public final class SigningDetailsData {
         return copy;
     }
 
-    private static Signature[] parseSignatures(JSONArray array) {
-        if (array == null || array.length() == 0) {
+    /**
+     * 返回 null 表示"这份 signing_details 不可信"（调用方必须 fail-closed）。
+     * 空数组表示字段缺省（合法）。空串、null、非 hex 都算失败。
+     */
+    private static Signature[] parseSignatures(JSONArray array, String field) {
+        if (array == null) {
             return new Signature[0];
         }
         List<Signature> list = new ArrayList<Signature>(array.length());
         for (int i = 0; i < array.length(); i++) {
             String hex = array.optString(i, null);
-            if (hex == null || hex.length() == 0) {
-                continue;
+            if (hex == null || hex.trim().length() == 0) {
+                XpHook.log0("XpSignBypass", "signing_details." + field + " 第 " + i + " 项为空，整份不可信，退回 legacy sign");
+                return null;
             }
             try {
-                list.add(new Signature(DataUtils.hexToByteArray(hex)));
+                byte[] raw = DataUtils.hexToByteArray(hex);
+                if (raw == null || raw.length == 0) {
+                    XpHook.log0("XpSignBypass", "signing_details." + field + " 第 " + i + " 项解出空字节，整份不可信");
+                    return null;
+                }
+                list.add(new Signature(raw));
             } catch (Throwable th) {
-                XpHook.log0("XpSignBypass", "signing_details 里第 " + i + " 张证书解析失败：" + th);
+                XpHook.log0("XpSignBypass", "signing_details." + field + " 第 " + i + " 张证书解析失败，整份不可信：" + th);
+                return null;
             }
         }
         return list.toArray(new Signature[list.size()]);

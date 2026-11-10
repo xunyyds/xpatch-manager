@@ -1,78 +1,32 @@
 package io.xpatch.core.signbypass;
 
-import io.xpatch.hook.AppEnv;
 import io.xpatch.hook.XpHook;
-import java.io.File;
-import java.io.FileOutputStream;
-import java.io.InputStream;
-import java.util.zip.ZipEntry;
-import java.util.zip.ZipFile;
-import java.util.zip.ZipOutputStream;
 
+/**
+ * 原包定位占位类。**不再合成 APK**（历史实现曾把 selfApk 去掉 xp/ 再换回
+ * {@code xp/source.manifest} 重新打包，产出的"原包"没有 v2/v3 签名块、证书是 XPatch 的、
+ * 还带着引导桩 classesN.dex，任何文件级自校验都会失败，审查 P1-1）。
+ *
+ * <p>文件层唯一合法的原包来自打包时内嵌的 {@code xp/source.apk}：
+ * {@code XpInit.performXpConfig()} 把它释放成 {@code <dataDir>/cache/android_id/<crc>.apk}，
+ * 置 {@code setWritable(false)}，并写入 {@link io.xpatch.hook.AppEnv#source_apk_path}。
+ * 没有这个条目时没有任何办法在设备上还原出字节级原包，因此这里只返回 null，
+ * 由 {@link FileLayerHooks#install()} 判定"文件层不启用"，让 codePath 保持真实安装路径。
+ */
 public final class SourceReconstructor {
 
     private static final String TAG = "XpSource";
-    private static final String MANIFEST = "xp/source.manifest";
 
     private SourceReconstructor() {
     }
 
+    /**
+     * 恒返回 null：不做任何文件合成，也不写磁盘。
+     *
+     * @return 永远 null；调用方（XpInit）应保持 AppEnv.source_apk_path 为空即"文件层不启用"
+     */
     public static String rebuild() {
-        if (AppEnv.selfApk == null || AppEnv.baseApp == null) {
-            return null;
-        }
-        try {
-            ZipFile zip = new ZipFile(AppEnv.selfApk);
-            try {
-                ZipEntry manifest = zip.getEntry(MANIFEST);
-                if (manifest == null) {
-                    return null;
-                }
-                File out = new File(AppEnv.baseApp.dataDir + "/cache/android_id/source-"
-                        + System.currentTimeMillis() + ".apk");
-                out.getParentFile().mkdirs();
-                ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(out));
-                try {
-                    byte[] buffer = new byte[64 * 1024];
-                    for (ZipEntry entry : java.util.Collections.list(zip.entries())) {
-                        if (entry.isDirectory() || entry.getName().startsWith("xp/")) {
-                            continue;
-                        }
-                        ZipEntry copy = new ZipEntry(entry.getName());
-                        zos.putNextEntry(copy);
-                        if ("AndroidManifest.xml".equals(entry.getName())) {
-                            zos.write(readAll(zip.getInputStream(manifest), buffer));
-                        } else {
-                            InputStream in = zip.getInputStream(entry);
-                            int n;
-                            while ((n = in.read(buffer)) > 0) {
-                                zos.write(buffer, 0, n);
-                            }
-                            in.close();
-                        }
-                        zos.closeEntry();
-                    }
-                } finally {
-                    zos.close();
-                }
-                XpHook.log0(TAG, "原包按需重建完成：" + out.getAbsolutePath());
-                return out.getAbsolutePath();
-            } finally {
-                zip.close();
-            }
-        } catch (Throwable th) {
-            XpHook.log0(TAG, "原包重建失败：" + android.util.Log.getStackTraceString(th));
-            return null;
-        }
-    }
-
-    private static byte[] readAll(InputStream in, byte[] buffer) throws Exception {
-        java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
-        int n;
-        while ((n = in.read(buffer)) > 0) {
-            out.write(buffer, 0, n);
-        }
-        in.close();
-        return out.toByteArray();
+        XpHook.log0(TAG, "没有内嵌原包，文件层不启用");
+        return null;
     }
 }

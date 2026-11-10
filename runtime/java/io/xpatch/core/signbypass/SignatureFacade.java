@@ -10,9 +10,11 @@ import java.io.File;
 import java.lang.reflect.Field;
 import java.lang.reflect.Member;
 import java.lang.reflect.Method;
-import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import org.lsposed.hidden.HiddenApiBypass;
 
 public final class SignatureFacade {
@@ -25,14 +27,19 @@ public final class SignatureFacade {
     private static volatile boolean retried;
     private static volatile boolean primitiveReady;
 
-    private static volatile byte[][] fakeBytes = new byte[0][];
-    private static volatile byte[][] originalBytes = new byte[0][];
-    private static volatile int[] fakeHashes = new int[0];
-    private static volatile int[] originalHashes = new int[0];
-
     private static volatile Member toByteArrayMember;
-    private static volatile Member hashCodeMember;
-    private static volatile Member equalsMember;
+
+    private static volatile boolean toByteArrayHooked;
+    private static volatile boolean hashCodeHooked;
+    private static volatile boolean equalsHooked;
+    private static volatile boolean writeToParcelHooked;
+
+    /**
+     * fake -> original 的映射是一个不可变对象，只做一次 volatile 写：
+     * 回调里绝不会读到"半套映射"（旧的 4 个并行数组在并发读者眼里可能互相不匹配）。
+     * 只有四个原语 hook 全部装上才会把非空映射写进来；否则映射为空，已装上的 hook 等同空操作。
+     */
+    private static volatile Mapping mapping = Mapping.EMPTY;
 
     private static final Object FIELD_LOCK = new Object();
     private static volatile Field signatureField;
@@ -53,40 +60,52 @@ public final class SignatureFacade {
                 return false;
             }
             byte[][] originalSet = toByteArrays(originals);
+            if (originalSet == null) {
+                log("跳过签名原语层：原证书集合里有空项，整份不可信（fail-closed）");
+                return false;
+            }
             byte[][] fakeSet = readPatchedCertificates();
             if (fakeSet == null || fakeSet.length == 0) {
                 log("跳过签名原语层：读不到当前 APK 证书（" + ApkCertReader.lastError() + "）");
                 return false;
             }
-            int pairCount = Math.min(fakeSet.length, originalSet.length);
-            if (fakeSet.length != originalSet.length) {
-                log("补丁证书 " + fakeSet.length + " 张、原证书 " + originalSet.length
-                        + " 张，按索引对齐前 " + pairCount + " 张");
+            if (fakeSet.length > originalSet.length) {
+                log("补丁证书 " + fakeSet.length + " 张多于原证书 " + originalSet.length
+                        + " 张，无法配对，跳过（fail-closed）");
+                return false;
             }
-            List<byte[]> fakes = new ArrayList<byte[]>(pairCount);
-            List<byte[]> origs = new ArrayList<byte[]>(pairCount);
-            for (int i = 0; i < pairCount; i++) {
-                if (Arrays.equals(fakeSet[i], originalSet[i])) {
-                    continue;
-                }
-                fakes.add(fakeSet[i]);
-                origs.add(originalSet[i]);
+            Map<ByteKey, byte[]> pairs = buildPairs(fakeSet, originalSet);
+            if (pairs == null) {
+                return false;
             }
-            if (fakes.isEmpty()) {
+            if (pairs.isEmpty()) {
                 log("签名原语层无需介入：当前 APK 证书与原证书一致");
                 return false;
             }
-            applyMapping(fakes, origs);
-            primitiveReady = hookPrimitives();
-            log("签名原语层已安装：归一化 " + fakes.size() + " 张证书（"
-                    + SigningDetailsData.sha256Prefix(fakeSet[0]) + " -> "
-                    + SigningDetailsData.sha256Prefix(originalSet[0]) + "）"
-                    + (primitiveReady ? "" : "，但全部 hook 均未装上"));
+            Mapping next = new Mapping(pairs);
+            // 先装 hook 再启用映射：hook 未装上时回调读到的是 EMPTY，不会产生"一半生效"的矛盾状态
+            boolean ready = hookPrimitives();
+            if (ready) {
+                mapping = next;
+            }
+            primitiveReady = ready;
+            log("签名原语层" + (ready ? "已安装" : "未就绪（四个原语 hook 未全部成功，映射不启用）")
+                    + "：归一化 " + next.size() + " 张证书（"
+                    + SigningDetailsData.sha256Prefix(next.firstFake) + " -> "
+                    + SigningDetailsData.sha256Prefix(next.firstOriginal) + "）"
+                    + "；toByteArray=" + state(toByteArrayHooked)
+                    + ", hashCode=" + state(hashCodeHooked)
+                    + ", equals=" + state(equalsHooked)
+                    + ", writeToParcel=" + state(writeToParcelHooked));
             return primitiveReady;
         } catch (Throwable th) {
             log("签名原语层安装失败（fail-open，应用将看到重签证书）：" + Log.getStackTraceString(th));
             return false;
         }
+    }
+
+    private static String state(boolean ok) {
+        return ok ? "ok" : "fail";
     }
 
     public static synchronized boolean retryIfNeeded() {
@@ -112,10 +131,10 @@ public final class SignatureFacade {
     }
 
     public static String describe() {
-        byte[][] fakes = fakeBytes;
+        Mapping current = mapping;
         return "原语层=" + (primitiveReady ? "开启" : "关闭")
-                + "，映射证书=" + fakes.length
-                + (fakes.length > 0 ? "，" + SigningDetailsData.sha256Prefix(fakes[0]) : "");
+                + "，映射证书=" + current.size()
+                + (current.firstFake != null ? "，" + SigningDetailsData.sha256Prefix(current.firstFake) : "");
     }
 
     public static byte[] bytesOf(Signature signature) {
@@ -153,45 +172,42 @@ public final class SignatureFacade {
     }
 
     static byte[] normalize(byte[] raw) {
-        if (raw == null || raw.length == 0) {
-            return null;
-        }
-        byte[][] fakes = fakeBytes;
-        byte[][] origs = originalBytes;
-        for (int i = 0; i < fakes.length; i++) {
-            if (fakes[i].length == raw.length && Arrays.equals(fakes[i], raw)) {
-                return origs[i];
-            }
-        }
-        return null;
+        return mapping.normalize(raw);
     }
 
-    static int indexOfFakeHash(int hash) {
-        int[] hashes = fakeHashes;
-        for (int i = 0; i < hashes.length; i++) {
-            if (hashes[i] == hash) {
+    /**
+     * 用精确字节做键构造 fake -> original：
+     * 1) 补丁包里某张证书本身就等于原证书（例如残留的 v1 证书）时按内容命中，跳过、不需要映射；
+     * 2) 剩下的重签证书与原证书内容必然不同，只能按同一位置对应；
+     * 3) 数量不匹配、重复键、空项都让整份映射失败（返回 null），宁可不伪装也不映射成另一张证书。
+     */
+    private static Map<ByteKey, byte[]> buildPairs(byte[][] fakeSet, byte[][] originalSet) {
+        Map<ByteKey, byte[]> pairs = new LinkedHashMap<ByteKey, byte[]>();
+        for (int i = 0; i < fakeSet.length; i++) {
+            if (indexOf(originalSet, fakeSet[i]) >= 0) {
+                continue;
+            }
+            if (i >= originalSet.length || originalSet[i] == null) {
+                log("补丁证书比原证书多，无法配对，跳过（fail-closed）");
+                return null;
+            }
+            ByteKey key = new ByteKey(fakeSet[i]);
+            if (pairs.containsKey(key)) {
+                log("补丁证书重复出现，配对存在歧义，跳过（fail-closed）");
+                return null;
+            }
+            pairs.put(key, originalSet[i]);
+        }
+        return pairs;
+    }
+
+    private static int indexOf(byte[][] set, byte[] target) {
+        for (int i = 0; i < set.length; i++) {
+            if (set[i] != null && Arrays.equals(set[i], target)) {
                 return i;
             }
         }
         return -1;
-    }
-
-    private static void applyMapping(List<byte[]> fakes, List<byte[]> origs) {
-        int size = fakes.size();
-        byte[][] fakeArray = new byte[size][];
-        byte[][] origArray = new byte[size][];
-        int[] fakeHashArray = new int[size];
-        int[] origHashArray = new int[size];
-        for (int i = 0; i < size; i++) {
-            fakeArray[i] = fakes.get(i);
-            origArray[i] = origs.get(i);
-            fakeHashArray[i] = Arrays.hashCode(fakeArray[i]);
-            origHashArray[i] = Arrays.hashCode(origArray[i]);
-        }
-        fakeBytes = fakeArray;
-        originalBytes = origArray;
-        fakeHashes = fakeHashArray;
-        originalHashes = origHashArray;
     }
 
     private static byte[][] readPatchedCertificates() {
@@ -206,53 +222,63 @@ public final class SignatureFacade {
         return certs.toArray(new byte[certs.size()][]);
     }
 
+    /** 任何一张原证书为空/为空字节都视为整份不可信，返回 null 让 install() fail-closed。 */
     private static byte[][] toByteArrays(Signature[] signatures) {
         byte[][] result = new byte[signatures.length][];
         for (int i = 0; i < signatures.length; i++) {
             Signature signature = signatures[i];
             if (signature == null) {
-                result[i] = new byte[0];
-            } else {
-                byte[] raw = signature.toByteArray();
-                result[i] = raw == null ? new byte[0] : raw.clone();
+                return null;
             }
+            byte[] raw = signature.toByteArray();
+            if (raw == null || raw.length == 0) {
+                return null;
+            }
+            result[i] = raw.clone();
         }
         return result;
     }
 
+    /**
+     * toByteArray / hashCode / equals 是同一个语义整体，必须全部成功才算就绪；
+     * writeToParcel 是跨进程路径，一并计入（缺它时应用能看到归一化值、Binder 对端看不到）。
+     */
     private static boolean hookPrimitives() {
-        boolean hooked = false;
-        Class<Signature> type = Signature.class;
-        try {
-            Method method = type.getMethod("toByteArray", new Class[0]);
-            toByteArrayMember = method;
-            hooked |= XpHook.doHook(method, 0, new ToByteArrayCallback()) != null;
-        } catch (Throwable th) {
-            log("hook Signature.toByteArray 失败：" + th);
-        }
-        try {
-            Method method = type.getMethod("hashCode", new Class[0]);
-            hashCodeMember = method;
-            hooked |= XpHook.doHook(method, 0, new HashCodeCallback()) != null;
-        } catch (Throwable th) {
-            log("hook Signature.hashCode 失败：" + th);
-        }
-        try {
-            Method method = type.getMethod("equals", new Class[]{Object.class});
-            equalsMember = method;
-            hooked |= XpHook.doHook(method, 0, new EqualsCallback()) != null;
-        } catch (Throwable th) {
-            log("hook Signature.equals 失败：" + th);
-        }
-        if (HOOK_WRITE_TO_PARCEL) {
+        if (!toByteArrayHooked) {
             try {
-                Method method = type.getMethod("writeToParcel", new Class[]{Parcel.class, Integer.TYPE});
-                hooked |= XpHook.doHook(method, 0, new WriteToParcelCallback()) != null;
+                Method method = Signature.class.getMethod("toByteArray", new Class[0]);
+                toByteArrayMember = method;
+                toByteArrayHooked = XpHook.doHook(method, 0, new ToByteArrayCallback()) != null;
+            } catch (Throwable th) {
+                log("hook Signature.toByteArray 失败：" + th);
+            }
+        }
+        if (!hashCodeHooked) {
+            try {
+                Method method = Signature.class.getMethod("hashCode", new Class[0]);
+                hashCodeHooked = XpHook.doHook(method, 0, new HashCodeCallback()) != null;
+            } catch (Throwable th) {
+                log("hook Signature.hashCode 失败：" + th);
+            }
+        }
+        if (!equalsHooked) {
+            try {
+                Method method = Signature.class.getMethod("equals", new Class[]{Object.class});
+                equalsHooked = XpHook.doHook(method, 0, new EqualsCallback()) != null;
+            } catch (Throwable th) {
+                log("hook Signature.equals 失败：" + th);
+            }
+        }
+        if (HOOK_WRITE_TO_PARCEL && !writeToParcelHooked) {
+            try {
+                Method method = Signature.class.getMethod("writeToParcel", new Class[]{Parcel.class, Integer.TYPE});
+                writeToParcelHooked = XpHook.doHook(method, 0, new WriteToParcelCallback()) != null;
             } catch (Throwable th) {
                 log("hook Signature.writeToParcel 失败：" + th);
             }
         }
-        return hooked;
+        return toByteArrayHooked && hashCodeHooked && equalsHooked
+                && (!HOOK_WRITE_TO_PARCEL || writeToParcelHooked);
     }
 
     private static Field signatureField() {
@@ -283,6 +309,66 @@ public final class SignatureFacade {
         XpHook.log0(TAG, message);
     }
 
+    /** 按证书字节精确定位的键：哈希/相等都只看内容，不做任何索引推断。 */
+    private static final class ByteKey {
+        private final byte[] bytes;
+        private final int hash;
+
+        private ByteKey(byte[] bytes) {
+            this.bytes = bytes;
+            this.hash = Arrays.hashCode(bytes);
+        }
+
+        @Override
+        public boolean equals(Object obj) {
+            if (this == obj) {
+                return true;
+            }
+            if (!(obj instanceof ByteKey)) {
+                return false;
+            }
+            ByteKey other = (ByteKey) obj;
+            return hash == other.hash && Arrays.equals(bytes, other.bytes);
+        }
+
+        @Override
+        public int hashCode() {
+            return hash;
+        }
+    }
+
+    private static final class Mapping {
+        static final Mapping EMPTY = new Mapping(Collections.<ByteKey, byte[]>emptyMap());
+
+        final Map<ByteKey, byte[]> pairs;
+        final byte[] firstFake;
+        final byte[] firstOriginal;
+
+        private Mapping(Map<ByteKey, byte[]> pairs) {
+            this.pairs = Collections.unmodifiableMap(pairs);
+            byte[] fake = null;
+            byte[] original = null;
+            for (Map.Entry<ByteKey, byte[]> entry : pairs.entrySet()) {
+                fake = entry.getKey().bytes;
+                original = entry.getValue();
+                break;
+            }
+            this.firstFake = fake;
+            this.firstOriginal = original;
+        }
+
+        int size() {
+            return pairs.size();
+        }
+
+        byte[] normalize(byte[] raw) {
+            if (raw == null || raw.length == 0 || pairs.isEmpty()) {
+                return null;
+            }
+            return pairs.get(new ByteKey(raw));
+        }
+    }
+
     private static final class ToByteArrayCallback implements XpHook.XpCallback {
         @Override
         public void onHook(XpHook.XpParam param) throws Throwable {
@@ -302,19 +388,13 @@ public final class SignatureFacade {
         @Override
         public void onHook(XpHook.XpParam param) throws Throwable {
             param.proceed();
-            Object result = param.getResult();
-            if (!(result instanceof Integer)) {
+            // 直接按对象字节查表，不再用"返回的 hash 反查索引"，避免 hash 相同/映射变更时错配
+            byte[] normalized = SignatureFacade.normalize(
+                    SignatureFacade.bytesOf((Signature) param.this0));
+            if (normalized == null) {
                 return;
             }
-            int index = SignatureFacade.indexOfFakeHash(((Integer) result).intValue());
-            if (index < 0) {
-                return;
-            }
-            byte[] raw = SignatureFacade.bytesOf((Signature) param.this0);
-            if (raw == null || !Arrays.equals(raw, SignatureFacade.fakeBytes[index])) {
-                return;
-            }
-            param.setResult(Integer.valueOf(SignatureFacade.originalHashes[index]));
+            param.setResult(Integer.valueOf(Arrays.hashCode(normalized)));
         }
     }
 

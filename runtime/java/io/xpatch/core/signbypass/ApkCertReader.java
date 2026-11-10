@@ -1,5 +1,6 @@
 package io.xpatch.core.signbypass;
 
+import android.os.Build;
 import java.io.File;
 import java.io.InputStream;
 import java.io.RandomAccessFile;
@@ -41,20 +42,40 @@ public final class ApkCertReader {
     }
 
     public static List<byte[]> readCertificates(File apk) {
-        List<byte[]> certs = readSigningBlockCertificates(apk);
+        return readCertificates(apk, Build.VERSION.SDK_INT);
+    }
+
+    /**
+     * @param sdkInt 设备 SDK：选块规则要与平台一致（33+ 用 v3.1，28–32 用 v3，24–27 用 v2），
+     *               单独开入口是为了用普通 JVM 读真实 APK 做验证。
+     */
+    public static List<byte[]> readCertificates(File apk, int sdkInt) {
+        lastError = "";
+        List<byte[]> certs = readSigningBlockCertificates(apk, sdkInt);
         if (!certs.isEmpty()) {
             return certs;
         }
+        // 保留签名块阶段的失败原因：v1 阶段若也失败，两条都报出来，避免"明明有块却报没块"
+        String blockError = lastError;
+        lastError = "";
         List<byte[]> v1 = readV1Certificates(apk);
         if (!v1.isEmpty()) {
             lastError = "";
             return v1;
         }
+        if (blockError.length() > 0) {
+            lastError = lastError.length() == 0 ? blockError : blockError + "；" + lastError;
+        }
         return new ArrayList<byte[]>();
     }
 
     public static List<byte[]> readSigningBlockCertificates(File apk) {
+        return readSigningBlockCertificates(apk, Build.VERSION.SDK_INT);
+    }
+
+    public static List<byte[]> readSigningBlockCertificates(File apk, int sdkInt) {
         List<byte[]> result = new ArrayList<byte[]>();
+        lastError = "";
         if (apk == null || !apk.isFile()) {
             lastError = "文件不存在或不可读";
             return result;
@@ -123,7 +144,10 @@ public final class ApkCertReader {
             byte[] v31 = null;
             byte[] v2 = null;
             int pos = 8;
-            int end = block.length - FOOTER_SIZE;
+            // block 数组 = [size 字段 8 字节 + 全部 pairs]，尾随的 magic/size footer(24 字节) 读的时候
+            // 就已经排除在外，所以 pair 区上界就是 block.length（不能再减 FOOTER_SIZE，否则最后一个
+            // pair 永远解析不到）
+            int end = block.length;
             while (pos + 12 <= end) {
                 long pairLength = readUInt64LE(block, pos);
                 if (pairLength < 4 || pairLength > (long) (end - pos) - 8) {
@@ -142,13 +166,16 @@ public final class ApkCertReader {
                 }
                 pos += 8 + (int) pairLength;
             }
+            // 与平台一致：SDK 33+ 优先 v3.1，再 v3，再 v2
+            if (sdkInt >= 33) {
+                List<byte[]> fromV31 = parseSigners(v31);
+                if (!fromV31.isEmpty()) {
+                    return fromV31;
+                }
+            }
             List<byte[]> fromV3 = parseSigners(v3);
             if (!fromV3.isEmpty()) {
                 return fromV3;
-            }
-            List<byte[]> fromV31 = parseSigners(v31);
-            if (!fromV31.isEmpty()) {
-                return fromV31;
             }
             List<byte[]> fromV2 = parseSigners(v2);
             if (!fromV2.isEmpty()) {

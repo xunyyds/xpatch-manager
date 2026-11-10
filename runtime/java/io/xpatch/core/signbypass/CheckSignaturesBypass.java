@@ -7,13 +7,14 @@ import io.xpatch.core.reflect.XClass;
 import io.xpatch.hook.AppEnv;
 import io.xpatch.hook.XpHook;
 import java.lang.reflect.Method;
-import java.lang.reflect.Modifier;
 
 public final class CheckSignaturesBypass {
 
     private static final String TAG = "XpSigCheck";
 
-    private static volatile boolean attempted;
+    private static final int MAX_ATTEMPTS = 2;
+
+    private static volatile int attempts;
     private static volatile boolean installed;
     private static volatile boolean hitLogged;
 
@@ -21,25 +22,22 @@ public final class CheckSignaturesBypass {
     }
 
     public static synchronized boolean installNow() {
-        if (attempted) {
-            return installed;
+        if (installed) {
+            return true;
         }
-        attempted = true;
+        if (attempts >= MAX_ATTEMPTS) {
+            return false;
+        }
+        attempts++;
         boolean hooked = false;
         Class<?> manager = XClass.loadEx("android.app.ApplicationPackageManager");
         if (manager != null) {
+            // checkSignatures 的两个重载在 PackageManager 里都是 abstract，实现只在
+            // ApplicationPackageManager，所以只需要 hook 这个运行时类
             hooked |= hookCheckSignatures(manager, new Class[]{String.class, String.class});
             hooked |= hookCheckSignatures(manager, new Class[]{Integer.TYPE, Integer.TYPE});
         } else {
             XpHook.log0(TAG, "找不到 ApplicationPackageManager，checkSignatures 伪装跳过");
-        }
-        try {
-            Method stringVersion = PackageManager.class.getMethod("checkSignatures", String.class, String.class);
-            Method uidVersion = PackageManager.class.getMethod("checkSignatures", Integer.TYPE, Integer.TYPE);
-            if (Modifier.isAbstract(stringVersion.getModifiers()) || Modifier.isAbstract(uidVersion.getModifiers())) {
-                XpHook.log0(TAG, "PackageManager.checkSignatures 是抽象方法，改为 hook ApplicationPackageManager 实现");
-            }
-        } catch (Throwable ignored) {
         }
         installed = hooked;
         XpHook.log0(TAG, hooked
