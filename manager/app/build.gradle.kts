@@ -82,6 +82,11 @@ android {
 
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
+        // AGP 9 默认把 dex 以 STORED 打进 APK，安装快但包体大：
+        // 本项目 classes.dex 约 5.2 MB，压缩后能省 2.8 MB，回到 4 MB 量级。
+        dex {
+            useLegacyPackaging = true
+        }
     }
 }
 

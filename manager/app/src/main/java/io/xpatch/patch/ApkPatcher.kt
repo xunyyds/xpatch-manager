@@ -571,10 +571,12 @@ class ApkPatcher(private val context: Context) {
             add(Added(CORE_ENTRY, DEFLATED) { asset("xp/runtime.dex") })
             add(Added(HOOK_DEX_ENTRY, DEFLATED) { asset("xp/hook_core.dex") })
             add(Added(HOOK_SO_ENTRY, STORED) { asset("xp/hook_core.so") })
-            // x86_64 模拟器 / 平板的备用原生库。loader 按 Build.SUPPORTED_ABIS 优先找
-            // xp/hook_core_<abi>.so，找不到才回退上面的通用 arm64 资产；两个都注入，
-            // 单包约 +1.15 MB，仍比修复前的单个 1.9 MB 未 strip 资产小。
-            add(Added("xp/hook_core_x86_64.so", STORED) { asset("xp/hook_core_x86_64.so") })
+            // x86_64 模拟器 / 平板的备用原生库（debug 变体才带，release 只带 arm64）。
+            // loader 按 Build.SUPPORTED_ABIS 优先找 xp/hook_core_<abi>.so，找不到才回退上面的
+            // 通用资产；release 不带 x86_64 时跳过，避免管理器 APK 多背 0.6 MB。
+            if (hasAsset("xp/hook_core_x86_64.so")) {
+                add(Added("xp/hook_core_x86_64.so", STORED) { asset("xp/hook_core_x86_64.so") })
+            }
             add(Added("xp/xp89.dex", DEFLATED) { asset("xp/xp89.dex") })
             add(Added("xp/xp100.dex", DEFLATED) { asset("xp/xp100.dex") })
             add(Added("xp/xp101.dex", DEFLATED) { asset("xp/xp101.dex") })
@@ -980,6 +982,13 @@ class ApkPatcher(private val context: Context) {
     }
 
     private fun asset(name: String): ByteArray = context.assets.open(name).use { it.readBytes() }
+
+    private fun hasAsset(name: String): Boolean = try {
+        context.assets.open(name).use { }
+        true
+    } catch (ignored: Throwable) {
+        false
+    }
 
     private fun nextBootDexIndex(entries: List<Entry>): Int {
         var max = 0
