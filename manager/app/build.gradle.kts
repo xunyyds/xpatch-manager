@@ -535,6 +535,12 @@ abstract class BuildStubDexTask : DefaultTask() {
                     javacFile.absolutePath,
                     "-encoding", "UTF-8",
                     "-nowarn",
+                    // 只留行号，不留源文件名：javac 默认会把 "AppEntry.java" 写进
+                    // class_def 的 source_file_idx，而 d8 把它原样进 dex 字符串池——
+                    // 那是一份会被注入到每个产物里的 dex，源文件名本身就是一条框架痕迹
+                    // （注入路径混淆功能要消除的正是这类字符串）。代价：堆栈里显示
+                    // "Unknown Source:行号" 而不是 "AppEntry.java:行号"，行号仍在。
+                    "-g:lines",
                     "-source", javaVersion.get(),
                     "-target", javaVersion.get(),
                     "-classpath", jarFile.absolutePath,

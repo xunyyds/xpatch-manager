@@ -7,6 +7,9 @@ public class DexVerify {
 
     private static final String[] CLASSES = {
             "io.xpatch.core.CoreEntry",
+            // 注入路径混淆（docs/inject-path-obfuscation.md）的布局解析：它在引导期被 get()/configEntry()
+            // 直接调到，是「dex 结构 / 常量池 / 正则常量」出问题时最先炸的类，必须纳入校验。
+            "io.xpatch.core.XpLayout",
             "io.xpatch.hook.XpHelper",
             "io.xpatch.core.XpInit",
             "io.xpatch.core.module.ModuleLoader",

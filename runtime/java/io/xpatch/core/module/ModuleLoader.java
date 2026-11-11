@@ -8,6 +8,7 @@ import android.util.Log;
 import dalvik.system.DexFile;
 import dalvik.system.InMemoryDexClassLoader;
 import dalvik.system.PathClassLoader;
+import io.xpatch.core.XpLayout;
 import io.xpatch.hook.AppEnv;
 import io.xpatch.hook.XpHelper;
 import io.xpatch.hook.XpHook;
@@ -28,10 +29,13 @@ import java.util.zip.ZipFile;
 
 public class ModuleLoader {
     private static final String TAG = "ModuleLoader";
+    /** 旧产物的 wrapper dex 前缀；混淆产物里条目名是随机的，真实名字见 {@link #wrapperEntry}。 */
     private static final String WRAPPER_DEX_DIR = "xp/";
     private static final String WRAPPER_ENTRY_CLASS = "io.xpatch.wrapper.WrapperBase";
     private static final String WRAPPER_ENTRY_METHOD = "loadModule";
     private static final String[] WRAPPER_NAMES = {"xp89", "xp100", "xp101", "xp102"};
+    /** 与 {@link #WRAPPER_NAMES} 一一对应的 XpLayout 逻辑名（xp89 → dex89…）。 */
+    private static final String[] WRAPPER_LOGICAL = {"dex89", "dex100", "dex101", "dex102"};
     private static final Map<String, byte[]> WRAPPER_DEX_CACHE = new ArrayMap();
 
     
@@ -44,6 +48,22 @@ public class ModuleLoader {
 
 
 
+
+    /**
+     * wrapper 名（xp89/xp100/xp101/xp102）→ 包装 APK 里的真实条目名。
+     *
+     * <p>旧产物是 {@code xp/<wrapper>.dex}；开了路径混淆的产物里是 config 的
+     * {@code res_dex<API 级别>}（如 {@code res_dex89}），由 {@link XpLayout} 解析。
+     * 名字表里查不到这个 wrapper（理论上不可能，保护未来改名）时按旧前缀直拼，与今天一致。
+     */
+    private static String wrapperEntry(String wrapper) {
+        for (int i = 0; i < WRAPPER_NAMES.length; i++) {
+            if (WRAPPER_NAMES[i].equals(wrapper)) {
+                return XpLayout.get(WRAPPER_LOGICAL[i]);
+            }
+        }
+        return WRAPPER_DEX_DIR + wrapper + ".dex";
+    }
 
     /**
      * Android 17 的 ZipFile.getEntry 在部分动态包装包上会返回 null（明明 unzip 能看到条目）；
@@ -75,9 +95,10 @@ public class ModuleLoader {
                         continue;
                     }
                     try {
-                        ZipEntry entry = findEntry(zipFile, WRAPPER_DEX_DIR + str + ".dex");
+                        String entryName = wrapperEntry(str);
+                        ZipEntry entry = findEntry(zipFile, entryName);
                         if (entry == null) {
-                            throw new IllegalStateException("missing payload entry: " + WRAPPER_DEX_DIR + str + ".dex");
+                            throw new IllegalStateException("missing payload entry: " + entryName);
                         }
                         InputStream inputStream = zipFile.getInputStream(entry);
                         try {
@@ -184,7 +205,7 @@ public class ModuleLoader {
             if (bArr != null) {
                 return bArr;
             }
-            byte[] selfEntryBytes = readSelfEntryBytes(WRAPPER_DEX_DIR + str + ".dex");
+            byte[] selfEntryBytes = readSelfEntryBytes(wrapperEntry(str));
             map.put(str, selfEntryBytes);
             return selfEntryBytes;
         }

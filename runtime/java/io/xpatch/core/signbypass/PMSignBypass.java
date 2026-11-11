@@ -11,6 +11,7 @@ import android.os.Parcel;
 import android.os.Parcelable;
 import android.os.Process;
 import android.util.Log;
+import io.xpatch.core.XpLayout;
 import io.xpatch.core.reflect.XClass;
 import io.xpatch.core.reflect.XField;
 import io.xpatch.core.reflect.XMethod;
@@ -19,7 +20,6 @@ import io.xpatch.hook.XpHook;
 import io.xpatch.utils.DataUtils;
 import java.io.ByteArrayInputStream;
 import java.io.File;
-import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Method;
 import java.security.MessageDigest;
@@ -34,7 +34,6 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -69,7 +68,7 @@ public class PMSignBypass {
 
     private static final Signature[] NO_CONFIG_CERTS = new Signature[0];
 
-    /** sourceDir + lastModified + length -> 该包 xp/config.json 里的原证书；负缓存用 NO_CONFIG_CERTS。 */
+    /** sourceDir + lastModified + length -> 该包 config 里的原证书；负缓存用 NO_CONFIG_CERTS。 */
     private static final Map<String, Signature[]> configCertCache = new ConcurrentHashMap<String, Signature[]>();
 
     /** getPackageArchiveInfo 可能一层重载转调另一层重载：只允许最外层做一次路径映射，避免自我抵消。 */
@@ -784,15 +783,15 @@ public class PMSignBypass {
 
     private static Signature[] readConfigCertificates(String sourceDir) {
         ZipFile zipFile = null;
-        InputStream in = null;
         try {
             zipFile = new ZipFile(sourceDir);
-            ZipEntry entry = zipFile.getEntry("xp/config.json");
-            if (entry == null) {
+            // 目标包可能是路径混淆产物（不管是不是本管理器打的包），config 的条目名不可预测：
+            // 由 XpLayout 按"候选正则 + 内容含 res_cfg"现场发现，找不到（普通 APK）返回 null。
+            // 换包名不影响判定——布局与包名无关，只看条目名形状与内容。
+            String json = XpLayout.readConfigText(zipFile);
+            if (json == null) {
                 return NO_CONFIG_CERTS;
             }
-            in = zipFile.getInputStream(entry);
-            String json = new String(DataUtils.readAllBytes(in), "UTF-8");
             JSONArray array = new JSONObject(json).optJSONArray("sign");
             if (array == null || array.length() == 0) {
                 return NO_CONFIG_CERTS;
@@ -803,15 +802,9 @@ public class PMSignBypass {
             }
             return signatures;
         } catch (Throwable th) {
-            XpHook.log0(TAG_FILL, "读取 " + sourceDir + " 的 xp/config.json 失败：" + Log.getStackTraceString(th));
+            XpHook.log0(TAG_FILL, "读取 " + sourceDir + " 的 config 失败：" + Log.getStackTraceString(th));
             return NO_CONFIG_CERTS;
         } finally {
-            if (in != null) {
-                try {
-                    in.close();
-                } catch (Throwable ignored) {
-                }
-            }
             if (zipFile != null) {
                 try {
                     zipFile.close();

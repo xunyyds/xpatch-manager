@@ -56,11 +56,29 @@ import org.json.JSONObject;
 import org.lsposed.hidden.HiddenApiBypass;
 
 public class XpInit {
-    private static final String CONFIG_PATH = "xp/config.json";
-    private static final String HOOK_CORE_PATH = "xp/hook_core.dex";
-    private static final String ORIGIN_PATH = "xp/source.apk";
-    private static final String O_ORIGIN_PATH = "xp/o_app.apk";
     private static final String TAG = "XpInit";
+
+    /**
+     * 运行层资产名只有在布局解析之后才确定（要用 AppEnv.selfApk 去发现 config），
+     * 所以这里是方法而不是 {@code static final} 常量：常量在类初始化时求值，那一刻 selfApk
+     * 可能还没就绪，会把回落名字永久固化下来（混淆产物就会全部读不到）。
+     * 名字表与回落值都在 {@link XpLayout}，本类不再出现 {@code xp/*} 字面量。
+     */
+    private static String configPath() {
+        return XpLayout.configEntry();
+    }
+
+    private static String hookCorePath() {
+        return XpLayout.get("hook_dex");
+    }
+
+    private static String originPath() {
+        return XpLayout.get("source");
+    }
+
+    private static String oOriginPath() {
+        return XpLayout.get("o_source");
+    }
 
     /** 模块崩溃广播：action、接收方需要的权限（W5 在管理器清单里声明同名 signature 权限）。 */
     private static final String ACTION_MODULE_CRASH = "io.xpatch.action.MODULE_CRASH";
@@ -125,7 +143,7 @@ public class XpInit {
             AppEnv.nativeLoadedByHookCore = true;
             preDeopt();
             // 必须在 native io 重定向启用前读包装 APK：重定向会把 selfApk 的 open
-            // 重定向到 xp/source.apk，之后再读 xp/xp89.dex 只会看到原包的 3 个条目。
+            // 重定向到内嵌原包（旧名 xp/source.apk），之后再读运行层资产只会看到原包的那几个条目。
             preloadWrapperAssets();
             installSignBypass();
             if (AppEnv.dynamicMode && AppEnv.packageName.equals(AppEnv.processName)) {
@@ -400,8 +418,8 @@ public class XpInit {
     }
 
     /**
-     * 在 native io 重定向之前读取包装 APK 里的运行层资产：redirect 会把这些路径的
-     * open 重定向到 xp/source.apk，之后再读 xp/xp89.dex / xp/file_provider 就会拿到原包内容。
+     * 在 native io 重定向之前读取包装 APK 里的运行层资产：redirect 会把这些路径的 open
+     * 重定向到内嵌原包（旧名 xp/source.apk），之后再读 wrapper dex / file_provider 就会拿到原包内容。
      */
     private static void preloadWrapperAssets() {
         try {
@@ -413,13 +431,14 @@ public class XpInit {
             return;
         }
         try {
+            String fileProviderEntry = XpLayout.get("file_provider");
             ZipFile zipFile = new ZipFile(AppEnv.selfApk);
-            ZipEntry entry = zipFile.getEntry("xp/file_provider");
+            ZipEntry entry = zipFile.getEntry(fileProviderEntry);
             if (entry == null) {
                 java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
                 while (entries.hasMoreElements()) {
                     ZipEntry candidate = entries.nextElement();
-                    if ("xp/file_provider".equals(candidate.getName())) {
+                    if (fileProviderEntry.equals(candidate.getName())) {
                         entry = candidate;
                         break;
                     }
@@ -476,16 +495,17 @@ public class XpInit {
         Constructor<?> constructor;
         if (AppEnv.fileProvider) {
             byte[] allBytes = AppEnv.fileProviderDex;
+            String fileProviderEntry = XpLayout.get("file_provider");
             if (allBytes == null) {
                 // 兜底：没有提前预读（极老产物/非动态路径）时再读一次包装 APK；
                 // 此时若 native 重定向已启用，可能会读到原包，注入会失败但会被调用方降级。
                 ZipFile zipFile = new ZipFile(AppEnv.selfApk);
-                ZipEntry entry = zipFile.getEntry("xp/file_provider");
+                ZipEntry entry = zipFile.getEntry(fileProviderEntry);
                 if (entry == null) {
                     java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
                     while (entries.hasMoreElements()) {
                         ZipEntry candidate = entries.nextElement();
-                        if ("xp/file_provider".equals(candidate.getName())) {
+                        if (fileProviderEntry.equals(candidate.getName())) {
                             entry = candidate;
                             break;
                         }
@@ -497,7 +517,7 @@ public class XpInit {
                 zipFile.close();
             }
             if (allBytes == null || allBytes.length == 0) {
-                XpHook.log0(TAG, "xp/file_provider 缺失或为空，跳过 file provider dex 注入");
+                XpHook.log0(TAG, fileProviderEntry + " 缺失或为空，跳过 file provider dex 注入");
                 return;
             }
             ByteBuffer[] byteBufferArr = {ByteBuffer.wrap(allBytes)};
@@ -681,9 +701,14 @@ public class XpInit {
     }
 
     private static void performXpConfig() throws IOException {
+        // 布局必须最早解析：下面所有条目名（config 本体、内嵌原包、hook 引擎 dex）在混淆产物里
+        // 都是随机名。其它方法即使先于这里调用 XpLayout.get() 也没问题——每个 get() 内部都会
+        // 再兜一次懒初始化，这里显式调用只是为了让"配置先行"的顺序在代码里看得出来。
+        XpLayout.ensureInstalled();
+        String configEntry = configPath();
         ZipFile zipFile = new ZipFile(AppEnv.selfApk);
         try {
-            InputStream inputStream = zipFile.getInputStream(zipFile.getEntry(CONFIG_PATH));
+            InputStream inputStream = zipFile.getInputStream(zipFile.getEntry(configEntry));
             try {
                 JSONObject jSONObject = new JSONObject(new String(DataUtils.readAllBytes(inputStream)));
                 AppEnv.baseApp.appComponentFactory = jSONObject.getString("app_component_name");
@@ -702,7 +727,7 @@ public class XpInit {
                 AppEnv.signing_details = jSONObject.optString("signing_details", null);
                 // 版本只告警不阻断：内核可能比打包器新，功能降级比启动失败可接受
                 if (jSONObject.has("ver") && AppEnv.core_ver != CoreEntry.RUNTIME_VERSION) {
-                    XpHook.log0(TAG, "运行时版本不一致：xp/config.json ver=" + AppEnv.core_ver
+                    XpHook.log0(TAG, "运行时版本不一致：" + configEntry + " ver=" + AppEnv.core_ver
                             + "，内核 RUNTIME_VERSION=" + CoreEntry.RUNTIME_VERSION
                             + "（建议用当前版本管理器重新打包）");
                 }
@@ -725,15 +750,16 @@ public class XpInit {
                 throw th;
             }
         } catch (Exception unused) {
-            XpHook.log0(TAG, "无法读取配置：xp/config.json");
+            XpHook.log0(TAG, "无法读取配置：" + configEntry);
         }
         // sig_mode=off 不释放原包（否则每个应用白占一份 APK 体积，且 source_apk_path 非空
         // 会让“文件层可用”的判断失真）；dynamic_mode 自己要原包路径，单独保留
         boolean signBypassEnabled = !AppEnv.SIG_MODE_OFF.equals(AppEnv.sig_mode);
         if ((signBypassEnabled && AppEnv.sign_bypass_type > 0) || AppEnv.dynamicMode) {
-            ZipEntry entry = zipFile.getEntry(ORIGIN_PATH);
+            String originEntry = originPath();
+            ZipEntry entry = zipFile.getEntry(originEntry);
             if (entry == null) {
-                XpHook.log0(TAG, "xp/source.apk 不存在，跳过原包释放");
+                XpHook.log0(TAG, originEntry + " 不存在，跳过原包释放");
             } else {
                 String str = AppEnv.baseApp.dataDir + "/cache/android_id/" + entry.getCrc() + ".apk";
                 File file = new File(str);
@@ -750,9 +776,10 @@ public class XpInit {
             }
         }
         try {
-            ZipEntry entry2 = zipFile.getEntry(O_ORIGIN_PATH);
+            String oOriginEntry = oOriginPath();
+            ZipEntry entry2 = zipFile.getEntry(oOriginEntry);
             if (entry2 == null) {
-                XpHook.log0(TAG, "xp/o_app.apk 不存在，跳过");
+                XpHook.log0(TAG, oOriginEntry + " 不存在，跳过");
             } else {
                 String str2 = AppEnv.baseApp.dataDir + "/cache/android_id/" + entry2.getCrc() + ".apk";
                 File file2 = new File(str2);
@@ -808,8 +835,9 @@ public class XpInit {
     }
 
     private static void initHookCore() throws Exception {
+        String hookCoreEntry = hookCorePath();
         ZipFile zipFile = new ZipFile(AppEnv.selfApk);
-        byte[] allBytes = DataUtils.readAllBytes(zipFile.getInputStream(zipFile.getEntry(HOOK_CORE_PATH)));
+        byte[] allBytes = DataUtils.readAllBytes(zipFile.getInputStream(zipFile.getEntry(hookCoreEntry)));
         zipFile.close();
         AppEnv.hook_core_cl = SimpleClassLoader.loadDex(new ByteBuffer[]{ByteBuffer.wrap(allBytes)}, XpInit.class.getClassLoader());
         AppEnv.hook_core_cl.loadClass("io.xpatch.core.entry.CoreEntry").getMethod("InitHookCore", new Class[0]).invoke(null, new Object[0]);

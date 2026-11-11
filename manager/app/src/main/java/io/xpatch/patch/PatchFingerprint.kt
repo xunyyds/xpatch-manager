@@ -23,6 +23,8 @@ object PatchFingerprint {
             "forceOverwrite=${options.forceOverwrite}",
             "sigMode=${options.sigMode}",
             "entryHook=${options.entryHook}",
+            "obfuscate=${options.obfuscate}",
+            "keepCrashPerm=${options.obfuscateKeepCrashPermission}",
         ).joinToString("|")
         return sha256(raw)
     }
@@ -50,6 +52,11 @@ object PatchFingerprint {
             mode,
         )
         if (options.forceOverwrite) parts.add("强行覆盖")
+        // 路径混淆改变了产物条目名与清单（换了注入集合），摘要里必须写出来，否则两条记录看起来配置相同。
+        if (options.obfuscate) {
+            parts.add("路径混淆")
+            if (options.obfuscateKeepCrashPermission) parts.add("保留熔断权限")
+        }
         val name = options.versionName.orEmpty()
         val code = options.versionCode
         if (name.isNotBlank() || code != null) {
@@ -98,9 +105,11 @@ object PatchFingerprint {
 
     private val HEX = "0123456789abcdef".toCharArray()
 
-    // 摘要格式版本：第 3 版起产物新增 x86_64 原生库与「极致」档（deep/3），
+    // 摘要格式版本：第 4 版起注入路径混淆开关会改变产物条目名与清单（注入集合都变了），
+    // 旧缓存产物必须失效并重新打包，否则会复用一份名字还是 xp/* 的旧包。
+    // 第 3 版起产物新增 x86_64 原生库与「极致」档（deep/3），
     // 旧缓存产物必须失效并重新打包，否则会复用一份缺 x86_64 资产/旧档位的包。
-    private const val SCHEMA = 3
+    private const val SCHEMA = 4
 
     private val TIER_LABELS = mapOf(
         "none" to "无过签",

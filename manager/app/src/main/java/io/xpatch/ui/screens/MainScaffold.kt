@@ -284,6 +284,8 @@ fun MainScaffold(
         settingsStore.setForceOverwrite(options.forceOverwrite)
         settingsStore.setSigMode(options.sigMode)
         settingsStore.setEntryHook(options.entryHook)
+        settingsStore.setInjectObfuscate(options.obfuscate)
+        settingsStore.setInjectKeepCrashPermission(options.obfuscateKeepCrashPermission)
         settings = settings.copy(
             hookCore = options.hookCore,
             signatureBypassLevel = options.bypassLevel,
@@ -293,6 +295,8 @@ fun MainScaffold(
             forceOverwrite = options.forceOverwrite,
             sigMode = options.sigMode,
             entryHook = options.entryHook,
+            injectObfuscate = options.obfuscate,
+            injectKeepCrashPermission = options.obfuscateKeepCrashPermission,
         )
         val sourceKey = patchSourceKey(target)
         val fingerprint = PatchFingerprint.of(sourceKey, options)
@@ -1514,6 +1518,16 @@ fun MainScaffold(
                             sigMode = mode,
                             signatureBypassLevel = level,
                             entryHook = hook,
+                        )
+                    },
+                    onObfuscateChange = { obfuscate, keepCrash ->
+                        // 与上面的入口 Hook 同理：两个开关一变更就落盘并同步 settings，
+                        // 否则退出再进本页时 defaults 还是旧值，界面与实际产物配置脱钩。
+                        settingsStore.setInjectObfuscate(obfuscate)
+                        settingsStore.setInjectKeepCrashPermission(keepCrash)
+                        settings = settings.copy(
+                            injectObfuscate = obfuscate,
+                            injectKeepCrashPermission = keepCrash,
                         )
                     },
                     findReusable = { options ->

@@ -143,6 +143,9 @@ internal fun ConfigScreen(
     // 档位/入口 Hook 一变更就落盘 SettingsStore 并同步 MainScaffold 的 settings：
     // 只在本页攒 state、直到点「开始 Patch」才写，会出现"设置了却没保存"和 settings.copy 脱钩。
     onSignatureModeChange: (sigMode: String, bypassLevel: Int, entryHook: Boolean) -> Unit,
+    // 注入路径混淆的两个开关同样立刻落盘；混淆总开关与「保留熔断权限」一起传，
+    // 因为关掉混淆时子开关不再显示，但它的持久值要保留下来（下次打开还是原样）。
+    onObfuscateChange: (obfuscate: Boolean, keepCrash: Boolean) -> Unit,
     forceOverwriteReady: Boolean,
     forceOverwriteBlockReason: String,
     findReusable: (PatchOptions) -> PatchRecord?,
@@ -156,6 +159,8 @@ internal fun ConfigScreen(
     var forceOverwrite by remember { mutableStateOf(defaults.forceOverwrite) }
     var sigMode by remember { mutableStateOf(defaults.sigMode) }
     var entryHook by remember { mutableStateOf(defaults.entryHook) }
+    var injectObfuscate by remember { mutableStateOf(defaults.injectObfuscate) }
+    var injectKeepCrashPermission by remember { mutableStateOf(defaults.injectKeepCrashPermission) }
     var forceOverwriteError by remember { mutableStateOf<String?>(null) }
     var showHookDialog by remember { mutableStateOf(false) }
     var showBypassDialog by remember { mutableStateOf(false) }
@@ -212,6 +217,8 @@ internal fun ConfigScreen(
         versionCode = versionCode.trim().toIntOrNull(),
         sigMode = sigMode,
         entryHook = entryHook,
+        obfuscate = injectObfuscate,
+        obfuscateKeepCrashPermission = injectKeepCrashPermission,
     )
     val reusable = findReusable(options)
     var reuseConfirm by remember { mutableStateOf<PatchRecord?>(null) }
@@ -303,6 +310,30 @@ internal fun ConfigScreen(
                                 onSignatureModeChange(sigMode, bypass, on)
                             },
                         )
+                        // 注入路径混淆：把 xp/* 条目名与清单里的类名换成随机名，产物在静态检查下无痕迹。
+                        // 只影响下一次打包，已打好的产物不受影响（因此 subtitle 明说"重新打包后生效"）。
+                        SwitchLine(
+                            title = "注入路径混淆",
+                            subtitle = "实验：抹掉产物里的 xp/* 条目名与清单里的类名，静态检查看不出修补痕迹；重新打包后生效",
+                            checked = injectObfuscate,
+                            onChange = { on ->
+                                injectObfuscate = on
+                                onObfuscateChange(on, injectKeepCrashPermission)
+                            },
+                        )
+                        // 子开关只在混淆打开时有意义：保留它会在清单里留下一处 xpatch 字样。
+                        if (injectObfuscate) {
+                            SwitchLine(
+                                title = "保留模块熔断权限",
+                                subtitle = "会恢复模块崩溃通知，但清单里会留下 io.xpatch.permission.MODULE_CRASH",
+                                checked = injectKeepCrashPermission,
+                                onChange = { on ->
+                                    injectKeepCrashPermission = on
+                                    onObfuscateChange(injectObfuscate, on)
+                                },
+                            )
+                        }
+                        NoteText("混淆会把注入条目改名为随机资产路径，并跳过熔断权限声明；模块崩溃时管理器只能看到日志。")
                         SwitchLine(
                             title = "强行覆盖安装",
                             subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",

@@ -6,6 +6,10 @@ import android.content.pm.PackageManager
 import android.content.pm.Signature
 import android.content.pm.SigningInfo
 import android.os.Build
+import io.xpatch.patch.obfuscate.InjectLayout
+import io.xpatch.patch.obfuscate.InjectedEntrySet
+import io.xpatch.patch.obfuscate.Logical
+import io.xpatch.patch.obfuscate.StubRewriter
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
@@ -36,6 +40,10 @@ class ApkPatcher(private val context: Context) {
         val embedSource: Boolean = false,
         val sigMode: String = "java",
         val entryHook: Boolean = false,
+        /** 注入路径混淆（docs/inject-path-obfuscation.md）。默认关：关掉时必须与今天逐字节等价。 */
+        val obfuscate: Boolean = false,
+        /** 混淆下仍然声明 `io.xpatch.permission.MODULE_CRASH`，换回模块熔断广播。 */
+        val obfuscateKeepCrashPermission: Boolean = false,
     )
 
     data class Result(
@@ -43,6 +51,8 @@ class ApkPatcher(private val context: Context) {
         val originalFactory: String?,
         val bootDexName: String,
         val config: String,
+        /** 本次产物的混淆布局；开关关闭时为 null。排障/日志用，不参与签名与指纹。 */
+        val layout: InjectLayout? = null,
     )
 
     fun patch(
@@ -68,25 +78,37 @@ class ApkPatcher(private val context: Context) {
         }
         onLog("解析完成，共 ${entries.size} 个条目")
 
+        // 自家产物发现必须排在 legacy 剥离之前：混淆产物的条目名没有任何固定前缀，
+        // 只有先按 res_* 读回 config 才知道哪些条目是我们写的；认不出来就会把旧产物
+        // 当原包再注一层，产物体积逐次翻倍（契约 §3 发现机制）。
+        var strip = discoverLayout(sourceApk, entries, onLog)
+        // 最外层的布局：只有它的类名出现在**输入清单**里，二次打包复用类名、判断自我委派都看它。
+        // 里面各层的名字是各自随机生成的，对下一层完全无效（见剥循环末尾的重新发现）。
+        val outerLayout = strip.layout
+
         // 上一版产物里留存的原始清单。重复打包时输入清单可能已经被我们改写过，
         // 直接把它写回 xp/source.manifest 会让"重建原包"带着 io.xpatch.stub 的痕迹（审查 P2-17），
-        // 所以在剥离前先把这份正确值读出来备用。
+        // 所以在剥离前先把这份正确值读出来备用。混淆产物把它叫 res_source_manifest。
+        val recordedEntry = outerLayout?.entry(Logical.SOURCE_MANIFEST) ?: ORIGINAL_MANIFEST_ENTRY
         val recordedManifest = runCatching {
             RandomAccessFile(sourceApk, "r").use { src ->
-                entries.firstOrNull { it.name == ORIGINAL_MANIFEST_ENTRY }?.let { readEntry(src, it) }
+                entries.firstOrNull { it.name == recordedEntry }?.let { readEntry(src, it) }
             }
         }.getOrNull()
 
         var depth = 0
         while (
             depth < MAX_STRIP_DEPTH &&
-            entries.any { isInjectedEntry(it.name) || embeddedSourceOf(it.name) }
+            entries.any { strip.isInjected(it.name) || strip.isEmbeddedSource(it.name) }
         ) {
-            val legacyFamily = legacyFamily(entries)
+            val legacyFamily = if (strip.layout == null) legacyFamily(entries) else null
             onLog(
                 if (depth == 0) {
-                    if (legacyFamily != null) "检测到历史注入层，剥离后重新打包"
-                    else "检测到源包已注入，剥离旧内核层"
+                    when {
+                        strip.layout != null -> "检测到本框架混淆产物，按布局剥离后重新打包"
+                        legacyFamily != null -> "检测到历史注入层，剥离后重新打包"
+                        else -> "检测到源包已注入，剥离旧内核层"
+                    }
                 } else {
                     "第 ${depth + 1} 层仍有注入痕迹，继续剥离"
                 },
@@ -94,12 +116,12 @@ class ApkPatcher(private val context: Context) {
             if (depth == 0 && legacyFamily != null) {
                 onLog("源包可能由 $legacyFamily 旧签名签发，覆盖安装需在打包页选择对应签名，或卸载后重装")
             }
-            val stripped = stripInjected(effectiveSource, entries, onLog)
+            val stripped = stripInjected(effectiveSource, entries, onLog, strip.sourceEntry)
             if (stripped == null) {
                 onLog("第 ${depth + 1} 层无法提取内嵌原始包，仅移除注入条目")
                 entries = dropOverlappingNested(
                     effectiveSource,
-                    entries.filter { !isInjectedEntry(it.name) },
+                    entries.filter { !strip.isInjected(it.name) },
                     onLog,
                 )
                 break
@@ -110,16 +132,27 @@ class ApkPatcher(private val context: Context) {
                 entries = readCentralDirectory(source, effectiveSource.length())
             }
             depth++
+            // 新一层可能是另一代产物（旧版本打出来的，条目名是另一套随机值），上一层的布局
+            // 对它完全无效。**必须无条件重新发现**，不能加"内层还有 assets/ 才重发现"这种
+            // 前置条件：动态档产物的引导桩就叫 classes.dex，而解出来的原始包里应用自己的
+            // 代码也叫 classes.dex —— 若继续沿用外层布局，下一轮会把**原始包的 classes.dex
+            // 当成我们的引导桩删掉**，产物变成"有清单、没有应用代码"，装上去就是
+            // ClassNotFoundException: <应用入口类>（实测复现）。重发现找不到东西时
+            // layout 为 null，下一轮循环自然结束。
+            if (depth < MAX_STRIP_DEPTH) {
+                strip = discoverLayout(effectiveSource, entries, onLog)
+            }
         }
 
         // 兜底闸门：要内嵌原包时，最终源自身还带 xp/source.apk 说明上面的剥离没真正
         // 还原到原始包；此时再写一份 source.apk 就是把上一代补丁包嵌套进来，体积逐次翻倍。
         // 宁可让这次打包失败并报错，也不能生成一个会无限膨胀的产物。
+        // 判定同时覆盖布局条目（isLayoutEntry）与旧前缀：混淆产物的名字没有前缀可认。
         if (options.embedSource) {
             val stillInjected = runCatching {
                 java.util.zip.ZipFile(effectiveSource).use { zip ->
                     java.util.Collections.list(zip.entries()).any { entry ->
-                        INJECTED_PREFIXES.any { entry.name.startsWith(it) }
+                        strip.isLayoutEntry(entry.name) || INJECTED_PREFIXES.any { entry.name.startsWith(it) }
                     }
                 }
             }.getOrDefault(false)
@@ -135,7 +168,7 @@ class ApkPatcher(private val context: Context) {
         RandomAccessFile(effectiveSource, "r").use { source ->
             entries = dropStaleBootDex(source, entries, onLog)
         }
-        assertClean(entries, effectiveSource, onLog)
+        assertClean(entries, effectiveSource, onLog, strip)
 
         // FPA 动态加载：代码由 xp/source.apk 在运行时提供；除 classes*.dex 和签名文件外，
         // 其余条目全部保留。不能只保留 res/assets/lib：MT 管理器这类加固包把资源 XML
@@ -150,6 +183,83 @@ class ApkPatcher(private val context: Context) {
             onLog("动态加载：保留 ${entries.size}/$before 个条目（清单/资源/assets/原生库/根目录资源），代码由原包提供")
         }
 
+        val bootDexIndex = nextBootDexIndex(entries)
+        val bootDexName = if (bootDexIndex <= 1) "classes.dex" else "classes$bootDexIndex.dex"
+
+        // —— 第 2、3 层：类名与元数据（只有开关打开时才执行）——
+
+        // 随机源拆成两半：布局的目录/文件名按契约用 SecureRandom（§4.1），这里只额外取一个
+        // seed 给"类名 + 条目顺序 + 时间戳"用，让同一份日志能复现同一份产物。
+        val obfuscationSeed = if (options.obfuscate) SecureRandom().nextLong() else 0L
+        val stubAsset = asset("xp/stub.dex")
+        var stub = if (options.obfuscate) {
+            StubRewriter.rewrite(
+                dex = stubAsset,
+                seed = obfuscationSeed,
+                // 二次打包：优先复用输入清单里已有的类名，否则清单里会留下指向旧类名的
+                // <provider>（类已不存在 → 目标应用启动即崩）。
+                preferredFactory = outerLayout?.factoryDashed,
+                preferredProvider = outerLayout?.providerDashed,
+            )
+        } else {
+            StubRewriter.skipped(stubAsset, null)
+        }
+        val layout = if (!options.obfuscate) {
+            null
+        } else {
+            runCatching {
+                InjectLayout.generate(
+                    existingNames = entries.mapTo(HashSet()) { it.name },
+                    bootDex = bootDexName,
+                    includeSource = options.embedSource,
+                    factoryDashed = stub.factoryDashed,
+                    providerDashed = if (options.entryHook && !options.dynamicMode) stub.providerDashed else null,
+                    seed = obfuscationSeed,
+                )
+            }.mapCatching { generated ->
+                // release 变体不带 x86_64 原生库；布局里跟着去掉这一条，免得 config 的
+                // res_hook_so_x86_64 指向一个 zip 里根本不存在的条目（读侧会白找一次）。
+                if (hasAsset("xp/hook_core_x86_64.so") || generated.entry(Logical.HOOK_SO_X86_64) == null) {
+                    generated
+                } else {
+                    generated.copy(entries = generated.entries - Logical.HOOK_SO_X86_64)
+                }
+            }.onFailure { onLog("生成注入布局失败（${it.message}），本次按不混淆打包") }.getOrNull()
+        }
+        if (options.obfuscate && layout == null) {
+            // 布局摇不出来 = 路径混淆整层失效，类名必须跟着退回：清单指向的类名和 dex 里的
+            // 类名不一致，等于让目标应用启动时找不到 appComponentFactory。
+            stub = StubRewriter.skipped(stubAsset, "注入布局生成失败")
+        }
+        if (layout != null) {
+            onLog("注入路径混淆：开（目录 ${layout.dir}，类名 ${layout.factoryDashed}）")
+            if (!stub.renamed) {
+                onLog("类名混淆已降级，清单仍指向 ${stub.factoryDashed}（${stub.reason}）")
+            } else if (outerLayout != null) {
+                onLog("复用上一版产物的类名：${layout.factoryDashed}")
+            }
+        } else if (!options.obfuscate) {
+            onLog("注入路径混淆：关（沿用 xp/ 前缀与 io.xpatch.stub 类名）")
+        } else {
+            onLog("注入路径混淆：关（布局生成失败，本次按旧名字打包）")
+        }
+        // 旧产物清单里的 provider 元素指向上一版的随机类名；这次没复用它就没法删掉那条元素
+        // （AxmlEditor 只做插入/校正，不做删除），先把风险显式讲清楚，免得排查时一头雾水。
+        val staleProvider = outerLayout?.providerDashed
+        if (options.obfuscate && options.entryHook && !options.dynamicMode &&
+            staleProvider != null && staleProvider != layout?.providerDashed
+        ) {
+            onLog("提示：输入清单里的旧 provider（$staleProvider）无法复用，可能残留指向旧类名的入口")
+        }
+
+        // 注入路径混淆后清单里没有 io.xpatch 字面量了；判断"这个工厂是不是我们自己的"
+        // 也要把上一版的随机类名算进来，否则 config 的 app_component_name 会被写成我们自己的桩，
+        // 运行层再委派一次就是死循环。
+        val ourStubFactories = buildSet {
+            addAll(LEGACY_STUB_CLASSES)
+            outerLayout?.factoryDashed?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+
         RandomAccessFile(effectiveSource, "r").use { source ->
             val manifestEntry = entries.firstOrNull { it.name == MANIFEST }
                 ?: error("APK 缺少 AndroidManifest.xml")
@@ -162,23 +272,36 @@ class ApkPatcher(private val context: Context) {
                 input = inputManifest,
                 expectedPackage = manifestPackage,
                 onLog = onLog,
+                ourStubs = ourStubFactories,
             )
-            val inputFactory = sanitizeFactory(editor.readApplicationAttribute(ATTR_FACTORY_NAME), onLog)
-            originalFactory = inputFactory ?: recoverFactory(originalManifest, onLog)
+            val inputFactory = sanitizeFactory(
+                editor.readApplicationAttribute(ATTR_FACTORY_NAME),
+                onLog,
+                ourStubFactories,
+            )
+            originalFactory = inputFactory ?: recoverFactory(originalManifest, onLog, ourStubFactories)
 
             // 工厂注入始终写入：它在每个进程的 instantiateClassLoader 阶段就生效，既早于
             // Application.attachBaseContext，也天然覆盖多进程；provider 只是 entryHook 的备用入口
             // （审查 P2-1/P2-16：provider.onCreate 晚于 attachBaseContext，且只覆盖主进程）。
-            var patched = editor.setApplicationAttribute(ATTR_FACTORY_NAME, STUB_CLASS)
+            val factoryName = layout?.factoryDashed ?: STUB_CLASS
+            val providerName = layout?.providerDashed ?: XP_PROVIDER_CLASS
+            var patched = editor.setApplicationAttribute(ATTR_FACTORY_NAME, factoryName)
             if (options.entryHook && !options.dynamicMode) {
                 if (manifestPackage.isBlank()) {
                     onLog("清单缺少 package 属性，无法生成 provider authority，仅保留工厂注入")
                 } else {
-                    val authority = "$manifestPackage.xpatch"
-                    if (editor.hasProvider(XP_PROVIDER_CLASS, authority)) {
-                        onLog("清单已含 $XP_PROVIDER_CLASS，复用既有 provider，不重复插入")
+                    // authority 后缀取布局里的 8 位 hex：随机、且与原包已有 authority 撞车的概率
+                    // 约 1/4e9；真撞了 addProvider 会拒绝插入（authority 唯一由它兜底）。
+                    val authority = if (layout != null) {
+                        "$manifestPackage.${layout.hex8}"
+                    } else {
+                        "$manifestPackage.xpatch"
                     }
-                    patched = AxmlEditor(patched).addProvider(XP_PROVIDER_CLASS, authority)
+                    if (editor.hasProvider(providerName, authority)) {
+                        onLog("清单已含 $providerName，复用既有 provider，不重复插入")
+                    }
+                    patched = AxmlEditor(patched).addProvider(providerName, authority)
                     providerReady = true
                 }
             }
@@ -193,7 +316,14 @@ class ApkPatcher(private val context: Context) {
         onLog(if (providerReady) "已写入工厂注入（+ provider 备用入口）" else "已写入工厂注入")
         // 最后一步再补权限声明：它只影响"模块熔断广播能否送达管理器"，失败时保留其它注入
         // （工厂 / provider / 版本），理由见 injectModuleCrashPermission 的注释。
-        manifest = injectModuleCrashPermission(manifest, onLog)
+        // 混淆开启且没勾"保留熔断权限"时整条跳过：这是清单里唯一还带 xpatch 的字符串，
+        // 代价是模块崩溃时管理器收不到广播（只剩日志），必须明说而不是静默降级。
+        manifest = if (options.obfuscate && !options.obfuscateKeepCrashPermission) {
+            onLog("注入路径混淆已开启：跳过 $MODULE_CRASH_PERMISSION，模块崩溃时管理器收不到熔断广播")
+            manifest
+        } else {
+            injectModuleCrashPermission(manifest, onLog)
+        }
         if (options.versionName?.isNotBlank() == true || options.versionCode != null) {
             onLog("自定义版本：" + listOfNotNull(
                 options.versionName?.takeIf { it.isNotBlank() }?.let { "versionName=$it" },
@@ -202,10 +332,8 @@ class ApkPatcher(private val context: Context) {
         }
         onProgress(25)
 
-        val bootDexIndex = nextBootDexIndex(entries)
-        val bootDexName = if (bootDexIndex <= 1) "classes.dex" else "classes$bootDexIndex.dex"
         val packageInfo = packageInfoOf(effectiveSource)
-        val config = buildConfig(packageInfo, originalFactory, options, effectiveSource)
+        val config = buildConfig(packageInfo, originalFactory, options, effectiveSource, layout)
 
         val embeddedCrc = AtomicLong()
         val embeddedFailure = AtomicReference<Throwable?>()
@@ -232,6 +360,7 @@ class ApkPatcher(private val context: Context) {
                 manifest = manifest,
                 originalManifest = originalManifest,
                 bootDexName = bootDexName,
+                stubDex = stub.bytes,
                 config = config,
                 packageName = packageInfo?.packageName.orEmpty(),
                 embeddedCrc = embeddedCrc,
@@ -240,6 +369,7 @@ class ApkPatcher(private val context: Context) {
                 onProgress = onProgress,
                 onLog = onLog,
                 embedSource = options.embedSource,
+                layout = layout,
             )
         } finally {
             embeddedReady.countDown()
@@ -252,12 +382,64 @@ class ApkPatcher(private val context: Context) {
             originalFactory = originalFactory,
             bootDexName = bootDexName,
             config = config,
+            layout = layout,
         )
     }
 
-    private fun sanitizeFactory(factory: String?, onLog: (String) -> Unit): String? {
+    /**
+     * 在输入包里找自家布局（契约 §3 发现机制），并把剥离口径一并定下来。
+     *
+     * 为什么必须是独立一步：混淆产物的条目名没有任何固定前缀，legacy 的 `xp/` 前缀判定全落空；
+     * 认不出自家产物就会把它当原包再注一层，体积逐次翻倍（§7.1 第 3 条）。
+     * 返回值同时承载"哪些条目算我们注入的"，后面所有过滤/断言都走它，避免几处各写一份。
+     */
+    private fun discoverLayout(
+        sourceApk: File,
+        entries: List<Entry>,
+        onLog: (String) -> Unit,
+    ): InjectedEntrySet {
+        val found = runCatching {
+            RandomAccessFile(sourceApk, "r").use { source ->
+                InjectLayout.discoverConfigEntry(entries.map { it.name to it.uncompressedSize }) { name ->
+                    val entry = entries.firstOrNull { it.name == name } ?: return@discoverConfigEntry null
+                    runCatching { readRawEntry(source, entry) }.getOrNull()
+                }
+            }
+        }.getOrNull()
+        var layout: InjectLayout? = null
+        if (found != null) {
+            // 候选校验时读过一次字节，这里再读一次：config 只有几 KB，换成"跨函数传字节"
+            // 反而要把整份条目表和解压逻辑搬出这个作用域，不值得。
+            val entry = entries.firstOrNull { it.name == found }
+            val bytes = entry?.let { target ->
+                runCatching { RandomAccessFile(sourceApk, "r").use { readRawEntry(it, target) } }.getOrNull()
+            }
+            if (bytes != null) {
+                layout = InjectLayout.fromConfig(String(bytes, Charsets.UTF_8))
+                // 旧产物（xp/config.json）本来就没有 res_*，静默按老逻辑走；只有"长得像新布局"
+                // 却解析不出 res_cfg 时才值得说一句，免得每次重复打包都多一行噪音。
+                if (layout == null && found != InjectLayout.LEGACY_CONFIG_ENTRY) {
+                    onLog("config $found 没有 res_cfg，按旧产物处理")
+                }
+            }
+        }
+        if (layout != null) {
+            onLog("发现本框架混淆布局：目录 ${layout.dir}（config $found）")
+        }
+        return InjectedEntrySet(
+            layout = layout,
+            legacyInjected = { name -> isInjectedEntry(name) },
+            legacyEmbeddedSource = { name -> embeddedSourceOf(name) },
+        )
+    }
+
+    private fun sanitizeFactory(
+        factory: String?,
+        onLog: (String) -> Unit,
+        ourStubs: Set<String> = LEGACY_STUB_CLASSES,
+    ): String? {
         if (factory.isNullOrBlank()) return null
-        if (factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES) {
+        if (factory in ourStubs) {
             onLog("源包工厂指向引导桩（$factory），已忽略以免自我委派")
             return null
         }
@@ -276,6 +458,7 @@ class ApkPatcher(private val context: Context) {
         input: ByteArray,
         expectedPackage: String,
         onLog: (String) -> Unit,
+        ourStubs: Set<String> = LEGACY_STUB_CLASSES,
     ): ByteArray {
         if (recorded == null) return input
         val parsed = runCatching { AxmlEditor(recorded) }.getOrNull()
@@ -290,7 +473,7 @@ class ApkPatcher(private val context: Context) {
             return input
         }
         val factory = runCatching { parsed.readApplicationAttribute(ATTR_FACTORY_NAME) }.getOrNull()
-        if (factory != null && (factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES)) {
+        if (factory != null && factory in ourStubs) {
             onLog("xp/source.manifest 已含引导桩工厂，更早的原始清单已不可恢复")
         } else {
             onLog("复用上一版记录的原始清单 xp/source.manifest")
@@ -302,11 +485,15 @@ class ApkPatcher(private val context: Context) {
      * 输入清单的 appComponentFactory 若是上一版写入的引导桩，[sanitizeFactory] 会丢弃它；
      * 此时从原始清单把真实工厂名找回来，避免 config 的 app_component_name 退化成空串。
      */
-    private fun recoverFactory(originalManifest: ByteArray, onLog: (String) -> Unit): String? {
+    private fun recoverFactory(
+        originalManifest: ByteArray,
+        onLog: (String) -> Unit,
+        ourStubs: Set<String> = LEGACY_STUB_CLASSES,
+    ): String? {
         val factory = runCatching {
             AxmlEditor(originalManifest).readApplicationAttribute(ATTR_FACTORY_NAME)
         }.getOrNull()
-        if (factory.isNullOrBlank() || factory == STUB_CLASS || factory in LEGACY_STUB_CLASSES) return null
+        if (factory.isNullOrBlank() || factory in ourStubs) return null
         onLog("从原始清单恢复 appComponentFactory=$factory")
         return factory
     }
@@ -412,8 +599,15 @@ class ApkPatcher(private val context: Context) {
         return entries.filter { it.name !in names }
     }
 
-    private fun assertClean(entries: List<Entry>, sourceApk: File, onLog: (String) -> Unit) {
-        val leaked = entries.filter { isInjectedEntry(it.name) }
+    private fun assertClean(
+        entries: List<Entry>,
+        sourceApk: File,
+        onLog: (String) -> Unit,
+        strip: InjectedEntrySet,
+    ) {
+        // 泄漏判定 = 旧前缀 + 本次从 config 读回来的布局条目名。混淆产物剥离不干净时继续写下去
+        // 就是"原条目 + 新注入"双份体积，旧引导桩还会和新引导桩抢 classes 的位置。
+        val leaked = entries.filter { strip.isInjected(it.name) }
         require(leaked.isEmpty()) {
             "源包仍含注入条目，拒绝打包以免体积翻倍：${leaked.take(5).map { it.name }}"
         }
@@ -430,21 +624,24 @@ class ApkPatcher(private val context: Context) {
         }
     }
 
-    private fun stripInjected(        sourceApk: File,
+    private fun stripInjected(
+        sourceApk: File,
         entries: List<Entry>,
         onLog: (String) -> Unit,
+        preferredName: String? = null,
     ): File? = runCatching {
         val outerSize = sourceApk.length()
 
-        // xp/source.apk 是明确的内嵌原始包标记：优先且无条件下选它。
-        // 不能只靠 score/100KB 阈值——小应用的原包可能只有几十 KB，被阈值挡掉后
-        // 就会退回“把整个已补丁 APK 再内嵌一次”，每打一次包体积翻一倍。
+        // 内嵌原包有"明确标记"：旧产物是 xp/source.apk，混淆产物是布局里的 res_source。
+        // 优先且无条件下选它——不能只靠 score/100KB 阈值：小应用的原包可能只有几十 KB，
+        // 被阈值挡掉后就会退回“把整个已补丁 APK 再内嵌一次”，每打一次包体积翻一倍。
+        val explicitName = preferredName ?: SOURCE_ENTRY
         val preferred = entries.firstOrNull {
-            it.name == SOURCE_ENTRY && it.uncompressedSize > 0
+            it.name == explicitName && it.uncompressedSize > 0
         }
         val candidates = entries
             .filter { it.name.endsWith(APK_SUFFIX, ignoreCase = true) }
-            .filter { it.name == SOURCE_ENTRY || it.uncompressedSize >= MIN_EMBEDDED }
+            .filter { it.name == explicitName || it.uncompressedSize >= MIN_EMBEDDED }
             .mapNotNull { entry ->
                 val score = scoreEmbedded(entry, outerSize)
                 if (score < MIN_EMBEDDED_SCORE) null else entry to score
@@ -455,9 +652,14 @@ class ApkPatcher(private val context: Context) {
             ?: candidates.firstOrNull()
             ?: return@runCatching null
         val embedded = chosen.first
+        // 解出来的"原包"必须落在**可写目录**里：sourceApk 可能是已安装应用的
+        // /data/app/<hash>/<pkg>-<sig>/base.apk（system 拥有、应用不可写），
+        // 早期版本把它写到 sourceApk.parentFile，于是"对已注入的已安装应用再打一次包"
+        // 必然 EACCES → 提取失败 → 退化成"只删注入条目"，再被内嵌闸门拒绝。
+        val outDir = File(context.cacheDir, "patch").apply { mkdirs() }
         val target = File(
-            sourceApk.parentFile,
-            "${sourceApk.nameWithoutExtension}.${System.nanoTime()}.base.apk",
+            outDir,
+            "strip.${System.nanoTime()}.${sourceApk.nameWithoutExtension}.base.apk",
         )
         target.delete()
 
@@ -492,7 +694,7 @@ class ApkPatcher(private val context: Context) {
             }
         }
 
-        if (embedded.name != SOURCE_ENTRY && target.length() < MIN_EMBEDDED) {
+        if (embedded.name != explicitName && target.length() < MIN_EMBEDDED) {
             target.delete()
             return@runCatching null
         }
@@ -522,6 +724,10 @@ class ApkPatcher(private val context: Context) {
 
         onLog("已提取内嵌原始包 ${embedded.name} ${target.length() / 1024 / 1024} MB")
         target
+    }.onFailure {
+        // 以前这里是裸 getOrNull()：提取失败会被静默吞掉，用户只看到"无法提取内嵌原始包"，
+        // 而真正的原因（EACCES / 磁盘满 / 数据不完整）无处可查。这条日志是排查入口。
+        onLog("提取内嵌原包失败：${it.javaClass.simpleName}: ${it.message}")
     }.getOrNull()
 
     private fun scoreEmbedded(
@@ -556,6 +762,7 @@ class ApkPatcher(private val context: Context) {
         manifest: ByteArray,
         originalManifest: ByteArray,
         bootDexName: String,
+        stubDex: ByteArray,
         config: String,
         packageName: String,
         embeddedCrc: AtomicLong,
@@ -564,27 +771,38 @@ class ApkPatcher(private val context: Context) {
         onProgress: (Int) -> Unit,
         onLog: (String) -> Unit,
         embedSource: Boolean,
+        layout: InjectLayout?,
     ) {
+        // 名字解析集中在这一处：开关关掉时逐条返回旧名字，写入路径与今天完全是同一条（§4.6）。
+        fun nameOf(logical: Logical, legacy: String): String = layout?.entry(logical) ?: legacy
+        val sourceEntryName = nameOf(Logical.SOURCE, SOURCE_ENTRY)
+
         val added = buildList {
-            add(Added(ORIGINAL_MANIFEST_ENTRY, DEFLATED) { originalManifest })
-            add(Added(bootDexName, DEFLATED) { asset("xp/stub.dex") })
-            add(Added(CORE_ENTRY, DEFLATED) { asset("xp/runtime.dex") })
-            add(Added(HOOK_DEX_ENTRY, DEFLATED) { asset("xp/hook_core.dex") })
-            add(Added(HOOK_SO_ENTRY, STORED) { asset("xp/hook_core.so") })
+            add(Added(nameOf(Logical.SOURCE_MANIFEST, ORIGINAL_MANIFEST_ENTRY), DEFLATED) { originalManifest })
+            // 引导桩的名字是 ART 的硬约束（只自动加载根目录 classes*.dex），所以它不参与混淆，
+            // 只把 config 的 res_boot_dex 写出来，供剥离侧按图索骥。
+            add(Added(bootDexName, DEFLATED) { stubDex })
+            add(Added(nameOf(Logical.CORE, CORE_ENTRY), DEFLATED) { asset("xp/runtime.dex") })
+            add(Added(nameOf(Logical.HOOK_DEX, HOOK_DEX_ENTRY), DEFLATED) { asset("xp/hook_core.dex") })
+            add(Added(nameOf(Logical.HOOK_SO, HOOK_SO_ENTRY), STORED) { asset("xp/hook_core.so") })
             // x86_64 模拟器 / 平板的备用原生库（debug 变体才带，release 只带 arm64）。
             // loader 按 Build.SUPPORTED_ABIS 优先找 xp/hook_core_<abi>.so，找不到才回退上面的
             // 通用资产；release 不带 x86_64 时跳过，避免管理器 APK 多背 0.6 MB。
             if (hasAsset("xp/hook_core_x86_64.so")) {
-                add(Added("xp/hook_core_x86_64.so", STORED) { asset("xp/hook_core_x86_64.so") })
+                add(
+                    Added(nameOf(Logical.HOOK_SO_X86_64, "xp/hook_core_x86_64.so"), STORED) {
+                        asset("xp/hook_core_x86_64.so")
+                    },
+                )
             }
-            add(Added("xp/xp89.dex", DEFLATED) { asset("xp/xp89.dex") })
-            add(Added("xp/xp100.dex", DEFLATED) { asset("xp/xp100.dex") })
-            add(Added("xp/xp101.dex", DEFLATED) { asset("xp/xp101.dex") })
-            add(Added("xp/xp102.dex", DEFLATED) { asset("xp/xp102.dex") })
-            if (embedSource) add(Added(SOURCE_ENTRY, STORED, null))
-            add(Added(CONFIG_ENTRY, DEFLATED) { config.toByteArray() })
-            add(Added("xp/pkg", DEFLATED) { packageName.toByteArray() })
-            add(Added("xp/file_provider", DEFLATED) { asset("xp/file_provider.dex") })
+            add(Added(nameOf(Logical.DEX89, "xp/xp89.dex"), DEFLATED) { asset("xp/xp89.dex") })
+            add(Added(nameOf(Logical.DEX100, "xp/xp100.dex"), DEFLATED) { asset("xp/xp100.dex") })
+            add(Added(nameOf(Logical.DEX101, "xp/xp101.dex"), DEFLATED) { asset("xp/xp101.dex") })
+            add(Added(nameOf(Logical.DEX102, "xp/xp102.dex"), DEFLATED) { asset("xp/xp102.dex") })
+            if (embedSource) add(Added(sourceEntryName, STORED, null))
+            add(Added(nameOf(Logical.CFG, CONFIG_ENTRY), DEFLATED) { config.toByteArray() })
+            add(Added(nameOf(Logical.PKG, "xp/pkg"), DEFLATED) { packageName.toByteArray() })
+            add(Added(nameOf(Logical.FILE_PROVIDER, "xp/file_provider"), DEFLATED) { asset("xp/file_provider.dex") })
         }
 
         val addedNames = added.mapTo(HashSet()) { it.name }
@@ -597,7 +815,26 @@ class ApkPatcher(private val context: Context) {
             }
         }
 
-        val total = carried.size + added.size
+        // 第 3 层（§4.4）：DOS 时间戳与写入顺序。只对混淆开启生效——
+        // 关掉时 addedEntry 仍是 dosTime=0 / dosDate=1980-01-01、顺序仍是"先真实后注入"。
+        val random = layout?.let { java.util.Random(it.seed) }
+        if (random != null) {
+            // 跟随原包的众数时间戳，而不是"随便挑一个真实日期"：原包自己就是 1980-01-01 时
+            // （我们自己的基线产物就是），给注入条目配真实日期反而让它成为全包唯一显眼的那个。
+            val stamp = modeTimestamp(carried)
+            added.forEach {
+                it.dosTime = stamp.first
+                it.dosDate = stamp.second
+            }
+            onLog("注入条目时间戳跟随原包 ${timestampText(stamp)}")
+        }
+        val plan = if (random != null) {
+            interleave(carried, added, random)
+        } else {
+            carried.map { Plan.Carried(it) } + added.map { Plan.Injected(it) }
+        }
+
+        val total = plan.size
         onLog("开始写入 $total 个条目（保留 ${carried.size}，注入 ${added.size}）")
         var done = 0
         var reported = 25
@@ -618,72 +855,78 @@ class ApkPatcher(private val context: Context) {
             var position = 0L
 
             RandomAccessFile(sourceApk, "r").use { source ->
-                for (entry in carried) {
-                    val replaced = entry.name == MANIFEST
-                    val data = if (replaced) manifest else null
-                    val payload = if (data != null) compress(data, entry.method) else null
-                    val crc = if (data != null) crc32(data) else entry.crc
-                    val compressed = payload?.size?.toLong() ?: entry.compressedSize
-                    val uncompressed = data?.size?.toLong() ?: entry.uncompressedSize
-                    val headerOffset = position
-                    val header = localHeader(
-                        entry = entry,
-                        headerOffset = headerOffset,
-                        crc = crc,
-                        compressed = compressed,
-                        uncompressed = uncompressed,
-                    )
-                    out.write(header)
-                    position += header.size
-                    if (payload != null) {
-                        out.write(payload)
-                        position += payload.size
-                    } else {
-                        source.seek(entry.dataStart)
-                        position += copyRange(source, entry.compressedSize, out)
-                    }
-                    records += Record(entry, headerOffset, crc, compressed, uncompressed)
-                    advance()
-                }
-
                 onLog("注入内核与引导桩 $bootDexName")
 
-                for (item in added) {
-                    if (item.name == SOURCE_ENTRY) {
-                        onLog("内嵌原始安装包 xp/source.apk")
-                        embeddedReady.await()
-                        embeddedFailure.get()?.let { throw it }
-                        val length = sourceApk.length()
-                        val crc = embeddedCrc.get()
-                        val entry = addedEntry(item.name, STORED)
-                        val headerOffset = position
-                        val header = localHeader(entry, headerOffset, crc, length, length)
-                        out.write(header)
-                        position += header.size
-                        source.seek(0)
-                        position += copyRange(source, length, out)
-                        records += Record(entry, headerOffset, crc, length, length)
-                        advance()
-                        continue
+                for (step in plan) {
+                    when (step) {
+                        is Plan.Carried -> {
+                            val entry = step.entry
+                            val replaced = entry.name == MANIFEST
+                            val data = if (replaced) manifest else null
+                            val payload = if (data != null) compress(data, entry.method) else null
+                            val crc = if (data != null) crc32(data) else entry.crc
+                            val compressed = payload?.size?.toLong() ?: entry.compressedSize
+                            val uncompressed = data?.size?.toLong() ?: entry.uncompressedSize
+                            val headerOffset = position
+                            val header = localHeader(
+                                entry = entry,
+                                headerOffset = headerOffset,
+                                crc = crc,
+                                compressed = compressed,
+                                uncompressed = uncompressed,
+                            )
+                            out.write(header)
+                            position += header.size
+                            if (payload != null) {
+                                out.write(payload)
+                                position += payload.size
+                            } else {
+                                source.seek(entry.dataStart)
+                                position += copyRange(source, entry.compressedSize, out)
+                            }
+                            records += Record(entry, headerOffset, crc, compressed, uncompressed)
+                            advance()
+                        }
+
+                        is Plan.Injected -> {
+                            val item = step.added
+                            if (item.name == sourceEntryName) {
+                                onLog("内嵌原始安装包 ${item.name}")
+                                embeddedReady.await()
+                                embeddedFailure.get()?.let { throw it }
+                                val length = sourceApk.length()
+                                val crc = embeddedCrc.get()
+                                val entry = addedEntry(item.name, STORED, item.dosTime, item.dosDate)
+                                val headerOffset = position
+                                val header = localHeader(entry, headerOffset, crc, length, length)
+                                out.write(header)
+                                position += header.size
+                                source.seek(0)
+                                position += copyRange(source, length, out)
+                                records += Record(entry, headerOffset, crc, length, length)
+                                advance()
+                                continue
+                            }
+                            val entry = addedEntry(item.name, item.method, item.dosTime, item.dosDate)
+                            val data = requireNotNull(item.data).invoke()
+                            val payload = compress(data, item.method)
+                            val crc = crc32(data)
+                            val headerOffset = position
+                            val header = localHeader(
+                                entry = entry,
+                                headerOffset = headerOffset,
+                                crc = crc,
+                                compressed = payload.size.toLong(),
+                                uncompressed = data.size.toLong(),
+                            )
+                            out.write(header)
+                            position += header.size
+                            out.write(payload)
+                            position += payload.size
+                            records += Record(entry, headerOffset, crc, payload.size.toLong(), data.size.toLong())
+                            advance()
+                        }
                     }
-                    val entry = addedEntry(item.name, item.method)
-                    val data = requireNotNull(item.data).invoke()
-                    val payload = compress(data, item.method)
-                    val crc = crc32(data)
-                    val headerOffset = position
-                    val header = localHeader(
-                        entry = entry,
-                        headerOffset = headerOffset,
-                        crc = crc,
-                        compressed = payload.size.toLong(),
-                        uncompressed = data.size.toLong(),
-                    )
-                    out.write(header)
-                    position += header.size
-                    out.write(payload)
-                    position += payload.size
-                    records += Record(entry, headerOffset, crc, payload.size.toLong(), data.size.toLong())
-                    advance()
                 }
             }
 
@@ -699,7 +942,79 @@ class ApkPatcher(private val context: Context) {
         onLog("写入完成，产物 ${outputApk.length() / 1024 / 1024} MB")
     }
 
-    private fun addedEntry(name: String, method: Int): Entry = Entry(
+    /**
+     * §4.4：把注入条目按种子随机插到真实条目之间。
+     *
+     * "整批追加在尾部"是重打包最经典的指纹——真实条目的偏移一个都没动，末尾凭空多出一串
+     * 名字风格完全不同的条目。这里只改**写入顺序**，条目本身还是原样拷贝：ART 与资源层
+     * 都不看条目顺序，`resources.arsc` 的 4 字节对齐由 [alignedExtra] 按实际偏移现算。
+     * `AndroidManifest.xml` 之前的注入条目一律不放：清单必须保持在最前。
+     */
+    private fun interleave(carried: List<Entry>, added: List<Added>, random: java.util.Random): List<Plan> {
+        val manifestIndex = carried.indexOfFirst { it.name == MANIFEST }
+        val head = if (manifestIndex < 0) emptyList() else carried.subList(0, manifestIndex + 1)
+        val tail = if (manifestIndex < 0) carried else carried.subList(manifestIndex + 1, carried.size)
+        val plan = ArrayList<Plan>(carried.size + added.size)
+        head.forEach { plan += Plan.Carried(it) }
+        if (tail.isEmpty() || added.isEmpty()) {
+            tail.forEach { plan += Plan.Carried(it) }
+            added.forEach { plan += Plan.Injected(it) }
+            return plan
+        }
+        // 每条注入条目随机落进 tail 的某个间隙（0 = tail[0] 之前，tail.size = 全在最后）
+        val shuffled = added.shuffled(random)
+        val buckets = MutableList(tail.size + 1) { ArrayList<Added>() }
+        shuffled.forEach { item -> buckets[random.nextInt(buckets.size)] += item }
+        // 全落进最后一个间隙就等于换了个名字的"尾部追加"，把第一条挪到中间去
+        if (buckets.last().size == shuffled.size) {
+            buckets.last().removeAt(0).let { buckets[random.nextInt(tail.size)] += it }
+        }
+        for (index in tail.indices) {
+            buckets[index].forEach { plan += Plan.Injected(it) }
+            plan += Plan.Carried(tail[index])
+        }
+        buckets.last().forEach { plan += Plan.Injected(it) }
+        return plan
+    }
+
+    /**
+     * 真实条目里出现最多的那个 (dosDate, dosTime)。
+     *
+     * 并列时取先出现的那个（顺序扫描，不用 HashMap 迭代序），保证同一输入两次打包结果一致。
+     */
+    private fun modeTimestamp(carried: List<Entry>): Pair<Int, Int> {
+        if (carried.isEmpty()) return 0 to DOS_DATE_EPOCH
+        val counts = HashMap<Long, Int>()
+        for (entry in carried) {
+            val key = (entry.dosDate.toLong() shl 16) or entry.dosTime.toLong()
+            counts[key] = (counts[key] ?: 0) + 1
+        }
+        var bestKey = -1L
+        var bestCount = 0
+        for (entry in carried) {
+            val key = (entry.dosDate.toLong() shl 16) or entry.dosTime.toLong()
+            val count = counts.getValue(key)
+            if (count > bestCount) {
+                bestCount = count
+                bestKey = key
+            }
+        }
+        return (bestKey shr 16).toInt() to (bestKey and 0xFFFF).toInt()
+    }
+
+    private fun timestampText(stamp: Pair<Int, Int>): String {
+        val date = stamp.second
+        val time = stamp.first
+        val year = 1980 + ((date shr 9) and 0x7F)
+        val month = (date shr 5) and 0x0F
+        val day = date and 0x1F
+        val hour = (time shr 11) and 0x1F
+        val minute = (time shr 5) and 0x3F
+        val second = (time and 0x1F) * 2
+        return "%04d-%02d-%02d %02d:%02d:%02d".format(year, month, day, hour, minute, second)
+    }
+
+    private fun addedEntry(name: String, method: Int, dosTime: Int = 0, dosDate: Int = DOS_DATE_EPOCH): Entry = Entry(
         name = name,
         nameBytes = name.toByteArray(Charsets.UTF_8),
         extra = EMPTY,
@@ -708,8 +1023,8 @@ class ApkPatcher(private val context: Context) {
         versionNeeded = VERSION_NEEDED,
         flags = FLAG_UTF8,
         method = method,
-        dosTime = 0,
-        dosDate = DOS_DATE_EPOCH,
+        dosTime = dosTime,
+        dosDate = dosDate,
         crc = 0L,
         compressedSize = 0L,
         uncompressedSize = 0L,
@@ -1014,6 +1329,7 @@ class ApkPatcher(private val context: Context) {
         originalFactory: String?,
         options: Options,
         apk: File,
+        layout: InjectLayout?,
     ): String {
         val json = JSONObject()
         json.put("hook_core", options.hookCore)
@@ -1031,7 +1347,16 @@ class ApkPatcher(private val context: Context) {
         json.put("manager_package", context.packageName)
         json.put("real_version_code", info?.longVersionCode ?: 0L)
         json.put("module_paths", JSONArray())
-        return json.toString()
+        // 现有键一个都不改名（引导桩/内核按旧键读）；布局键只在开关打开时追加，
+        // 关掉时一个 res_* 都不能出现，否则旧产物不再字节等价（§4.6）。
+        layout?.intoJson(json)
+        // Android 自带的 org.json 会把正斜杠转义成 `\/`（`JSONObject.quote` 的行为），
+        // 而**引导桩**读 config 用的是"按 key 找引号区间"的极简解析器（内核早期不能依赖
+        // 任何库），它不做反转义，于是拿到的会是 `assets\/xxxx\/yyyy.bin`，`getEntry` 必然
+        // 落空 → 产物"装得上、打不开"（实测：引导日志里那条 运行时 dex 缺失 就是这么来的）。
+        // 这里把 `\/` 还原成 `/`：JSON 语义完全等价（转义斜杠是可选写法），
+        // 但引导桩、内核、以及人肉 unzip 看 config 时都拿到干净路径。
+        return json.toString().replace("\\/", "/")
     }
 
     private fun signaturesJson(info: PackageInfo?): String {
@@ -1161,11 +1486,22 @@ class ApkPatcher(private val context: Context) {
         val uncompressed: Long,
     )
 
+    /** 写入计划里的一步：真实条目的原样拷贝，或一条注入条目（混淆开启时两者交错）。 */
+    private sealed class Plan {
+        class Carried(val entry: Entry) : Plan()
+        class Injected(val added: Added) : Plan()
+    }
+
     private class Added(
         val name: String,
         val method: Int,
         val data: (() -> ByteArray)?,
-    )
+    ) {
+        // DOS 时间戳默认与今天完全一致（1980-01-01 00:00）；只有混淆开启时才被
+        // modeTimestamp 改成"跟随原包"，关掉时必须逐字节等价（§4.6）。
+        var dosTime: Int = 0
+        var dosDate: Int = DOS_DATE_EPOCH
+    }
 
     private companion object {
         const val MANIFEST = "AndroidManifest.xml"

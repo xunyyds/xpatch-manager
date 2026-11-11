@@ -10,7 +10,12 @@ import android.util.Log;
 
 public class XpProvider extends ContentProvider {
 
-    private static final String TAG = "XPatch";
+    /**
+     * logcat 标签，与 {@code AppEntry} 保持一致（中性的 "Boot"，不用框架名）：
+     * 本类会随 stub.dex 一起注入到产物里，源码里的框架名字面量会被 d8 原样写进字符串池。
+     * 代价是引导阶段这两条日志的 tag 变了，属预期；框架自己的日志不受影响。
+     */
+    private static final String TAG = "Boot";
 
     /**
      * 备用入口：entryHook=true 时打包器把本 provider 插进目标清单。
@@ -24,7 +29,7 @@ public class XpProvider extends ContentProvider {
     public boolean onCreate() {
         Context context = getContext();
         if (context == null) {
-            Log.w(TAG, "XpProvider 上下文为空，跳过注入");
+            Log.w(TAG, "入口 provider 上下文为空，跳过注入");
             return false;
         }
         try {
@@ -32,11 +37,11 @@ public class XpProvider extends ContentProvider {
             boolean injected = AppEntry.ensureInjected(context.getClassLoader(), info);
             if (!injected) {
                 // 失败原因已经由 AppEntry.fatal() 落到 bootstrap.log，这里只补一条 logcat 便于抓现场。
-                Log.e(TAG, "XpProvider 入口注入失败：" + context.getPackageName());
+                Log.e(TAG, "入口注入失败：" + context.getPackageName());
             }
             return injected;
         } catch (Throwable t) {
-            Log.e(TAG, "XpProvider 入口注入异常", t);
+            Log.e(TAG, "入口注入异常", t);
             return false;
         }
     }

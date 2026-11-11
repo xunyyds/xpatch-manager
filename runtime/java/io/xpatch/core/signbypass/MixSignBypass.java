@@ -27,7 +27,7 @@ class MixSignBypass extends BaseNativeSignBypass {
         }
         String redirectTarget = getRedirectTarget();
         if (redirectTarget == null || redirectTarget.length() == 0) {
-            XpHook.log0(TAG, "混合 native 重定向未启用：没有字节级原包（xp/source.apk 未内嵌）");
+            XpHook.log0(TAG, "混合 native 重定向未启用：没有字节级原包（打包时未内嵌原包）");
             return false;
         }
         String target = SignBypass.targetPath(redirectTarget);

@@ -42,6 +42,11 @@ data class ManagerSettings(
     val forceOverwrite: Boolean = false,
     val sigMode: String = SettingsStore.SIG_MODE_DEFAULT,
     val entryHook: Boolean = false,
+    // 注入路径混淆（实验）：改产物条目名/清单类名，静态检查看不出修补痕迹。
+    // 只影响「重新打包」的结果，已打好的产物不受影响。
+    val injectObfuscate: Boolean = false,
+    // 子开关：混淆时是否保留模块熔断权限声明（保留会在清单里留下 io.xpatch.permission.MODULE_CRASH）。
+    val injectKeepCrashPermission: Boolean = false,
 )
 
 class SettingsStore(context: Context) {
@@ -74,6 +79,8 @@ class SettingsStore(context: Context) {
         forceOverwrite = prefs.getBoolean(KEY_FORCE_OVERWRITE, false),
         sigMode = normalizedSigMode(prefs.getString(KEY_SIG_MODE, "").orEmpty()),
         entryHook = prefs.getBoolean(KEY_ENTRY_HOOK, false),
+        injectObfuscate = prefs.getBoolean(KEY_INJECT_OBFUSCATE, false),
+        injectKeepCrashPermission = prefs.getBoolean(KEY_INJECT_KEEP_CRASH_PERMISSION, false),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -139,6 +146,12 @@ class SettingsStore(context: Context) {
     fun setEntryHook(enabled: Boolean) =
         prefs.edit().putBoolean(KEY_ENTRY_HOOK, enabled).apply()
 
+    fun setInjectObfuscate(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_INJECT_OBFUSCATE, enabled).apply()
+
+    fun setInjectKeepCrashPermission(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_INJECT_KEEP_CRASH_PERMISSION, enabled).apply()
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
@@ -195,6 +208,10 @@ class SettingsStore(context: Context) {
         private const val KEY_FORCE_OVERWRITE = "force_overwrite"
         private const val KEY_SIG_MODE = "sig_mode"
         private const val KEY_ENTRY_HOOK = "entry_hook"
+
+        // 注入路径混淆的两个开关（默认关；关时必须与旧行为逐字节等价）。
+        private const val KEY_INJECT_OBFUSCATE = "inject_obfuscate"
+        private const val KEY_INJECT_KEEP_CRASH_PERMISSION = "inject_keep_crash_permission"
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
     }

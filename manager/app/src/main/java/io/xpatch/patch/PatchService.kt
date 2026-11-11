@@ -23,6 +23,10 @@ data class PatchOptions(
     val forceOverwrite: Boolean = false,
     val sigMode: String = "java",
     val entryHook: Boolean = false,
+    // 注入路径混淆：条目名/清单类名随机化（实验，默认关；关时产物与旧行为逐字节等价）。
+    val obfuscate: Boolean = false,
+    // 混淆时是否保留模块熔断权限声明（默认不保留，避免清单里留下 io.xpatch.permission.MODULE_CRASH）。
+    val obfuscateKeepCrashPermission: Boolean = false,
 )
 
 class PatchService(private val context: Context) {
@@ -127,6 +131,18 @@ class PatchService(private val context: Context) {
         } else if (options.entryHook) {
             onLog("动态加载：provider 备用入口已关闭（切换后 stub 不在原包里），仅保留工厂注入")
         }
+        // 混淆状态必须在打包前说清楚：条目名一旦随机化，用户拿不到可对照的名字就无从排查；
+        // 熔断权限的降级更要显式讲，否则"模块崩了管理器没反应"会被当成新 bug。
+        if (options.obfuscate) {
+            onLog("注入路径混淆已开启：条目名与清单类名随机化，产物里不再出现 xp/ 条目名与 io.xpatch.stub")
+            if (options.obfuscateKeepCrashPermission) {
+                onLog("保留模块熔断权限：清单里会留下 io.xpatch.permission.MODULE_CRASH")
+            } else {
+                onLog("熔断权限未注入（路径混淆默认丢弃 io.xpatch.permission.MODULE_CRASH）：模块崩溃时管理器收不到广播")
+            }
+        } else {
+            onLog("注入路径混淆已关闭：沿用 xp/ 固定条目名与 io.xpatch.stub 类名")
+        }
         val result = ApkPatcher(context).patch(
             source,
             unsigned,
@@ -141,10 +157,13 @@ class PatchService(private val context: Context) {
                 embedSource = effectiveEmbed,
                 sigMode = options.sigMode,
                 entryHook = options.entryHook,
+                obfuscate = options.obfuscate,
+                obfuscateKeepCrashPermission = options.obfuscateKeepCrashPermission,
             ),
             onProgress = onProgress,
             onLog = onLog,
         )
+        result.layout?.let { layout -> onLog("产物布局：${layout.dir}（config ${layout.configEntry}）") }
 
         val profile = if (options.injectSignature) {
             options.signatureProfile ?: SignatureStore(context).defaultProfile()

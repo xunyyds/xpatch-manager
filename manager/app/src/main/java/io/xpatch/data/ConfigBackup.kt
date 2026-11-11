@@ -57,6 +57,10 @@ class ConfigBackup(private val context: Context) {
                 put("sigMode", settings.sigMode)
                 put("entryHook", settings.entryHook)
                 put("forceOverwrite", settings.forceOverwrite)
+                // 注入路径混淆的两个开关：不带上它们，换机恢复后同一份备份会产出
+                // "名字全露"的产物（条目名/类名/熔断权限三处痕迹都会回来）。
+                put("injectObfuscate", settings.injectObfuscate)
+                put("injectKeepCrashPermission", settings.injectKeepCrashPermission)
             },
         )
         return root.toString(2)
@@ -113,6 +117,14 @@ class ConfigBackup(private val context: Context) {
             }
             if (settings.has("forceOverwrite")) {
                 settingsStore.setForceOverwrite(settings.optBoolean("forceOverwrite", false))
+            }
+            if (settings.has("injectObfuscate")) {
+                settingsStore.setInjectObfuscate(settings.optBoolean("injectObfuscate", false))
+            }
+            if (settings.has("injectKeepCrashPermission")) {
+                settingsStore.setInjectKeepCrashPermission(
+                    settings.optBoolean("injectKeepCrashPermission", false),
+                )
             }
             if (settings.has("uiStyle")) {
                 settingsStore.setUiStyle(UiStyle.of(settings.optInt("uiStyle", UiStyle.MATERIAL3.index)))

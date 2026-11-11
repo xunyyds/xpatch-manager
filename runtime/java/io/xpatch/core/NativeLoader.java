@@ -22,9 +22,10 @@ import java.util.zip.ZipFile;
  *       （对同一个路径第二次 System.load 会抛 "already loaded in another classloader"）。</li>
  *   <li>资产来自 {@code AppEnv.selfApk} 的 zip，不用 {@code Context.getAssets()}：
  *       selfApk 可能只是 split 的 base.apk。</li>
- *   <li>资产按 ABI 择优：先找 {@code xp/hook_core_<首选ABI>.so}（如
- *       {@code hook_core_x86_64.so}、{@code hook_core_arm64-v8a.so}），包里没有才退回通用
- *       {@code xp/hook_core.so}（当前 arm64 构建）。回退是必要的：管理器可能只打包了通用资产。</li>
+ *   <li>资产按 ABI 择优：先找 ABI 专属条目（旧名 {@code xp/hook_core_<首选ABI>.so}，如
+ *       {@code hook_core_x86_64.so}、{@code hook_core_arm64-v8a.so}），包里没有才退回通用条目
+ *       （旧名 {@code xp/hook_core.so}，当前 arm64 构建）。两个名字都取自 {@link XpLayout}，
+ *       混淆产物里是随机名。回退是必要的：管理器可能只打包了通用资产。</li>
  *   <li>临时文件只落在本进程私有目录 {@code <codeCacheDir>/xp/}，名字带 ABI 与 pid，
  *       多进程并行初始化时不会互相截断。</li>
  *   <li>只有 System.load 成功才删临时文件：Linux 上 linker 已 mmap 该 inode，unlink 不影响已映射代码；
@@ -36,15 +37,15 @@ public final class NativeLoader {
     private static final String TAG = "XpNative";
 
     /**
-     * 通用（arm64）资产路径。与 ApkPatcher 写入的资产路径一致；改这里必须同步 manager 打包逻辑。
-     * 首选 ABI 有专属资产时用 {@link #assetEntryFor(String)}，它才是本类的实际入口。
+     * 通用（arm64）资产的<b>当前</b>条目名：老产物是 {@code xp/hook_core.so}，开了路径混淆的产物
+     * 是 config 里 {@code res_hook_so} 的值。名字表与回落值都集中在 {@link XpLayout}，
+     * 本类不再写死 {@code xp/*} 路径。
+     *
+     * <p>首选 ABI 有专属资产时用 {@link #assetEntryFor(String)}，它才是本类的实际入口。
      */
-    public static final String ASSET_ENTRY = "xp/hook_core.so";
-
-    /** ABI 专属资产模板：{@code xp/hook_core_<abi>.so}。 */
-    private static final String ASSET_ABI_PREFIX = "xp/hook_core_";
-
-    private static final String ASSET_ABI_SUFFIX = ".so";
+    public static String assetEntry() {
+        return XpLayout.get("hook_so");
+    }
 
     /** 失败残留文件的清理阈值（毫秒）。 */
     private static final long STALE_MILLIS = 60 * 1000L;
@@ -60,35 +61,36 @@ public final class NativeLoader {
     }
 
     /**
-     * 该 ABI 的专属资产条目名：{@code xp/hook_core_<abi>.so}。
+     * 该 ABI 的专属资产条目名。
      *
      * <p>例：{@code arm64-v8a → xp/hook_core_arm64-v8a.so}、
-     * {@code x86_64 → xp/hook_core_x86_64.so}。arm64 真机若没有专属条目，
-     * 由 {@link #extract} 退回 {@link #ASSET_ENTRY}。
+     * {@code x86_64 → xp/hook_core_x86_64.so}；开了路径混淆的产物里是 config 的
+     * {@code res_hook_so_<abi>}（如 {@code res_hook_so_x86_64}）。arm64 真机若没有专属条目，
+     * 由 {@link #extract} 退回 {@link #assetEntry()}。
      *
      * <p>ABI 为空、为 {@code unknown} 或含 {@code '/'}、{@code '.'} 等非 ABI 字符时直接返回
-     * {@link #ASSET_ENTRY}：ABI 名会拼进 zip 路径，不能让外部输入决定解包目标。
+     * {@link #assetEntry()}：ABI 名会拼进 zip 路径，不能让外部输入决定解包目标。
      *
      * @param abi 形如 {@code Build.SUPPORTED_ABIS[0]} 的 ABI 名
      * @return 该 ABI 的专属条目名；返回值不保证在包里存在
      */
     public static String assetEntryFor(String abi) {
         if (abi == null) {
-            return ASSET_ENTRY;
+            return assetEntry();
         }
         String name = abi.trim();
         if (name.length() == 0 || "unknown".equals(name)) {
-            return ASSET_ENTRY;
+            return assetEntry();
         }
         for (int i = 0; i < name.length(); i++) {
             char c = name.charAt(i);
             boolean ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
                     || (c >= '0' && c <= '9') || c == '_' || c == '-';
             if (!ok) {
-                return ASSET_ENTRY;
+                return assetEntry();
             }
         }
-        return ASSET_ABI_PREFIX + name + ASSET_ABI_SUFFIX;
+        return XpLayout.get("hook_so_" + name);
     }
 
     /**
@@ -193,24 +195,27 @@ public final class NativeLoader {
 
     /**
      * 把资产解包到 {@code target}：先找 ABI 专属条目（{@link #assetEntryFor(String)}），
-     * 包里没有才退回通用 {@link #ASSET_ENTRY}。
+     * 包里没有才退回通用 {@link #assetEntry()}。
      *
      * @return 实际解包用的 zip 条目名；失败返回 {@code null}（原因已写进 {@link #lastError()}）
      */
     private static String extract(String apk, File target, String abi) {
+        // 两个名字都要在解包时取一次真值：混淆产物里它们都是随机名，
+        // 而且"有没有专属 ABI 资产"也必须拿真实名字去比对
+        String generic = assetEntry();
         String preferred = assetEntryFor(abi);
         ZipFile zip = null;
         try {
             zip = new ZipFile(apk);
             String entryName = preferred;
             ZipEntry entry = zip.getEntry(entryName);
-            if (entry == null && !preferred.equals(ASSET_ENTRY)) {
+            if (entry == null && !preferred.equals(generic)) {
                 // 旧产物/只打通用资产的管理器：arm64 真机靠这条回退才能继续跑
-                entryName = ASSET_ENTRY;
+                entryName = generic;
                 entry = zip.getEntry(entryName);
             }
             if (entry == null) {
-                fail("安装包里没有 " + preferred + "，也没有回退资产 " + ASSET_ENTRY
+                fail("安装包里没有 " + preferred + "，也没有回退资产 " + generic
                         + "（旧产物或管理器没打包 native 库）：" + apk);
                 return null;
             }
@@ -237,7 +242,7 @@ public final class NativeLoader {
             }
             return entryName;
         } catch (Throwable th) {
-            fail("解包 " + preferred + "（回退 " + ASSET_ENTRY + "）失败：" + Log.getStackTraceString(th));
+            fail("解包 " + preferred + "（回退 " + generic + "）失败：" + Log.getStackTraceString(th));
             return null;
         } finally {
             if (zip != null) {
