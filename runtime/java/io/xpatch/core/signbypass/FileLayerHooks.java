@@ -7,27 +7,6 @@ import io.xpatch.hook.AppEnv;
 import io.xpatch.hook.XpHook;
 import java.io.File;
 
-/**
- * 文件层：把本进程看到的"自己的 APK 路径"改成字节级原包
- * （{@code xp/source.apk} 释放出的 {@code <crc>.apk}，见 AppEnv.source_apk_path）。
- *
- * <p>不变量：
- * <ol>
- *   <li>只有 {@code AppEnv.source_apk_path} 非空且文件真实存在时才安装 hook；拿不到原包就完全不 hook，
- *       所有 getter 保持真实安装路径（宁可不过文件级自校验，也不能让 codePath 指向不存在的文件）。</li>
- *   <li>只改写"本包"的返回值：this0 的包名等于 AppEnv.packageName，或原返回值就是 AppEnv.selfApk；
- *       {@code createPackageContext()} 出来的其它包 Context 必须原样透传。</li>
- *   <li>{@code getApplicationInfo()} 额外要求 {@code AppEnv.packageName.equals(result.packageName)}，
- *       且已经替换过的对象不再复制（ContextWrapper → ContextImpl 会走两次 hook，避免每次调用分配两个副本）。</li>
- *   <li>install() 幂等：成功装上后 installed=true，重复调用直接返回 true——对同一个 member 再 doHook
- *       只会追加第二个 DispatchParam，回调会跑两遍。</li>
- *   <li>所有路径用 {@link File#getCanonicalPath()} 规范化，与 native 层 openat 的整串比较（g_self == path）
- *       保持同一写法。</li>
- *   <li>不覆盖 stat/access：native 侧只 hook 了 open/openat/fopen
- *       （{@code io_redirect::install}），Java 侧也只改 Context 的 3 个 getter，保持最小暴露面；
- *       走 stat/access 的自校验仍然读到补丁包，属已知缺口（见 review/parts/04-filelayer.md "native 精确匹配"）。</li>
- * </ol>
- */
 public final class FileLayerHooks {
 
     private static final String TAG = "XpFileLayer";
@@ -44,12 +23,6 @@ public final class FileLayerHooks {
     private FileLayerHooks() {
     }
 
-    /**
-     * 安装文件层 hook。
-     *
-     * @return 是否已处于"文件层已安装"状态；false 时 {@link #lastError()} 给出原因
-     *         （无原包 / 原包文件不存在 / 所有 hook 都失败）
-     */
     public static synchronized boolean install() {
         if (installed) {
             XpHook.log0(TAG, "文件层已安装，跳过重复安装：" + targetPath);
@@ -74,7 +47,6 @@ public final class FileLayerHooks {
         }
         targetPath = canonical;
         selfApkPath = canonicalPath(AppEnv.selfApk);
-        // 回写规范化后的路径：保证 native 层（LevelOne/Two/Mix 走 getRedirectTarget）与 Java 层用同一串
         AppEnv.source_apk_path = canonical;
 
         int count = 0;
@@ -165,14 +137,12 @@ public final class FileLayerHooks {
                         return;
                     }
                     ApplicationInfo info = (ApplicationInfo) result;
-                    // 只动本包：别的包（createPackageContext）必须拿到自己的 sourceDir
                     if (info.packageName == null || !info.packageName.equals(AppEnv.packageName)) {
                         return;
                     }
                     String factory = AppEnv.baseApp == null ? null : AppEnv.baseApp.appComponentFactory;
                     if (target.equals(info.sourceDir) && target.equals(info.publicSourceDir)
                             && equal(factory, info.appComponentFactory)) {
-                        // 已被内层（ContextImpl）hook 替换过，不再复制第二份
                         return;
                     }
                     ApplicationInfo copy = new ApplicationInfo(info);
@@ -214,7 +184,6 @@ public final class FileLayerHooks {
             return true;
         }
         try {
-            // 只在快路径不相等时才做一次规范化（getPackageCodePath 是热路径）
             String normalized = canonicalPath(path);
             return normalized != null && normalized.equals(canonical);
         } catch (Throwable th) {
@@ -226,11 +195,6 @@ public final class FileLayerHooks {
         return a == null ? b == null : a.equals(b);
     }
 
-    /**
-     * 包内可见：把路径规范化为绝对规范形式（解析符号链接、去掉 ../），失败时退回绝对路径。
-     *
-     * @return null 表示入参为空
-     */
     static String canonicalPath(String path) {
         if (path == null || path.trim().length() == 0) {
             return null;
@@ -255,22 +219,18 @@ public final class FileLayerHooks {
         }
     }
 
-    /** 文件层是否已安装（诊断用）。 */
     public static synchronized boolean isInstalled() {
         return installed;
     }
 
-    /** 已启用的重定向目标（规范化后的原包路径，未启用时为 null）。 */
     public static synchronized String installedTarget() {
         return targetPath;
     }
 
-    /** 成功装上的 hook 数（0-5：ContextImpl 3 个 + ContextWrapper 2 个）。 */
     public static synchronized int hookedCount() {
         return hookedCount;
     }
 
-    /** 最近一次未启用的原因；成功时为 null。 */
     public static synchronized String lastError() {
         return lastError;
     }

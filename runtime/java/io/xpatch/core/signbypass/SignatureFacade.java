@@ -34,11 +34,6 @@ public final class SignatureFacade {
     private static volatile boolean equalsHooked;
     private static volatile boolean writeToParcelHooked;
 
-    /**
-     * fake -> original 的映射是一个不可变对象，只做一次 volatile 写：
-     * 回调里绝不会读到"半套映射"（旧的 4 个并行数组在并发读者眼里可能互相不匹配）。
-     * 只有四个原语 hook 全部装上才会把非空映射写进来；否则映射为空，已装上的 hook 等同空操作。
-     */
     private static volatile Mapping mapping = Mapping.EMPTY;
 
     private static final Object FIELD_LOCK = new Object();
@@ -83,7 +78,6 @@ public final class SignatureFacade {
                 return false;
             }
             Mapping next = new Mapping(pairs);
-            // 先装 hook 再启用映射：hook 未装上时回调读到的是 EMPTY，不会产生"一半生效"的矛盾状态
             boolean ready = hookPrimitives();
             if (ready) {
                 mapping = next;
@@ -175,12 +169,6 @@ public final class SignatureFacade {
         return mapping.normalize(raw);
     }
 
-    /**
-     * 用精确字节做键构造 fake -> original：
-     * 1) 补丁包里某张证书本身就等于原证书（例如残留的 v1 证书）时按内容命中，跳过、不需要映射；
-     * 2) 剩下的重签证书与原证书内容必然不同，只能按同一位置对应；
-     * 3) 数量不匹配、重复键、空项都让整份映射失败（返回 null），宁可不伪装也不映射成另一张证书。
-     */
     private static Map<ByteKey, byte[]> buildPairs(byte[][] fakeSet, byte[][] originalSet) {
         Map<ByteKey, byte[]> pairs = new LinkedHashMap<ByteKey, byte[]>();
         for (int i = 0; i < fakeSet.length; i++) {
@@ -222,7 +210,6 @@ public final class SignatureFacade {
         return certs.toArray(new byte[certs.size()][]);
     }
 
-    /** 任何一张原证书为空/为空字节都视为整份不可信，返回 null 让 install() fail-closed。 */
     private static byte[][] toByteArrays(Signature[] signatures) {
         byte[][] result = new byte[signatures.length][];
         for (int i = 0; i < signatures.length; i++) {
@@ -239,10 +226,6 @@ public final class SignatureFacade {
         return result;
     }
 
-    /**
-     * toByteArray / hashCode / equals 是同一个语义整体，必须全部成功才算就绪；
-     * writeToParcel 是跨进程路径，一并计入（缺它时应用能看到归一化值、Binder 对端看不到）。
-     */
     private static boolean hookPrimitives() {
         if (!toByteArrayHooked) {
             try {
@@ -309,7 +292,6 @@ public final class SignatureFacade {
         XpHook.log0(TAG, message);
     }
 
-    /** 按证书字节精确定位的键：哈希/相等都只看内容，不做任何索引推断。 */
     private static final class ByteKey {
         private final byte[] bytes;
         private final int hash;
@@ -388,7 +370,6 @@ public final class SignatureFacade {
         @Override
         public void onHook(XpHook.XpParam param) throws Throwable {
             param.proceed();
-            // 直接按对象字节查表，不再用"返回的 hash 反查索引"，避免 hash 相同/映射变更时错配
             byte[] normalized = SignatureFacade.normalize(
                     SignatureFacade.bytesOf((Signature) param.this0));
             if (normalized == null) {

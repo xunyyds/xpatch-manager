@@ -45,17 +45,12 @@ public final class ApkCertReader {
         return readCertificates(apk, Build.VERSION.SDK_INT);
     }
 
-    /**
-     * @param sdkInt 设备 SDK：选块规则要与平台一致（33+ 用 v3.1，28–32 用 v3，24–27 用 v2），
-     *               单独开入口是为了用普通 JVM 读真实 APK 做验证。
-     */
     public static List<byte[]> readCertificates(File apk, int sdkInt) {
         lastError = "";
         List<byte[]> certs = readSigningBlockCertificates(apk, sdkInt);
         if (!certs.isEmpty()) {
             return certs;
         }
-        // 保留签名块阶段的失败原因：v1 阶段若也失败，两条都报出来，避免"明明有块却报没块"
         String blockError = lastError;
         lastError = "";
         List<byte[]> v1 = readV1Certificates(apk);
@@ -144,9 +139,6 @@ public final class ApkCertReader {
             byte[] v31 = null;
             byte[] v2 = null;
             int pos = 8;
-            // block 数组 = [size 字段 8 字节 + 全部 pairs]，尾随的 magic/size footer(24 字节) 读的时候
-            // 就已经排除在外，所以 pair 区上界就是 block.length（不能再减 FOOTER_SIZE，否则最后一个
-            // pair 永远解析不到）
             int end = block.length;
             while (pos + 12 <= end) {
                 long pairLength = readUInt64LE(block, pos);
@@ -166,7 +158,6 @@ public final class ApkCertReader {
                 }
                 pos += 8 + (int) pairLength;
             }
-            // 与平台一致：SDK 33+ 优先 v3.1，再 v3，再 v2
             if (sdkInt >= 33) {
                 List<byte[]> fromV31 = parseSigners(v31);
                 if (!fromV31.isEmpty()) {

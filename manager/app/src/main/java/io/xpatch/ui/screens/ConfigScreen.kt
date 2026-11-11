@@ -55,13 +55,6 @@ internal const val NO_SIGN_ID = "__no_sign__"
 
 private val NO_SIGN_PROFILE = SignatureStore.Profile(id = NO_SIGN_ID, name = "不签名", kind = SignatureStore.Kind.BUILTIN)
 
-/**
- * 「过签方案」六档：每一项都直接对应最终写进 xp/config.json 的 (sig_mode, bypass_level)。
- * 描述按 XpInit.installSignBypass() 的真实分支写——旧版 high/extreme/stealth 把功劳记错了层
- * （Parcel hook 在 basic 就有、入口工厂与 bypass 无关、stealth 实际是新增清单 provider），这里逐条改正。
- * 档位不是单调强度阶梯：strict 比 seccomp 多了严格校验，seccomp 比 file 多了 native openat；
- * 最高档 extreme 才是严格校验 + 文件层 + dobby/inline 混合 native 的三层叠加。
- */
 private data class BypassMode(
     val key: String,
     val name: String,
@@ -115,12 +108,6 @@ private val BYPASS_MODES = listOf(
     ),
 )
 
-/**
- * 反向映射：界面显示的档位只由 (sigMode, bypassLevel) 纯函数派生，不再另存 remember state。
- * 旧写法 `var bypassKey by remember { mutableStateOf(bypassModeKey(...)) }` 会让显示与真正下发的参数脱钩
- * （导入备份后出现过"显示 Stealth、实际 strict=false + 原生重定向"）。
- * 组合不属于六档（旧配置 sig_mode=deep、手改的备份）时返回 null，由界面显示「自定义」。
- */
 private fun bypassModeKey(sigMode: String, bypassLevel: Int): String? =
     BYPASS_MODES.firstOrNull { it.sigMode == sigMode && it.bypassLevel == bypassLevel }?.key
 
@@ -140,11 +127,7 @@ internal fun ConfigScreen(
     onStart: (PatchOptions) -> Unit,
     onPickSignature: (SignatureStore.Profile) -> Unit,
     onForceOverwriteChange: (Boolean) -> Unit,
-    // 档位/入口 Hook 一变更就落盘 SettingsStore 并同步 MainScaffold 的 settings：
-    // 只在本页攒 state、直到点「开始 Patch」才写，会出现"设置了却没保存"和 settings.copy 脱钩。
     onSignatureModeChange: (sigMode: String, bypassLevel: Int, entryHook: Boolean) -> Unit,
-    // 注入路径混淆的两个开关同样立刻落盘；混淆总开关与「保留熔断权限」一起传，
-    // 因为关掉混淆时子开关不再显示，但它的持久值要保留下来（下次打开还是原样）。
     onObfuscateChange: (obfuscate: Boolean, keepCrash: Boolean) -> Unit,
     forceOverwriteReady: Boolean,
     forceOverwriteBlockReason: String,
@@ -165,7 +148,6 @@ internal fun ConfigScreen(
     var showHookDialog by remember { mutableStateOf(false) }
     var showBypassDialog by remember { mutableStateOf(false) }
     var moreExpanded by remember { mutableStateOf(false) }
-    // 派生值：界面显示的档位 = 即将写进 config.json 的 (sigMode, bypass)，两者不可能再脱钩。
     val bypassKey = bypassModeKey(sigMode, bypass)
     val bypassMode = BYPASS_MODES.firstOrNull { it.key == bypassKey }
     val bypassTitle = bypassMode?.name ?: "自定义"
@@ -238,7 +220,6 @@ internal fun ConfigScreen(
                 SettingGroup("过签方案") {
                     ChoiceRow(bypassTitle) { showBypassDialog = true }
                     if (bypassMode == null) {
-                        // 非预设组合（旧 deep 配置或手改过的备份）：明说它不在六档内，避免被当成最近的一档。
                         NoteText("预设档位见「过签方案」列表，重新选择任意档位会把它改回预设组合。")
                     }
                 }
@@ -299,8 +280,6 @@ internal fun ConfigScreen(
                 }
                 item {
                     SettingGroup("实验性") {
-                        // 入口 Hook 不再是"隐藏入口/降低检测"：它只是在工厂注入之外**额外**插一个
-                        // ContentProvider 备用入口（会新增清单组件），因此默认关、且与档位彻底解耦。
                         SwitchLine(
                             title = "入口 Hook",
                             subtitle = "实验：额外插入 ContentProvider 备用入口，仍保留工厂注入。",
@@ -310,8 +289,6 @@ internal fun ConfigScreen(
                                 onSignatureModeChange(sigMode, bypass, on)
                             },
                         )
-                        // 注入路径混淆：把 xp/* 条目名与清单里的类名换成随机名，产物在静态检查下无痕迹。
-                        // 只影响下一次打包，已打好的产物不受影响（因此 subtitle 明说"重新打包后生效"）。
                         SwitchLine(
                             title = "注入路径混淆",
                             subtitle = "实验：抹掉产物里的 xp/* 条目名与清单里的类名，静态检查看不出修补痕迹；重新打包后生效",
@@ -321,7 +298,6 @@ internal fun ConfigScreen(
                                 onObfuscateChange(on, injectKeepCrashPermission)
                             },
                         )
-                        // 子开关只在混淆打开时有意义：保留它会在清单里留下一处 xpatch 字样。
                         if (injectObfuscate) {
                             SwitchLine(
                                 title = "保留模块熔断权限",
@@ -404,8 +380,6 @@ internal fun ConfigScreen(
         )
     }
     if (showBypassDialog) {
-        // 选中值直接用派生出来的 bypassKey（非预设组合传空串，五档都不打勾）；
-        // 选中后只改 (sigMode, bypassLevel) 两项，入口 Hook 不再被档位顺手重置成 true。
         ChoiceDialog(
             title = "过签方案",
             options = BYPASS_MODES.map { Triple(it.key, it.name, it.desc) },
@@ -414,8 +388,6 @@ internal fun ConfigScreen(
                 BYPASS_MODES.firstOrNull { it.key == key }?.let { mode ->
                     sigMode = mode.sigMode
                     bypass = mode.bypassLevel
-                    // 需要内嵌的档位默认走 FPA 动态加载（产物只保留原包 + 运行层），
-                    // 避免"原条目 + xp/source.apk"双份体积；可在「更多」里手动关掉。
                     dynamicMode = mode.key == "file" || mode.key == "seccomp" || mode.key == "extreme"
                     onSignatureModeChange(mode.sigMode, mode.bypassLevel, entryHook)
                 }
@@ -739,7 +711,6 @@ private fun ChoiceRow(value: String, subtitle: String = "", onClick: () -> Unit)
     ) {
         Column(Modifier.weight(1f)) {
             Text(value, style = MaterialTheme.typography.bodyMedium)
-            // 描述只在选择弹窗里展示；折叠态只留档位名，避免一屏全是说明文字。
             if (subtitle.isNotBlank()) {
                 Text(
                     subtitle,

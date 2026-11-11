@@ -28,7 +28,6 @@ data class PatchRecord(
     val bootDex: String,
     val originalFactory: String?,
     val config: String,
-    /** 打包时是否启用强行覆盖安装；旧记录没有该字段，按普通安装处理。 */
     val forceOverwrite: Boolean = false,
     val exports: List<PatchExportRef> = emptyList(),
 ) {

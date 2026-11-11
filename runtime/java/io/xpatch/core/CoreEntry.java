@@ -7,7 +7,6 @@ import io.xpatch.hook.AppEnv;
 import io.xpatch.utils.AppUtils;
 
 public class CoreEntry {
-    /** 运行时内核版本：与打包端 ApkPatcher.RUNTIME_VERSION 对齐（W7 的版本门禁按此校验）。 */
     public static final int RUNTIME_VERSION = 42;
 
     public static void loadAppInPack(ClassLoader classLoader, ApplicationInfo applicationInfo) {
@@ -15,8 +14,6 @@ public class CoreEntry {
         AppEnv.appClassLoader = classLoader;
         AppEnv.baseApp = applicationInfo;
         AppEnv.packageName = applicationInfo.packageName;
-        // 首次进入时记录包装 APK；动态模式切换 LoadedApk 后 selfApk 可能被改成原包，
-        // xp/xp89.dex 等运行层资产必须继续从包装 APK 读。
         if (AppEnv.wrapperApk == null || AppEnv.wrapperApk.length() == 0) {
             AppEnv.wrapperApk = applicationInfo.sourceDir;
         }

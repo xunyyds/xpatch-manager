@@ -29,33 +29,13 @@ import java.util.zip.ZipFile;
 
 public class ModuleLoader {
     private static final String TAG = "ModuleLoader";
-    /** 旧产物的 wrapper dex 前缀；混淆产物里条目名是随机的，真实名字见 {@link #wrapperEntry}。 */
     private static final String WRAPPER_DEX_DIR = "xp/";
     private static final String WRAPPER_ENTRY_CLASS = "io.xpatch.wrapper.WrapperBase";
     private static final String WRAPPER_ENTRY_METHOD = "loadModule";
     private static final String[] WRAPPER_NAMES = {"xp89", "xp100", "xp101", "xp102"};
-    /** 与 {@link #WRAPPER_NAMES} 一一对应的 XpLayout 逻辑名（xp89 → dex89…）。 */
     private static final String[] WRAPPER_LOGICAL = {"dex89", "dex100", "dex101", "dex102"};
     private static final Map<String, byte[]> WRAPPER_DEX_CACHE = new ArrayMap();
 
-    
-
-
-
-
-
-
-
-
-
-
-    /**
-     * wrapper 名（xp89/xp100/xp101/xp102）→ 包装 APK 里的真实条目名。
-     *
-     * <p>旧产物是 {@code xp/<wrapper>.dex}；开了路径混淆的产物里是 config 的
-     * {@code res_dex<API 级别>}（如 {@code res_dex89}），由 {@link XpLayout} 解析。
-     * 名字表里查不到这个 wrapper（理论上不可能，保护未来改名）时按旧前缀直拼，与今天一致。
-     */
     private static String wrapperEntry(String wrapper) {
         for (int i = 0; i < WRAPPER_NAMES.length; i++) {
             if (WRAPPER_NAMES[i].equals(wrapper)) {
@@ -65,10 +45,6 @@ public class ModuleLoader {
         return WRAPPER_DEX_DIR + wrapper + ".dex";
     }
 
-    /**
-     * Android 17 的 ZipFile.getEntry 在部分动态包装包上会返回 null（明明 unzip 能看到条目）；
-     * 这里加一次全表遍历兜底，避免运行层 wrapper dex 被误判为缺失。
-     */
     private static ZipEntry findEntry(ZipFile zipFile, String name) {
         ZipEntry entry = zipFile.getEntry(name);
         if (entry != null) {
@@ -128,7 +104,6 @@ public class ModuleLoader {
         }
     }
 
-    /** 返回 true 表示模块入口执行成功；false 表示模块没装上（调用方据此决定是否清崩溃计数）。 */
     public static boolean loadModule(RemoteModule remoteModule) {
         if (remoteModule == null || TextUtils.isEmpty(remoteModule.apkPath)) {
             return false;
@@ -248,10 +223,6 @@ public class ModuleLoader {
         throw new NoSuchFieldException(str);
     }
 
-    /**
-     * 只探测模块 APK 里有没有 dex，不把 dex 读进堆：模块类由 PathClassLoader 按路径加载，
-     * 预先解压整包 dex 完全用不到（多 dex 模块可达 30-100 MB，启动路径上有 OOM 风险，P2-27）。
-     */
     private static ClassLoader createModuleClassLoader(String str, String[] wrapperNames) throws Exception {
         int dexCount = 0;
         ZipFile zipFile = new ZipFile(str);

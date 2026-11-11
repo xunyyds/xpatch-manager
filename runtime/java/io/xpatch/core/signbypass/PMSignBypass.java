@@ -45,10 +45,6 @@ public class PMSignBypass {
 
     private static final String TAG_FILL = "XpSignFill";
 
-    /**
-     * hasSigningCertificate 的两个重载在 PackageManager 与 ApplicationPackageManager 上可能指向同一个
-     * Member（子类未 override 时 getMethod 返回父类方法），用 Member 集合去重，保证一个 Member 只挂一个回调。
-     */
     private static final Set<Method> hasSigningCertificateHooked = new HashSet<Method>();
 
     private static final Set<Method> archiveInfoHooked = new HashSet<Method>();
@@ -61,20 +57,16 @@ public class PMSignBypass {
 
     private static volatile boolean signingInfoFallbackLogged;
 
-    /** XpInit 兼容开关：本字段已不参与决策（hasSigningCertificate 无条件安装），仅用于日志口径。 */
     private static volatile boolean hookHasSigningCertificateEnabled = true;
 
     private static final int CONFIG_CACHE_MAX = 64;
 
     private static final Signature[] NO_CONFIG_CERTS = new Signature[0];
 
-    /** sourceDir + lastModified + length -> 该包 config 里的原证书；负缓存用 NO_CONFIG_CERTS。 */
     private static final Map<String, Signature[]> configCertCache = new ConcurrentHashMap<String, Signature[]>();
 
-    /** getPackageArchiveInfo 可能一层重载转调另一层重载：只允许最外层做一次路径映射，避免自我抵消。 */
     private static final ThreadLocal<Boolean> archiveRedirecting = new ThreadLocal<Boolean>();
 
-    /** 原证书 -> 公钥的缓存锚点（首证字节），避免每次 PackageInfo 反序列化都做 X.509 解析。 */
     private static volatile byte[] publicKeysAnchor;
 
     private static volatile Collection<PublicKey> publicKeysCached;
@@ -100,7 +92,6 @@ public class PMSignBypass {
                 }
             });
             if (token == null) {
-                // hook 引擎拒绝构造函数时不能静默成功（原实现把返回值丢掉了）
                 XpHook.log0(TAG, "PackageInfo(Parcel) 构造 hook 安装失败，退回 PackageInfo.CREATOR 替换");
                 enableSignBypass();
                 return;
@@ -162,17 +153,10 @@ public class PMSignBypass {
         XpHook.log0(TAG, "PackageInfo.CREATOR / PackageParser.generatePackageInfo 兜底 hook 已安装");
     }
 
-    /**
-     * 兼容 W1 的旧调用点：开关不再参与决策（hasSigningCertificate 必须无条件安装，见 installEarly）。
-     */
     public static void setHasSigningCertificateEnabled(boolean enabled) {
         hookHasSigningCertificateEnabled = enabled;
     }
 
-    /**
-     * 兼容 W1 的旧调用点。历史上这里起线程 sleep 1500ms 再装 hook，导致 Application.onCreate 里的
-     * 自校验必然早于安装；现在同步立即安装，不再有线程与睡眠。
-     */
     public static void installHasSigningCertificateLater() {
         if (!earlyInstalled) {
             XpHook.log0(TAG, "installHasSigningCertificateLater 已废弃：改为同步立即安装");
@@ -180,11 +164,6 @@ public class PMSignBypass {
         installEarly();
     }
 
-    /**
-     * 立即在 PackageManager / ApplicationPackageManager 上安装 hasSigningCertificate 的
-     * (String, byte[], int) 与 (int, byte[], int) 两个重载。不依赖 appContext、不 sleep、幂等；
-     * 失败时不置位，允许下一次调用（DeferredSignHooks.installAll）重试一次。
-     */
     public static synchronized boolean installEarly() {
         if (earlyInstalled) {
             return true;
@@ -248,10 +227,6 @@ public class PMSignBypass {
         return true;
     }
 
-    /**
-     * 同时支持 (String packageName, byte[] cert, int type) 与 (int uid, byte[] cert, int type)；
-     * uid 版按 Process.myUid() 认定"本包"。type: 0=CERT_INPUT_RAW_X509，1=CERT_INPUT_SHA256。
-     */
     public static boolean isExpectedSigningCertificateQuery(Object[] objArr) {
         if (objArr == null || objArr.length < 3 || !(objArr[1] instanceof byte[])) {
             return false;
@@ -282,9 +257,6 @@ public class PMSignBypass {
         return false;
     }
 
-    /**
-     * 判定集 = 当前证书（signing_details.apk 优先，缺省退回 legacy sign）+ 历史证书链（v3 轮换场景）。
-     */
     private static Signature[] signCheckCandidates() {
         SigningDetailsData data = SigningDetailsData.get();
         List<Signature> all = new ArrayList<Signature>();
@@ -396,8 +368,6 @@ public class PMSignBypass {
         }
         String packageName = packageInfo.packageName;
         if (packageName != null && packageName.equals(AppEnv.packageName)) {
-            // 只对本包改写 appComponentFactory，且没有原厂工厂时保持 null（空串会让 LoadedApk 的
-            // Class.forName("") 抛异常）；其它应用的元数据一律不动。
             if (packageInfo.applicationInfo != null) {
                 String factory = AppEnv.baseApp == null ? null : AppEnv.baseApp.appComponentFactory;
                 if (factory != null && factory.length() == 0) {
@@ -411,10 +381,6 @@ public class PMSignBypass {
         checkAndFillTargetAppSign(packageInfo);
     }
 
-    /**
-     * signatures 与 signingInfo 必须同源（都用 signing_details.apk，缺省退回 legacy sign），
-     * 否则同一个 PackageInfo 会给出两套互相矛盾的签名视图。
-     */
     private static void applySigningDetails(PackageInfo packageInfo) {
         SigningDetailsData data = SigningDetailsData.get();
         Signature[] originals = (data != null && data.hasApk()) ? data.apk : AppEnv.signatures;
@@ -424,8 +390,6 @@ public class PMSignBypass {
         if (packageInfo.signatures != null && packageInfo.signatures.length > 0) {
             packageInfo.signatures = cloneSignatures(originals);
         }
-        // PackageInfo.signingInfo 是 API 28 才有的字段：先判版本，避免 26/27 上每次反序列化都抛
-        // NoSuchFieldError 并写一条完整堆栈
         if (Build.VERSION.SDK_INT < 28) {
             return;
         }
@@ -449,15 +413,12 @@ public class PMSignBypass {
         Collection<Signature> history = new ArrayList<Signature>(Arrays.asList(cloneSignatures(historySource)));
         Collection<PublicKey> publicKeys = publicKeysOf(originals, old);
         if (Build.VERSION.SDK_INT >= 35) {
-            // 公开构造：SigningInfo(int, Collection, Collection, Collection) 自 API 35 起进公开 SDK
             return new SigningInfo(scheme, apkSigners, publicKeys, history);
         }
         SigningInfo reflected = buildSigningInfoReflectively(scheme, apkSigners, publicKeys, history);
         if (reflected != null) {
             return reflected;
         }
-        // 兜底（v0.1.6 的老办法）：getApkContentsSigners()/getSigningCertificateHistory() 返回的是
-        // SigningInfo 内部数组，元素级替换即生效，保证 SigningInfo 与 signatures 同源
         if (patchSigningInfoInPlace(old, originals, historySource)) {
             logOnce("signingInfo 隐藏构造不可用，已改为元素级替换（API " + Build.VERSION.SDK_INT + "）");
             return null;
@@ -480,10 +441,6 @@ public class PMSignBypass {
         return scheme;
     }
 
-    /**
-     * API 28–34 上 SigningInfo(int, Collection, Collection, Collection) 是隐藏构造：
-     * 先用 HiddenApiBypass（绕过 hidden API 限制）直接用 Unsafe 构造，再退回普通反射。
-     */
     private static SigningInfo buildSigningInfoReflectively(int scheme, Collection<Signature> apkSigners,
             Collection<PublicKey> publicKeys, Collection<Signature> history) {
         try {
@@ -530,7 +487,6 @@ public class PMSignBypass {
             if (desired == null) {
                 continue;
             }
-            // 必须用 bytesOf 读原始字节：target[i].toByteArray() 已被原语层归一化，读不到真实差异
             byte[] actual = SignatureFacade.bytesOf(target[i]);
             if (actual != null && Arrays.equals(desired, actual)) {
                 continue;
@@ -545,7 +501,6 @@ public class PMSignBypass {
         byte[] anchor = originals.length > 0 && originals[0] != null ? originals[0].toByteArray() : null;
         Collection<PublicKey> cached = publicKeysCached;
         if (anchor != null && cached != null && publicKeysAnchor != null && Arrays.equals(publicKeysAnchor, anchor)) {
-            // X.509 解析比一次字节比较贵得多：同一份原证书只在首次解析
             return cached;
         }
         List<PublicKey> keys = new ArrayList<PublicKey>(originals.length);
@@ -562,7 +517,6 @@ public class PMSignBypass {
         } catch (Throwable th) {
             keys.clear();
         }
-        // getPublicKeys() 自 API 35 起公开，低版本不碰它（否则每次 PackageInfo 都抛 NoSuchMethodError）
         if (Build.VERSION.SDK_INT >= 35 && old != null) {
             try {
                 Collection<PublicKey> oldKeys = old.getPublicKeys();
@@ -597,13 +551,8 @@ public class PMSignBypass {
         }
         Class<?> live = livePackageManagerClass();
         if (live != null && live != manager) {
-            // OEM 包装子类：只有它自己 override 时才需要单独 hook（同 Member 会去重）
             hooked |= hookGetPackageArchiveInfo(live);
         }
-        // 只有真的装上才置位，失败时留给下一次调用重试。
-        // appContext 为空时 livePackageManagerClass() 拿不到 OEM 包装子类，这时即使
-        // ApplicationPackageManager 已 hook 也不能标记完成：DeferredSignHooks.installAll()
-        // 在 Application.onCreate 之前还有一次机会补装包装子类。
         archiveHooksInstalled = hooked && AppEnv.appContext != null;
         XpHook.log0(TAG, hooked
                 ? "getPackageArchiveInfo 路径重定向已安装（本包读原包）"
@@ -694,7 +643,6 @@ public class PMSignBypass {
         return null;
     }
 
-    /** 重建包没有签名块时框架返回 null 签名：本包一律强制填原证书，避免"读自己 APK 发现未签名"。 */
     private static void forceFillOriginalSignatures(PackageInfo packageInfo) {
         if (packageInfo == null || (packageInfo.signatures != null && packageInfo.signatures.length > 0)) {
             return;
@@ -711,8 +659,6 @@ public class PMSignBypass {
         @Override
         public void onHook(XpHook.XpParam xpParam) throws Throwable {
             Object[] args = xpParam.args;
-            // 两个重载可能是同一条调用链（int 版转调 flags 版），只允许最外层改写一次，
-            // 否则 origin->self、self->origin 会互相抵消
             boolean outer = !Boolean.TRUE.equals(archiveRedirecting.get());
             String requestedPath = null;
             if (outer && args != null && args.length > 0 && args[0] instanceof String) {
@@ -752,11 +698,6 @@ public class PMSignBypass {
         }
     }
 
-    /**
-     * PackageInfo(Parcel) 覆盖了所有反序列化路径（getPackageInfo / getInstalledPackages / 任意 binder 回复），
-     * 对每个非本包都开一次 ZIP 会把 getInstalledPackages 变成 O(n) 文件 IO：按
-     * sourceDir+lastModified+length 缓存解析结果（上限 64），非 XPatch 产物记负缓存，不再重复开包。
-     */
     private static void checkAndFillTargetAppSign(PackageInfo packageInfo) {
         if (packageInfo.signatures == null || packageInfo.signatures.length == 0) {
             return;
@@ -785,9 +726,6 @@ public class PMSignBypass {
         ZipFile zipFile = null;
         try {
             zipFile = new ZipFile(sourceDir);
-            // 目标包可能是路径混淆产物（不管是不是本管理器打的包），config 的条目名不可预测：
-            // 由 XpLayout 按"候选正则 + 内容含 res_cfg"现场发现，找不到（普通 APK）返回 null。
-            // 换包名不影响判定——布局与包名无关，只看条目名形状与内容。
             String json = XpLayout.readConfigText(zipFile);
             if (json == null) {
                 return NO_CONFIG_CERTS;

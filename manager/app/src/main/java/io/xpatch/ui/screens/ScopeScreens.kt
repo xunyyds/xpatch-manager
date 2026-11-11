@@ -192,7 +192,6 @@ internal fun AppScopeScreen(
     val settledState = remember { mutableStateOf(enabledFlags) }
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
-    /** 0=全部 1=已启用 2=推荐。与搜索、排序共同决定列表内容。 */
     var scopeFilter by remember { mutableIntStateOf(0) }
     val settledEnabled = settledState.value
 
@@ -584,11 +583,6 @@ internal fun ScopeHeader(title: String, subtitle: String, countText: String) {
     }
 }
 
-/**
- * 模块作用域的筛选条：全部 / 已启用 / 推荐。
- *
- * 与搜索框、排序菜单共同决定列表内容——三者互不覆盖，符合"保留现有筛选和排序"的预期。
- */
 @Composable
 private fun ScopeFilterRow(
     selected: Int,

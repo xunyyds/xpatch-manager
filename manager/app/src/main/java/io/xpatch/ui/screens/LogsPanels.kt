@@ -586,7 +586,6 @@ internal fun appChipText(selected: Set<String>, apps: List<LogAppFilter>): Strin
     else -> selected.size.toString() + " 个应用"
 }
 
-/** 清理面板里的"运行日志"分组：一个应用一张卡，可展开看模块文件。 */
 internal data class ClearRuntimeGroup(
     val target: String,
     val label: String,
@@ -596,11 +595,6 @@ internal data class ClearRuntimeGroup(
     val moduleCount: Int get() = files.map { it.module }.distinct().size
 }
 
-/**
- * 选择性清理日志：按大类分卡、卡内可展开勾选，未勾选的内容不受影响。
- *
- * 交互参照手机管家：先看总量，再决定删哪一类；每张卡都能单独全选/全不选。
- */
 @Composable
 internal fun ClearLogsSheet(
     groups: List<ClearRuntimeGroup>,
@@ -640,7 +634,6 @@ internal fun ClearLogsSheet(
                 modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
             )
 
-            // ── 运行日志 ──────────────────────────────────────────────
             ClearSection(
                 title = "运行日志",
                 summary = groups.size.toString() + " 个应用 · " + formatBytes(groups.sumOf { it.bytes }),
@@ -687,7 +680,6 @@ internal fun ClearLogsSheet(
                 }
             }
 
-            // ── 操作日志 ──────────────────────────────────────────────
             ClearSection(
                 title = "操作日志",
                 summary = operationsCount.toString() + " 条 · " + formatBytes(operationsBytes),
@@ -705,7 +697,6 @@ internal fun ClearLogsSheet(
                 )
             }
 
-            // ── 崩溃记录 ──────────────────────────────────────────────
             ClearSection(
                 title = "崩溃记录",
                 summary = crashCount.toString() + " 个文件 · " + formatBytes(crashBytes),
@@ -783,7 +774,6 @@ private fun ClearSection(
                 Icon(
                     Icons.Rounded.KeyboardArrowRight,
                     contentDescription = if (expanded) "收起" else "展开",
-                    // 右向箭头展开时旋转 90° 变向下，符合树形列表的通用语义
                     modifier = Modifier.rotate(if (expanded) 90f else 0f),
                 )
             }
@@ -802,4 +792,3 @@ internal fun formatBytes(bytes: Long): String = when {
     bytes >= 1024L -> String.format("%.0f KB", bytes / 1024.0)
     else -> bytes.toString() + " B"
 }
-

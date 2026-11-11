@@ -85,10 +85,6 @@ object InstallHelper {
         }.isSuccess
     }
 
-    /**
-     * 调用系统卸载界面（带结果回传），卸载后由调用方决定是否继续安装。
-     * 数据会随卸载一并删除，调用前必须由用户二次确认。
-     */
     fun uninstallIntent(packageName: String): Intent =
         Intent(Intent.ACTION_DELETE, android.net.Uri.parse("package:$packageName"))
             .putExtra(Intent.EXTRA_RETURN_RESULT, true)

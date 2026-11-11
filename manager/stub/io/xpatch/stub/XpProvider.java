@@ -10,21 +10,8 @@ import android.util.Log;
 
 public class XpProvider extends ContentProvider {
 
-    /**
-     * logcat 标签，与 {@code AppEntry} 保持一致（中性的 "Boot"，不用框架名）：
-     * 本类会随 stub.dex 一起注入到产物里，源码里的框架名字面量会被 d8 原样写进字符串池。
-     * 代价是引导阶段这两条日志的 tag 变了，属预期；框架自己的日志不受影响。
-     */
     private static final String TAG = "Boot";
 
-    /**
-     * 备用入口：entryHook=true 时打包器把本 provider 插进目标清单。
-     *
-     * 不变量：返回值必须是 {@link AppEntry#ensureInjected(ClassLoader, ApplicationInfo)} 的真实结果。
-     * 恒 true 会让注入失败彻底静默（应用照常启动、模块一个都不加载、日志页又看不到 bootstrap.log），
-     * 用户侧表现是"打包成功、打开正常、模块就是不生效"。返回 false 时系统至少会把
-     * "provider 创建失败"写进 logcat / 崩溃记录，配合引导桩写下的 bootstrap.log 才能定位。
-     */
     @Override
     public boolean onCreate() {
         Context context = getContext();
@@ -36,7 +23,6 @@ public class XpProvider extends ContentProvider {
             ApplicationInfo info = context.getApplicationInfo();
             boolean injected = AppEntry.ensureInjected(context.getClassLoader(), info);
             if (!injected) {
-                // 失败原因已经由 AppEntry.fatal() 落到 bootstrap.log，这里只补一条 logcat 便于抓现场。
                 Log.e(TAG, "入口注入失败：" + context.getPackageName());
             }
             return injected;

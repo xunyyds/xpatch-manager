@@ -85,9 +85,7 @@ internal fun LogsScreen(
     onClearOperations: () -> Boolean,
     onExport: (String, String, (suspend ((String) -> Unit) -> Unit)?) -> Unit,
     onOpenModule: (LogGroup) -> Unit,
-    /** 列出可清理的日志文件（有 Shizuku 时走 shell，能覆盖 Android/data 与私有目录）。 */
     listLogFiles: suspend () -> List<RuntimeLogStore.LogFileInfo> = { emptyList() },
-    /** 删除选中的日志文件（有 Shizuku 时走 shell rm）。 */
     deleteLogFiles: suspend (List<String>) -> RuntimeLogStore.ClearResult =
         { RuntimeLogStore.ClearResult(0, 0, emptyList()) },
 ) {
@@ -102,7 +100,6 @@ internal fun LogsScreen(
     var menuOpen by remember { mutableStateOf(false) }
     var filterOpen by remember { mutableStateOf(false) }
     var outcome by remember { mutableStateOf<ClearOutcome?>(null) }
-    // 选择性清理：按应用分组的可清理文件 + 操作日志/崩溃记录的体积
     var clearSheetOpen by remember { mutableStateOf(false) }
     var clearGroups by remember { mutableStateOf<List<ClearRuntimeGroup>>(emptyList()) }
     var operationsBytes by remember { mutableStateOf(0L) }
@@ -171,8 +168,6 @@ internal fun LogsScreen(
     val ready = computed ?: state.cachedBase
     val computing = computed == null && ready != null
 
-    // 关键词非空且磁盘上还有未加载内容时，跨全量做一次流式搜索，
-    // 避免"搜不到"其实只是因为那条日志还在未加载区间。
     val searchQuery = state.query.trim()
     var fullSearch by remember { mutableStateOf<FullSearchResult?>(null) }
     var fullSearching by remember { mutableStateOf(false) }
@@ -205,9 +200,6 @@ internal fun LogsScreen(
         fullSearching = false
     }
 
-    // 全量命中并入列表的渲染数据源：命中优先（带完整 Entry），已加载结果去重后补齐。
-    // 合并与排序放到 Default 线程，避免大结果集在组合期做重活；
-    // 结果带上 query，用来丢弃"上一个关键词"迟到的合并结果。
     val searchHits = fullSearch?.takeIf { it.query == searchQuery }
     val mergedRender by produceState<MergedLogsBase?>(
         initialValue = null,
@@ -235,8 +227,6 @@ internal fun LogsScreen(
             }
         }
     }
-    // 只有"关键词仍然是当前关键词、且仍在运行日志页"时才用合并结果，
-    // 否则回落到纯已加载结果（例如切到操作日志页或刚清空搜索词）。
     val searchMerged = mergedRender?.takeIf {
         it.query == searchQuery && state.tab == LogsTab.Runtime
     }
@@ -279,7 +269,6 @@ internal fun LogsScreen(
         newestKey != state.seenNewest
 
     val totalLoaded = runtime.entries.size
-    // matched/ordered 都取渲染数据源：全量搜索就绪后，"当前筛选结果"指的就是全部日志的命中。
     val matched = base?.matched ?: 0
 
     val exportOptions = remember(state.tab, base, shownOperations, operations, runtime.snapshot) {
@@ -294,8 +283,6 @@ internal fun LogsScreen(
             store = store,
             fullExport = if (state.tab == LogsTab.Runtime) {
                 { write ->
-                    // 全量导出：按文件流式扫描磁盘，逐条交给写出方，
-                    // 既不受"已加载"范围限制，也不会把全部日志读进内存。
                     store.scanAll(targets = emptyList()) { chunk ->
                         chunk.sortedByDescending { it.timeMillis }.forEach { write(it.fullText) }
                     }
@@ -377,8 +364,6 @@ internal fun LogsScreen(
                 val snapshot = runtime.snapshot
                 val truncated = snapshot?.headTruncated == true
                 val readFailed = snapshot?.failures?.isNotEmpty() == true
-                // 应用私有目录（/data/data/<pkg>/files/xpatch-logs）里的日志只能经 shell 读，
-                // 有这类来源时即使没有任何筛选也要把状态行亮出来，否则用户不知道"日志不全"。
                 val privateDir = snapshot?.hasPrivateDir == true
                 val showStatus = base != null &&
                     (base.filtered || truncated || readFailed || privateDir)
@@ -390,7 +375,6 @@ internal fun LogsScreen(
                         snapshot = snapshot,
                         refreshing = runtime.refreshing,
                         fullSearching = fullSearching,
-                        // 非 null 表示列表已在展示全量搜索结果，文案据此改成"全部日志"。
                         fullSearchHits = searchMerged?.base?.matched,
                         privateDirHint = privateDir,
                         onReset = {
@@ -405,7 +389,6 @@ internal fun LogsScreen(
                     rows = rows,
                     base = base,
                     computing = computing,
-                    // 全量搜索结果已在列表里时，不再提示"还有文件未加载"——命中已覆盖磁盘全量。
                     fullSearchActive = searchMerged != null,
                     listState = listState,
                     hasNew = hasNew,
@@ -724,12 +707,7 @@ private fun SlimStatusLine(
     snapshot: RuntimeLogStore.Snapshot?,
     refreshing: Boolean,
     fullSearching: Boolean = false,
-    /**
-     * 全量搜索的命中数；非 null 表示列表里展示的已经是"全部日志"的搜索结果，
-     * 文案要明确说出来，而不是再补一句"另有 N 条"。
-     */
     fullSearchHits: Int? = null,
-    /** 部分日志落在应用私有目录、需要 Shizuku 才能读取时的提示位。 */
     privateDirHint: Boolean = false,
     onReset: () -> Unit,
 ) {
@@ -743,7 +721,6 @@ private fun SlimStatusLine(
             buildString {
                 val hits = fullSearchHits
                 if (hits != null) {
-                    // 列表就是全量命中，不要说"另有 N 条"，否则用户以为还有隐藏结果。
                     append("已在全部日志中搜索：命中 ")
                     append(countText(hits))
                     append(" 条")
@@ -864,7 +841,6 @@ private fun RuntimeLogList(
     state: LogsState,
     rows: List<LogRow>,
     base: LogsBase?,
-    /** 列表数据源来自全量搜索结果时为 true：命中已覆盖磁盘全量，不再提示继续加载。 */
     fullSearchActive: Boolean = false,
     computing: Boolean,
     listState: LazyListState,
@@ -887,9 +863,6 @@ private fun RuntimeLogList(
         modifier = modifier.fillMaxSize(),
     ) {
         Box(Modifier.fillMaxSize()) {
-            // 滚到接近底部时自动补下一页。
-            // 只增量合并已加载部分，不会重新解析磁盘上全部日志。
-            // 全量搜索结果不需要翻页：命中本身已经覆盖磁盘上全部文件。
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -918,8 +891,6 @@ private fun RuntimeLogList(
                         )
                     }
 
-                    // 全量搜索可能命中"还没加载"区间的日志：
-                    // 只要 rows 非空就得渲染，不能被"已加载为空"的空白卡片挡住。
                     runtime.entries.isEmpty() && rows.isEmpty() -> item(key = "state:empty") {
                         LogStateCard(
                             title = "暂无运行日志",
@@ -1109,7 +1080,6 @@ private fun LogLoadingCard(text: String) {
 private fun EmptyResultCard(
     query: String,
     onReset: () -> Unit,
-    /** 结果来自全量搜索时为 true：此时"没搜到"就是全部日志都没搜到，不能再提示"只覆盖已加载"。 */
     searchedAll: Boolean = false,
 ) {
     Column(
@@ -1375,9 +1345,5 @@ internal fun countText(value: Int): String =
     if (value < 1000) value.toString()
     else String.format(java.util.Locale.US, "%.1fk", value / 1000.0)
 
-/**
- * 条数上限已经取消。剩余的"头部截断"只代表单个日志文件超出单次读取预算，
- * UI 借此提示"更早的内容还没有载入"，而不是暗示存在条数上限。
- */
 internal fun headTruncatedOf(snapshot: RuntimeLogStore.Snapshot): Boolean =
     snapshot.headTruncated

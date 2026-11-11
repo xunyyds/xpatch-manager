@@ -3,11 +3,6 @@
 )
 $ErrorActionPreference = 'Stop'
 
-# 本文件必须以 UTF-8「带 BOM」保存，改动时不要去掉 BOM：
-# powershell.exe 5.1 在文件无 BOM 时按系统 ANSI(GBK) 解码，中文注释的多字节序列会吞掉行尾换行，
-# 让脚本在解析阶段就报 "Unexpected token"（实测：去掉 BOM 后 5.1 在本文件上 2 处语法错误）。
-# 与它相对的是下面为 d8 生成的 @argfile：那份必须「无 BOM」，d8 不接受 BOM。
-
 foreach ($name in 'APKTOOL_JAR', 'ANDROID_JAR', 'ANDROID_BUILD_TOOLS') {
     if (-not (Get-Item "env:$name" -ErrorAction SilentlyContinue).Value) {
         throw "请先设置环境变量 $name"
@@ -45,12 +40,7 @@ $classes = @(Get-ChildItem "$work\maincls" -Recurse -Filter '*.class' |
     Sort-Object FullName |
     Select-Object -ExpandProperty FullName)
 if ($classes.Count -eq 0) { throw "javac 没有产出任何 .class（$work\maincls 为空）" }
-# cmd.exe 的单条命令行上限是 8,191 字符（不是 32K）：99 个类、argfile 9,342 B 触发的
-# "The command line is too long." 就是这条限制，所以类列表必须走 @argfile。
-# argfile 语法是「一行一个参数」，不支持引号（路径里有空格也不用加，加了反而报 Invalid char）。
 $classList = Join-Path $work 'main-classes.txt'
-# d8 不接受 UTF-8 BOM（实测 InvalidPathException: Illegal char <:> at index 2，exit=1），
-# 而 Windows PowerShell 5.1 的 `Set-Content -Encoding UTF8` 会写 BOM，所以这里显式写无 BOM 的 UTF-8。
 [System.IO.File]::WriteAllLines($classList, [string[]]$classes, (New-Object System.Text.UTF8Encoding($false)))
 $classListBytes = [System.IO.File]::ReadAllBytes($classList)
 $classListHasBom = ($classListBytes.Length -ge 3) -and
@@ -69,8 +59,6 @@ $manifestText = @'
     <application android:hasCode="true" />
 </manifest>
 '@
-# 也写无 BOM 的 UTF-8：aapt2 对 BOM 宽容（实测 exit=0），但脚本不该依赖解释器的默认编码，
-# powershell.exe(5.1) 与 pwsh 必须产出同样的模板清单。
 [System.IO.File]::WriteAllText($manifestXml, $manifestText, (New-Object System.Text.UTF8Encoding($false)))
 $template = Join-Path $work 'template.apk'
 & $aapt2 link --manifest $manifestXml -o $template -I $env:ANDROID_JAR

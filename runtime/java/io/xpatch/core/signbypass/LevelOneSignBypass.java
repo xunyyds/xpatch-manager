@@ -5,12 +5,6 @@ import io.xpatch.core.NativeCalls;
 import io.xpatch.core.NativeLoader;
 import io.xpatch.hook.XpHook;
 
-/**
- * bypass=1：libc 层精确路径重定向（open/openat/fopen，UI 上叫 Seccomp 档）。
- *
- * <p>不变量：只有"本包路径 + 原包真实存在 + hook_core.so 已加载 + native 返回 true"四条同时成立才算启用；
- * 任何一条不成立都返回 false，并写明降级原因，禁止在日志里写"已启用"（审查 P1-2 / P2 假成功）。
- */
 class LevelOneSignBypass extends BaseNativeSignBypass {
 
     private static final String TAG = "XpLevelOne";

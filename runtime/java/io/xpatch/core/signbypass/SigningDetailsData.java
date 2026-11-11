@@ -38,8 +38,6 @@ public final class SigningDetailsData {
         try {
             JSONObject object = new JSONObject(text);
             int scheme = object.optInt("scheme", SCHEME_UNKNOWN);
-            // signing_details 是可信基线：任何一张证书解析失败都视为整份不可信（返回 null），
-            // 由调用方退回 legacy sign；绝不能静默缩表，否则按位置配对会映射成另一张证书。
             Signature[] apk = parseSignatures(object.optJSONArray("apk"), "apk");
             if (apk == null) {
                 return null;
@@ -128,10 +126,6 @@ public final class SigningDetailsData {
         return copy;
     }
 
-    /**
-     * 返回 null 表示"这份 signing_details 不可信"（调用方必须 fail-closed）。
-     * 空数组表示字段缺省（合法）。空串、null、非 hex 都算失败。
-     */
     private static Signature[] parseSignatures(JSONArray array, String field) {
         if (array == null) {
             return new Signature[0];

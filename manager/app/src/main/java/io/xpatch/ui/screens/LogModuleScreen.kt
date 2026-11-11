@@ -81,7 +81,6 @@ internal fun LogModuleScreen(
     val counts = remember(entries) { levelCounts(entries) }
 
     Column(Modifier.fillMaxSize()) {
-        // 双击顶部摘要卡 = 回到列表最上面（长列表快速返回）
         Box(
             Modifier
                 .fillMaxWidth()

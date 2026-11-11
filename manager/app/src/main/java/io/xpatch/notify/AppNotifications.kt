@@ -30,17 +30,6 @@ object AppNotifications {
     const val EXTRA_LABEL = "label"
     const val EXTRA_REASON = "reason"
 
-    /**
-     * 通知 id 分配表。三组区间必须互不相交，否则"需要重启 X"会被"模块崩溃"顶掉，
-     * 连带把 [重启]/[忽略] 两个动作按钮一起弄丢（v0.1.6 的 restart 2001..2900 与
-     * moduleCrash 2100..2999 相交，实测可撞）。
-     *
-     * restart      2001..2800（800 个）
-     * moduleCrash  2901..3700（800 个）
-     * download     4000..4999（1000 个，按 taskId 取模）
-     *
-     * 新增通知类型时在这里追加一段，不要复用已有区间。
-     */
     object NotificationIds {
         const val RESTART_BASE = 2001
         const val RESTART_SPAN = 800
@@ -56,10 +45,6 @@ object AppNotifications {
     const val ID_RESTART = NotificationIds.RESTART_BASE
     const val ID_MODULE_CRASH = NotificationIds.MODULE_CRASH_BASE
 
-    /**
-     * 渠道只创建/清理一次。历史问题：崩溃通知直接走 [post]，而 ensureChannels 只在 UI 路径被调用，
-     * 升级后"没打开过管理器就崩溃"时通知投递到不存在的渠道被系统静默丢弃。
-     */
     @Volatile
     private var channelsReady = false
 
@@ -157,10 +142,6 @@ object AppNotifications {
             .build()
     }
 
-    /**
-     * @param scopeWritten 作用域文件是否真的写成功（[io.xpatch.data.ScopeFileWriter.Result.ok]）。
-     *   旧版无论写盘成败都断言"已自动移除"，用户会照着一条假结论以为问题已经解决。
-     */
     fun moduleCrash(
         context: Context,
         moduleLabel: String,
@@ -197,7 +178,6 @@ object AppNotifications {
         NotificationIds.of(NotificationIds.MODULE_CRASH_BASE, NotificationIds.MODULE_CRASH_SPAN, appPackage)
 
     fun post(context: Context, id: Int, notification: Notification) {
-        // 渠道必须已经存在：崩溃通知的投递路径不经过任何 UI，历史上就是这样丢的。
         ensureChannels(context)
         if (!enabled(context)) return
         runCatching { NotificationManagerCompat.from(context).notify(id, notification) }

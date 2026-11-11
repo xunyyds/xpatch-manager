@@ -3,7 +3,6 @@
 .source "XTypedArraySuperClass.java"
 
 
-# direct methods
 .method protected constructor <init>(Landroid/content/res/Resources;)V
     .locals 0
 

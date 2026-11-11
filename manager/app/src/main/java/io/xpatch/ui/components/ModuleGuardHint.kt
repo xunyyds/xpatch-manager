@@ -29,16 +29,6 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.ModuleGuardStore
 
-/**
- * 首页"模块保护"横幅。
- *
- * 语义约定（与 HomeScreen 的调用方一一对应，改文案时两边一起改）：
- *  - 标题里的"N 个应用"是 [events] 的总数；
- *  - "查看"只打开最近一条（[events] 的第一条）对应的日志；
- *  - "忽略全部"清空 [events] 的全部事件，不是只清第一条（旧实现标题写 N 个、动作只处理第一条）。
- *  - 任一事件 [ModuleGuardStore.Event.scopeWritten] 为 false 时不能说"已自动移除"，
- *    因为磁盘上的作用域文件没写成功，目标应用下次启动仍可能加载该模块。
- */
 @Composable
 internal fun ModuleGuardHintBanner(
     events: List<ModuleGuardStore.Event>,

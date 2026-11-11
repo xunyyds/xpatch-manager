@@ -52,13 +52,9 @@ class ConfigBackup(private val context: Context) {
                 put("dynamicMode", settings.dynamicMode)
                 put("uiStyle", settings.uiStyle.index)
                 put("bottomBarStyle", settings.bottomBarStyle)
-                // 打包行为三件套：缺了它们，恢复后同一份备份会产出不同的 config.json
-                // （sig_mode / entry_hook / force_overwrite 直接决定产物怎么过签、是否覆盖）。
                 put("sigMode", settings.sigMode)
                 put("entryHook", settings.entryHook)
                 put("forceOverwrite", settings.forceOverwrite)
-                // 注入路径混淆的两个开关：不带上它们，换机恢复后同一份备份会产出
-                // "名字全露"的产物（条目名/类名/熔断权限三处痕迹都会回来）。
                 put("injectObfuscate", settings.injectObfuscate)
                 put("injectKeepCrashPermission", settings.injectKeepCrashPermission)
             },
@@ -103,12 +99,10 @@ class ConfigBackup(private val context: Context) {
         root.optJSONObject("settings")?.let { settings ->
             settingsStore.setThemeMode(settings.optInt("themeMode", 0))
             settingsStore.setShowSystemApps(settings.optBoolean("showSystemApps", false))
-            // 缺键必须是 3（SettingsStore 的默认值），旧版备份没有这个键时会静默把用户降成 1。
             settingsStore.setSignatureBypassLevel(settings.optInt("bypassLevel", DEFAULT_BYPASS_LEVEL))
             settingsStore.setInjectSignature(settings.optBoolean("injectSignature", true))
             settingsStore.setFileProvider(settings.optBoolean("fileProvider", false))
             settingsStore.setDynamicMode(settings.optBoolean("dynamicMode", false))
-            // 后加的键一律"有才覆盖"，否则用旧备份恢复会把用户当前的过签档位/入口 Hook 改回默认。
             if (settings.has("sigMode")) {
                 settingsStore.setSigMode(settings.optString("sigMode", SettingsStore.SIG_MODE_DEFAULT))
             }
@@ -141,7 +135,6 @@ class ConfigBackup(private val context: Context) {
     }
 
     private companion object {
-        /** 与 SettingsStore.load() 里 `prefs.getInt(KEY_BYPASS_LEVEL, 3)` 的字面量保持一致。 */
         const val DEFAULT_BYPASS_LEVEL = 3
     }
 }

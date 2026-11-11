@@ -58,12 +58,6 @@ import org.lsposed.hidden.HiddenApiBypass;
 public class XpInit {
     private static final String TAG = "XpInit";
 
-    /**
-     * 运行层资产名只有在布局解析之后才确定（要用 AppEnv.selfApk 去发现 config），
-     * 所以这里是方法而不是 {@code static final} 常量：常量在类初始化时求值，那一刻 selfApk
-     * 可能还没就绪，会把回落名字永久固化下来（混淆产物就会全部读不到）。
-     * 名字表与回落值都在 {@link XpLayout}，本类不再出现 {@code xp/*} 字面量。
-     */
     private static String configPath() {
         return XpLayout.configEntry();
     }
@@ -80,45 +74,26 @@ public class XpInit {
         return XpLayout.get("o_source");
     }
 
-    /** 模块崩溃广播：action、接收方需要的权限（W5 在管理器清单里声明同名 signature 权限）。 */
     private static final String ACTION_MODULE_CRASH = "io.xpatch.action.MODULE_CRASH";
     private static final String PERMISSION_MODULE_CRASH = "io.xpatch.permission.MODULE_CRASH";
     private static final String DEFAULT_MANAGER_PACKAGE = "io.xpatch";
 
-    /** 熔断状态：本进程写的 pending 残留 + 跨进程共享的计数文件。 */
     private static final String MODULE_PENDING_PREFIX = "xpatch-module-pending-";
     private static final String MODULE_COUNTS_FILE = "xpatch-module-crash-counts.txt";
     private static final int MODULE_CRASH_THRESHOLD = 3;
-    /** 弱证据时间窗：两次计数间隔超过 24h 视为不相干，旧计数清零（P2-13）。 */
     private static final long MODULE_CRASH_WINDOW_MS = 24L * 60L * 60L * 1000L;
 
     static Object activityThread;
     static LoadedApk loadedApk;
     static ApplicationInfo selfApplicationInfo;
 
-    /** installSignBypass() 的幂等守卫：重复调用会重复装 hook（历史 P3 隐患）。 */
     private static boolean signBypassInstalled = false;
-    /**
-     * 进程级初始化只允许一次：entryHook 同时保留了工厂注入与 provider 备用入口，
-     * 两条路径都可能触发 CoreEntry.loadAppInPack；二次进入会二次 initHookCore()
-     * （同一进程再 System.load 一份 hook_core.so）并在模拟器上直接 SIGSEGV。
-     * 这里做进程级幂等，后续重复调用只记一条日志。
-     */
     private static volatile boolean started = false;
-    /**
-     * {@code DeferredSignHooks.schedule()} 的返回值（是否真的排上队）：决定“启动完成”回调走哪条路径。
-     * 只由 schedule() 的返回值赋值；为 false 时必须装本类的兜底启动钩子（proceed 之后跑回调）。
-     */
     private static boolean deferredSignHooksScheduled = false;
-    /** 启动完成后要执行的回调（删除 pending）；只执行一次，单个回调异常不影响其它回调。 */
     private static final List<Runnable> startupCallbacks = new ArrayList<Runnable>();
-    /** 兜底启动钩子是否已安装：sig_mode=off 等场景 DeferredSignHooks 不排队，必须自己挂。 */
     private static boolean fallbackStartupHookInstalled = false;
-    /** 本进程本次“加载成功”的模块：只有活到启动完成才清它们的崩溃计数。 */
     private static final Set<String> startupLoadedPackages = new HashSet<String>();
-    /** 本进程本次写入的 pending 文件：启动完成时删除；进程崩溃则留作下次启动的证据。 */
     private static final List<File> startupPendingFiles = new ArrayList<File>();
-    /** 启动完成收尾（单例，注册幂等；列表被消费一次后重复执行是空操作）。 */
     private static final Runnable STARTUP_COMMIT = new Runnable() {
         @Override
         public void run() {
@@ -138,12 +113,8 @@ public class XpInit {
             new File(AppEnv.baseApp.dataDir + "/cache/android_id/").mkdirs();
             performXpConfig();
             initHookCore();
-            // hook_core.dex 的 CoreEntry.InitHookCore 已经在上面 System.load 过 hook_core.so；
-            // 记录这个事实，NativeLoader.load() 据此避免重复加载（跨 classloader 二次 load 会抛错）。
             AppEnv.nativeLoadedByHookCore = true;
             preDeopt();
-            // 必须在 native io 重定向启用前读包装 APK：重定向会把 selfApk 的 open
-            // 重定向到内嵌原包（旧名 xp/source.apk），之后再读运行层资产只会看到原包的那几个条目。
             preloadWrapperAssets();
             installSignBypass();
             if (AppEnv.dynamicMode && AppEnv.packageName.equals(AppEnv.processName)) {
@@ -156,8 +127,6 @@ public class XpInit {
                     XpHook.log0(TAG, "切换应用失败：" + Log.getStackTraceString(th));
                 }
             }
-            // createAppContext() 幂等：installSignBypass() 可能已提前建过（NativeLoader 需要 codeCacheDir），
-            // 动态模式切换失败时这里兜底，保证后续模块加载一定有 context（P2-14）
             if (AppEnv.appContext == null) {
                 createAppContext();
             }
@@ -182,8 +151,6 @@ public class XpInit {
     private static void installSignBypass() {
         String mode = AppEnv.sig_mode;
         if (AppEnv.SIG_MODE_OFF.equals(mode)) {
-            // sig_mode=off：不加载 native、不装签名/文件层 hook；
-            // performXpConfig 也会跳过原包释放与 legacy 证书解析
             XpHook.log0(TAG, "签名伪装已关闭（sig_mode=off）：跳过 native / 签名 / 文件层安装");
             return;
         }
@@ -197,8 +164,6 @@ public class XpInit {
         }
         signBypassInstalled = true;
 
-        // 顺序不变量：native 库必须先于 SignBypass.enable()（LevelOne 的 io 重定向要用它），
-        // 原包路径必须先于 native 重定向；任何一步失败都只降级，默认 java/3 路径必须能启动。
         boolean nativeLoaded = false;
         try {
             nativeLoaded = NativeLoader.load(obtainBootstrapContext());
@@ -212,8 +177,6 @@ public class XpInit {
             XpHook.log0(TAG, "hook_core 未加载：native 层（seccomp / 文件层重定向）将降级");
         }
 
-        // 原包路径只认 performXpConfig 释放出来的 cache/android_id/<crc>.apk；
-        // 这里不再现场重建“假原包”（P1-1：拼出来的包没有有效签名）
         boolean fileLayerWanted = wantsFileLayer(mode);
         String sourcePath = AppEnv.source_apk_path;
         boolean hasSourceApk = sourcePath != null && sourcePath.length() > 0;
@@ -221,24 +184,15 @@ public class XpInit {
         Signature[] signs = SignatureFacade.originals();
         try {
             boolean primitive = SignatureFacade.install();
-            // strict 不再由 bypass 单独决定：极致档是 deep + bypass=3，必须同时打开
-            // hasSigningCertificate（严格校验）与 Mix native 重定向。
             boolean strict = AppEnv.sign_bypass_type == 2
                     || AppEnv.SIG_MODE_DEEP.equals(mode);
             PMSignBypass.setHasSigningCertificateEnabled(strict);
-            // hasSigningCertificate 立即安装：不再走“sleep 1500ms 的延后路径”（Application.onCreate 里的自校验早于它）
             boolean early = false;
             try {
                 early = PMSignBypass.installEarly();
             } catch (Throwable th) {
                 XpHook.log0(TAG, "hasSigningCertificate 早期安装失败：" + Log.getStackTraceString(th));
             }
-            // provider 阶段同步段（A0b）：ContentProvider.onCreate 早于 callApplicationOnCreate，
-            // 只在 DeferredSignHooks.installAll 里装会让 provider 的自校验看到真实现。
-            // 两者都是 getMethod + doHook（不构造 ApplicationPackageManager 实例），且带幂等守卫：
-            // DeferredSignHooks.installAll() 再调一次无副作用。
-            // 早期 AppEnv.appContext 可能为空：installDeferredHooks 只装 ApplicationPackageManager，
-            // OEM 包装类留给后续 installAll 补（见 review/90-.../dev/I1a-startup.md 的 W2 移交）。
             installProviderStageHooks();
             XpHook.log0(TAG, "签名严格校验开关=" + strict + "，bypass=" + AppEnv.sign_bypass_type
                     + "，hasSigningCertificate=" + (early ? "已安装" : "未安装"));
@@ -247,9 +201,6 @@ public class XpInit {
             } catch (Throwable th) {
                 XpHook.log0(TAG, "PackageInfo 层签名伪装安装失败：" + Log.getStackTraceString(th));
             }
-            // native io 重定向只在“该档确实要文件层/原生层”时启用：seccomp(bypass=1)、
-            // file/strict(bypass=2，dobby)、deep/3(极致档，Mix)；
-            // java_file/deep(需要字节级原包)；bypass=3 的 basic 档不碰 native。
             boolean wantsNativeRedirect = fileLayerWanted || AppEnv.sign_bypass_type == 2;
             if (wantsNativeRedirect) {
                 boolean redirectEnabled = false;
@@ -258,7 +209,6 @@ public class XpInit {
                 } catch (Throwable th) {
                     XpHook.log0(TAG, "native io 重定向不可用：" + Log.getStackTraceString(th));
                 }
-                // 只有真实启用才打“已启用”（旧代码无条件打，日志与实现相反，P1-2/P3）
                 if (redirectEnabled) {
                     XpHook.log0(TAG, "native io 重定向已启用：bypass=" + AppEnv.sign_bypass_type
                             + "，目标=" + (hasSourceApk ? sourcePath : "无原包"));
@@ -269,11 +219,8 @@ public class XpInit {
                 }
             }
             if (fileLayerWanted) {
-                // 文件层只需要路径 hook。这里不再 getApplicationInfo()+initClassLoaderInject()：
-                // 那会在 app context 之前重复建 context、把 LoadedApk 切两次（P2-14）
                 try {
                     boolean fileLayer = FileLayerHooks.install();
-                    // 只有真装上了才打“已启用”；失败原因由 FileLayerHooks.lastError() 给出
                     XpHook.log0(TAG, fileLayer
                             ? "文件层路径重定向已启用：" + FileLayerHooks.installedTarget()
                                     + "（hook 数=" + FileLayerHooks.hookedCount() + "）"
@@ -295,29 +242,13 @@ public class XpInit {
         }
     }
 
-    /** 需要文件层（路径重定向）的档位：java_file / deep / seccomp(bypass=1)。 */
     private static boolean wantsFileLayer(String mode) {
         return AppEnv.SIG_MODE_JAVA_FILE.equals(mode)
                 || AppEnv.SIG_MODE_DEEP.equals(mode)
                 || AppEnv.sign_bypass_type == 1;
     }
 
-    /**
-     * 同步安装"provider 阶段就要可用"的两条 hook（集成待办 A0b / W2 移交 2）。
-     *
-     * <p>时序不变量：{@code ContentProvider.onCreate} 早于 {@code Instrumentation.callApplicationOnCreate}，
-     * 所以 checkSignatures / getPackageArchiveInfo 必须在本函数的同步段就装上，不能等
-     * {@code DeferredSignHooks.installAll()}（那是 Application.onCreate 之前才跑）。
-     *
-     * <p>幂等：{@code CheckSignaturesBypass} 有 installed + MAX_ATTEMPTS 守卫，
-     * {@code PMSignBypass.installDeferredHooks} 有 archiveHooksInstalled 守卫，
-     * 因此 {@code DeferredSignHooks.installAll()} 稍后再调一次只多一行日志、没有副作用。
-     *
-     * <p>早期 {@code AppEnv.appContext} 可能为空：此时 installDeferredHooks 只装
-     * {@code ApplicationPackageManager}（OEM 包装子类要等 context 才知道类名），由 installAll 补齐。
-     */
     private static void installProviderStageHooks() {
-        // 与 DeferredSignHooks.installAll() 的顺序一致：先 getPackageArchiveInfo，再 checkSignatures
         try {
             PMSignBypass.installDeferredHooks();
         } catch (Throwable th) {
@@ -332,13 +263,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * 排队延后签名 hook，并把"是否真的排上队"记进 {@link #deferredSignHooksScheduled}。
-     *
-     * <p>不变量：这个标志只由 {@code DeferredSignHooks.schedule()} 的返回值决定。
-     * 返回 false（doHook 失败）时 DeferredSignHooks 内部只做 installAll、不置"启动完成"，
-     * 所以本类必须自己挂兜底启动钩子（{@code registerStartupCallback} 里按此标志判断）。
-     */
     private static void scheduleDeferredSignHooks() {
         boolean scheduled = false;
         try {
@@ -352,11 +276,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * 取一个可用于 NativeLoader（codeCacheDir）等早期动作的 Context。
-     * installSignBypass() 早于框架创建 Application，此时 AppEnv.appContext 可能为空：
-     * 先用幂等的 createAppContext() 自建，失败再退回反射拿 mInitialApplication。
-     */
     private static Context obtainBootstrapContext() {
         Context ctx = AppEnv.appContext;
         if (ctx != null) {
@@ -417,10 +336,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * 在 native io 重定向之前读取包装 APK 里的运行层资产：redirect 会把这些路径的 open
-     * 重定向到内嵌原包（旧名 xp/source.apk），之后再读 wrapper dex / file_provider 就会拿到原包内容。
-     */
     private static void preloadWrapperAssets() {
         try {
             io.xpatch.core.module.ModuleLoader.preloadWrapperDexes();
@@ -497,8 +412,6 @@ public class XpInit {
             byte[] allBytes = AppEnv.fileProviderDex;
             String fileProviderEntry = XpLayout.get("file_provider");
             if (allBytes == null) {
-                // 兜底：没有提前预读（极老产物/非动态路径）时再读一次包装 APK；
-                // 此时若 native 重定向已启用，可能会读到原包，注入会失败但会被调用方降级。
                 ZipFile zipFile = new ZipFile(AppEnv.selfApk);
                 ZipEntry entry = zipFile.getEntry(fileProviderEntry);
                 if (entry == null) {
@@ -568,8 +481,6 @@ public class XpInit {
         Field fieldFindObjectField = findObjectField(Class.forName("android.app.ActivityThread"), "mBoundApplication");
         fieldFindObjectField.setAccessible(true);
         Object obj = fieldFindObjectField.get(activityThread);
-        // 这两份状态是框架真正在用的（mBoundApplication.appInfo / mPackages），
-        // 任何一步抛异常都必须还原，否则应用会在补丁包路径下启动（P2-14）
         final String previousSourceDir = selfApplicationInfo.sourceDir;
         final String previousPublicSourceDir = selfApplicationInfo.publicSourceDir;
         final Map packages = (Map) getObjectField(activityThread, "mPackages");
@@ -598,8 +509,6 @@ public class XpInit {
             AppEnv.appClassLoader = (ClassLoader) getObjectField(loadedApk2, "mClassLoader");
             switched = true;
         } finally {
-            // sourceDir/publicSourceDir 永远还原（框架后续还要用 mBoundApplication.appInfo 的原始路径）；
-            // mPackages 只在切换没完成时还原：成功时新的 LoadedApk 必须留在缓存里给后续 Activity 用
             selfApplicationInfo.sourceDir = previousSourceDir;
             selfApplicationInfo.publicSourceDir = previousPublicSourceDir;
             if (!switched) {
@@ -624,7 +533,6 @@ public class XpInit {
 
     private static void createAppContext() {
         if (AppEnv.appContext != null) {
-            // 幂等：installSignBypass() 为 NativeLoader 提前建过一次时就不要再建第二份（P2-14）
             return;
         }
         try {
@@ -701,9 +609,6 @@ public class XpInit {
     }
 
     private static void performXpConfig() throws IOException {
-        // 布局必须最早解析：下面所有条目名（config 本体、内嵌原包、hook 引擎 dex）在混淆产物里
-        // 都是随机名。其它方法即使先于这里调用 XpLayout.get() 也没问题——每个 get() 内部都会
-        // 再兜一次懒初始化，这里显式调用只是为了让"配置先行"的顺序在代码里看得出来。
         XpLayout.ensureInstalled();
         String configEntry = configPath();
         ZipFile zipFile = new ZipFile(AppEnv.selfApk);
@@ -725,13 +630,11 @@ public class XpInit {
                 AppEnv.sig_mode = AppEnv.sig_mode_explicit
                         ? normalizeSigMode(rawMode) : AppEnv.SIG_MODE_JAVA;
                 AppEnv.signing_details = jSONObject.optString("signing_details", null);
-                // 版本只告警不阻断：内核可能比打包器新，功能降级比启动失败可接受
                 if (jSONObject.has("ver") && AppEnv.core_ver != CoreEntry.RUNTIME_VERSION) {
                     XpHook.log0(TAG, "运行时版本不一致：" + configEntry + " ver=" + AppEnv.core_ver
                             + "，内核 RUNTIME_VERSION=" + CoreEntry.RUNTIME_VERSION
                             + "（建议用当前版本管理器重新打包）");
                 }
-                // sig_mode=off 时不解析 legacy 证书：不装任何签名 hook，解析结果也没人用
                 if (!AppEnv.SIG_MODE_OFF.equals(AppEnv.sig_mode)) {
                     parseLegacySignatures(jSONObject);
                 }
@@ -752,8 +655,6 @@ public class XpInit {
         } catch (Exception unused) {
             XpHook.log0(TAG, "无法读取配置：" + configEntry);
         }
-        // sig_mode=off 不释放原包（否则每个应用白占一份 APK 体积，且 source_apk_path 非空
-        // 会让“文件层可用”的判断失真）；dynamic_mode 自己要原包路径，单独保留
         boolean signBypassEnabled = !AppEnv.SIG_MODE_OFF.equals(AppEnv.sig_mode);
         if ((signBypassEnabled && AppEnv.sign_bypass_type > 0) || AppEnv.dynamicMode) {
             String originEntry = originPath();
@@ -799,7 +700,6 @@ public class XpInit {
         zipFile.close();
     }
 
-    /** 管理器包名只接受形如 a.b.c 的值，空串/脏值回落到打包时的缺省值。 */
     private static String normalizeManagerPackage(String raw, String fallback) {
         if (raw == null) {
             return fallback;
@@ -854,13 +754,8 @@ public class XpInit {
         }
     }
 
-    // ------------------------------------------------------------------
-    // 模块熔断：pending（本次加载证据）+ counts（跨进程计数，带 24h 时间窗）
-    // ------------------------------------------------------------------
-
     private static void initModules() throws Exception {
         AppEnv.modules = new RemoteModuleProvider(AppEnv.appContext).getModules();
-        // 先处理“上次启动留下的证据”：同时得到本进程本次要跳过的模块
         Set<String> disabled = loadModuleCrashCounts(AppEnv.modules);
         boolean changedPath = false;
         int loadedCount = 0;
@@ -883,8 +778,6 @@ public class XpInit {
             File pending = modulePendingFile(remoteModule.packageName);
             writePendingModule(pending, remoteModule.packageName,
                     moduleSignature(remoteModule.apkPath));
-            // pending 不在 loadModule 返回时删：模块运行期崩溃（Application/Activity 阶段）
-            // 才是最常见形态，必须活到“启动完成”才算本次加载安全（P1-3）
             boolean loaded;
             try {
                 loaded = ModuleLoader.loadModule(remoteModule);
@@ -902,7 +795,6 @@ public class XpInit {
                 }
                 registerStartupCallback(STARTUP_COMMIT);
             } else {
-                // 模块没装上（入口抛异常）：删掉它的 pending，别把“装不上”误记成“崩溃”
                 deleteQuietly(pending);
                 XpHook.log0(TAG, "模块 " + remoteModule.packageName + " 加载失败，本次不生效");
             }
@@ -919,12 +811,6 @@ public class XpInit {
                 + " 个，候选 " + AppEnv.modules.size() + " 个：" + AppEnv.modules);
     }
 
-    /**
-     * 启动完成收尾：删除本进程的 pending + 清“加载成功且活到启动完成”的模块计数。
-     *
-     * <p>不变量：计数不能在 loadModule 返回时清（旧实现的做法），否则上一次启动留下的崩溃
-     * 计数会在本次启动的加载成功后立刻被抹掉，阈值永远到不了（P1-3 / P2-11）。
-     */
     private static void commitStartup() {
         List<File> pendings;
         synchronized (startupPendingFiles) {
@@ -942,19 +828,6 @@ public class XpInit {
         resetModuleCrashCounts(packages);
     }
 
-    /**
-     * 注册“启动完成”回调（删除 pending / 清模块崩溃计数）。
-     *
-     * <p>时序不变量（P1 回归修复后）：回调只在 <b>Application.onCreate 正常返回之后</b>执行。
-     * <ul>
-     *   <li>主路径：{@code DeferredSignHooks} 的 {@code callApplicationOnCreate} 钩子做
-     *       {@code installAll(); proceed(); markStartupComplete();}——proceed 抛异常时不会置位，
-     *       pending 就留到下次启动计一次崩溃。</li>
-     *   <li>兜底路径：{@link #deferredSignHooksScheduled} 为 false（{@code sig_mode=off}、
-     *       跟 W2 的 schedule() 同样处于“未排队”，包括 doHook 返回 null / 抛异常的失败降级）
-     *       时，本类自己挂 {@link #installFallbackStartupHook()}，同样在 proceed 之后执行回调。</li>
-     * </ul>
-     */
     private static void registerStartupCallback(Runnable callback) {
         if (callback == null) {
             return;
@@ -974,13 +847,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * 兜底启动钩子：{@code DeferredSignHooks.schedule()} 没排上队时由本类自己等 Application.onCreate。
-     *
-     * <p>顺序不可交换：必须 {@code param.proceed()}（真正的 Application.onCreate）在前、
-     * {@code runStartupCallbacks()}（→ {@link #STARTUP_COMMIT} 删 pending + 清计数）在后；
-     * proceed 抛异常时回调不执行，pending 留到下次启动计崩溃。
-     */
     private static void installFallbackStartupHook() {
         synchronized (startupCallbacks) {
             if (fallbackStartupHookInstalled) {
@@ -993,7 +859,6 @@ public class XpInit {
             boolean hooked = XpHook.doHook(target, 0, new XpHook.XpCallback() {
                 @Override
                 public void onHook(XpHook.XpParam param) throws Throwable {
-                    // 先让框架跑完 Application.onCreate，再认为“启动完成”
                     param.proceed();
                     runStartupCallbacks();
                 }
@@ -1033,8 +898,6 @@ public class XpInit {
         intent.setPackage(manager);
         intent.putExtra("module", modulePkg);
         intent.putExtra("app", AppEnv.packageName);
-        // 探测接收方：管理器未安装/被 force-stop 时 AMS 会静默丢弃，内核侧只能自己记一条日志。
-        // 注意 Android 11+ 的包可见性可能让探测得到“假阴性”，所以结果只用于日志，不阻断发送。
         try {
             if (ctx.getPackageManager().queryBroadcastReceivers(intent, 0).isEmpty()) {
                 XpHook.log0(TAG, "模块崩溃广播没有可见接收方（管理器 " + manager
@@ -1059,11 +922,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * pending 文件名 = 前缀 + 进程名短哈希 + pid + 模块名短哈希。
-     * 带进程名短哈希：启动时只清理“同名进程”的残留，兄弟进程正在用的记录不会被误删（P2-12）；
-     * 带模块名短哈希：一次加载多个模块时每个模块都有独立证据，不会只记住最后一个。
-     */
     private static File modulePendingFile(String pkg) {
         File dir = moduleStateDir();
         if (dir == null) {
@@ -1083,10 +941,6 @@ public class XpInit {
         return "unknown";
     }
 
-    /**
-     * 稳定短哈希：进程名/包名可能含 ':' 与空格，不能直接进文件名；且必须跨启动稳定
-     * （同一进程名的不同进程要能互相识别），所以显式写死 31 进制哈希，不依赖平台默认实现。
-     */
     private static String stableHash(String str) {
         if (str == null) {
             return "0";
@@ -1098,10 +952,6 @@ public class XpInit {
         return Integer.toHexString(hash);
     }
 
-    /**
-     * pending 内容两行：包名 + 模块文件签名（length:lastModified）。
-     * 签名用于“模块更新后自动恢复”：文件变了就说明上次崩溃的模块已被替换，计数清零（见 loadModuleCrashCounts）。
-     */
     private static void writePendingModule(File file, String pkg, String signature) {
         if (file == null) {
             return;
@@ -1121,7 +971,6 @@ public class XpInit {
         }
     }
 
-    /** 模块 APK 的文件签名：长度 + 最后修改时间；取不到返回 null（null 不参与“已变化”判定）。 */
     private static String moduleSignature(String apkPath) {
         if (apkPath == null || apkPath.length() == 0) {
             return null;
@@ -1147,13 +996,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * 统计“上次启动留下的 pending 残留”，返回本次要跳过的（已熔断）模块。
-     * - 只认本进程名（短哈希前缀）的文件，兄弟进程的残留由各自进程处理（P2-12）
-     * - 模块 APK 已变化（用户换了模块文件）→ 清零该模块计数并解除禁用
-     * - 已达阈值的模块写回 THRESHOLD 持久跳过，不再 remove（P2-11：避免“崩 3 次、跳过 1 次”循环）
-     * - 计数 24h 内没有新证据就清零（P2-13 弱证据时间窗）
-     */
     private static Set<String> loadModuleCrashCounts(List<RemoteModule> modules) {
         Set<String> disabled = new HashSet<String>();
         File dir = moduleStateDir();
@@ -1162,7 +1004,6 @@ public class XpInit {
         }
         Map<String, CrashCount> counts = readModuleCounts();
         Map<String, String> currentSignatures = currentModuleSignatures(modules);
-        // 1) 模块文件变化：之前因它造成的崩溃不再可信（用户已经换过模块），清零并解除禁用
         java.util.Iterator<Map.Entry<String, CrashCount>> iterator = counts.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<String, CrashCount> entry = iterator.next();
@@ -1173,7 +1014,6 @@ public class XpInit {
                 XpHook.log0(TAG, "模块 " + entry.getKey() + " 的 apk 已变化（更新/替换），清零崩溃计数");
             }
         }
-        // 2) 上次启动崩溃证据：只处理本进程名留下的 pending
         String processPrefix = MODULE_PENDING_PREFIX + stableHash(processNameForHash()) + "-";
         File[] files = dir.listFiles();
         if (files != null) {
@@ -1192,7 +1032,6 @@ public class XpInit {
                 String pkg = entry[0];
                 String current = currentSignatures.get(pkg);
                 if (entry[1].length() > 0 && current != null && !entry[1].equals(current)) {
-                    // 崩溃之后模块被更新过：这次崩溃不再归因于它
                     counts.remove(pkg);
                     XpHook.log0(TAG, "模块 " + pkg + " 上次启动崩溃后 apk 已变化，不计入熔断");
                     continue;
@@ -1222,8 +1061,6 @@ public class XpInit {
                 }
             }
         }
-        // 3) 已持久禁用的模块即使本次没有新证据也必须跳过：
-        //    “跳过 → 不写 pending → 不再计数”会让禁用状态在下次启动凭空失效
         for (Map.Entry<String, CrashCount> entry : counts.entrySet()) {
             if (entry.getValue().count >= MODULE_CRASH_THRESHOLD) {
                 disabled.add(entry.getKey());
@@ -1251,7 +1088,6 @@ public class XpInit {
         return signatures;
     }
 
-    /** 读 pending：返回 {包名, 模块文件签名}；读不到返回 null。 */
     private static String[] readPendingModule(File file) {
         BufferedReader reader = null;
         try {
@@ -1274,14 +1110,12 @@ public class XpInit {
         }
     }
 
-    /** 计数条目：次数 + 最后一次计数的时刻（24h 时间窗）+ 当时模块文件签名（变化即清零）。 */
     private static final class CrashCount {
         int count;
         long timestamp;
         String signature;
     }
 
-    /** 读计数文件（格式 pkg=count@timestamp[@signature]）；超过 24h 的条目直接丢弃（等价清零）。 */
     private static Map<String, CrashCount> readModuleCounts() {
         Map<String, CrashCount> counts = new HashMap<String, CrashCount>();
         File dir = moduleStateDir();
@@ -1328,10 +1162,6 @@ public class XpInit {
         return counts;
     }
 
-    /**
-     * 解析一行计数：{@code pkg=count@timestamp[@signature]}。
-     * 第三段（模块文件签名）是可选的，兼容旧的 {@code pkg=count} 与 {@code pkg=count@ts}。
-     */
     private static CrashCount parseCrashCount(String raw) {
         String value = raw == null ? "" : raw.trim();
         String[] parts = value.split("@", -1);
@@ -1341,7 +1171,6 @@ public class XpInit {
         try {
             CrashCount entry = new CrashCount();
             entry.count = Integer.parseInt(parts[0].trim());
-            // 旧格式 pkg=count 没有时间戳：按“无窗口”保留（迁移兼容）
             entry.timestamp = parts.length > 1 && parts[1].trim().length() > 0
                     ? Long.parseLong(parts[1].trim()) : 0L;
             entry.signature = parts.length > 2 && parts[2].trim().length() > 0
@@ -1352,7 +1181,6 @@ public class XpInit {
         }
     }
 
-    /** 计数文件用 tmp + renameTo 原子替换，避免并发进程读到半截文件（P2-12）。 */
     private static void writeModuleCounts(Map<String, CrashCount> counts) {
         File dir = moduleStateDir();
         if (dir == null) {
@@ -1391,10 +1219,6 @@ public class XpInit {
         }
     }
 
-    /**
-     * 清计数：只在“模块加载成功（ModuleLoader.loadModule 返回 true）且进程活到启动完成”时调用
-     * （见 commitStartup）。一次读、一次写，避免每模块一次全量重写（P3）。
-     */
     private static void resetModuleCrashCounts(Set<String> packages) {
         if (packages == null || packages.isEmpty()) {
             return;

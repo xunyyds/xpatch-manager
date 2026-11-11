@@ -5,12 +5,6 @@ import io.xpatch.core.NativeCalls;
 import io.xpatch.core.NativeLoader;
 import io.xpatch.hook.XpHook;
 
-/**
- * bypass=3：dobby + inline 混合重定向。
- *
- * <p>不变量：与 LevelOne 相同的四条前置检查（原实现既不判空也不 catch，native 缺失时异常会冒泡到
- * installSignBypass 外层，且返回值被丢弃）；{@code enable_io_redirect_mix} 返回 boolean，必须检查。
- */
 class MixSignBypass extends BaseNativeSignBypass {
 
     private static final String TAG = "XpMix";

@@ -59,7 +59,6 @@ internal fun XPatchDialog(
                     Spacer(Modifier.height(20.dp))
                     Row(
                         Modifier.fillMaxWidth(),
-                        // 按内容宽度排列，避免三等分把「卸载原应用」这类长标签挤成两行
                         horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
                     ) {
                         actions.forEach { action ->

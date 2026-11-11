@@ -12,21 +12,10 @@
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="29" />
 
-    <!--
-        模块熔断广播（io.xpatch.action.MODULE_CRASH）的发送方门禁。
-        该广播由被注入的目标应用进程（内核 XpInit.notifyModuleCrash）发出，无法改成 exported="false"，
-        因此用 signature 级自定义权限把关：只有与本管理器同证书的应用才可能持有它。
-        注意：protectionLevel="signature" 意味着"被重签的应用必须与管理器同证书"才发得进来——
-        默认签名档（XPatch 内置证书）满足；用户自选其它证书档不满足，熔断会退化为只有日志。
-    -->
     <permission
         android:name="io.xpatch.permission.MODULE_CRASH"
         android:protectionLevel="signature" />
 
-    <!--
-        内核侧用 sendBroadcast(intent, "io.xpatch.permission.MODULE_CRASH") 发送，
-        该重载要求"接收方也持有此权限"，所以管理器自己必须先声明使用它（同证书自动授予）。
-    -->
     <uses-permission android:name="io.xpatch.permission.MODULE_CRASH" />
 
     <queries>
@@ -98,4 +87,3 @@
     </application>
 
 </manifest>
-

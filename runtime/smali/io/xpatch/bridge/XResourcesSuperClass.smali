@@ -3,7 +3,6 @@
 .source "XResourcesSuperClass.java"
 
 
-# direct methods
 .method protected constructor <init>()V
     .locals 1
 

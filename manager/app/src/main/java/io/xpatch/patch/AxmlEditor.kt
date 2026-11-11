@@ -10,10 +10,6 @@ class AxmlEditor(private val source: ByteArray) {
 
     private data class Attribute(val offset: Int)
 
-    /**
-     * [attrSize] 是元素自带的属性步长（START_ELEMENT 偏移 26）。真实清单几乎都是 20，
-     * 但加固/异形工具可能改写它；所有偏移计算都必须用它而不是常量，否则会把属性写进别的元素里。
-     */
     private data class Element(
         val start: Int,
         val headerSize: Int,
@@ -24,7 +20,6 @@ class AxmlEditor(private val source: ByteArray) {
 
     private data class AttrSpec(val nameIndex: Int, val valueStringIndex: Int)
 
-    /** `<application>` 下一个既有 `<provider>` 的只读快照。 */
     private data class ProviderNode(
         val element: Element,
         val name: String?,
@@ -116,18 +111,9 @@ class AxmlEditor(private val source: ByteArray) {
         return assemble(pool.build(), body)
     }
 
-    /**
-     * 幂等插入 `<provider>`。
-     *
-     * 不变量：`<application>` 下最多只有一条 `android:name == className` 或
-     * `android:authorities == authority` 的 provider。重复插入会让 PackageManager 以
-     * "Duplicate provider authority" 拒绝安装（产物"打包成功却装不上"），所以命中既有
-     * provider 时复用元素、只校正属性，绝不新增第二个。返回 `source` 本身表示清单未改动。
-     */
     fun addProvider(className: String, authority: String): ByteArray {
         val scan = scanProviders(className, authority)
         scan.sameName?.let { node ->
-            // 同名且元素/属性都已经规范：原样返回，重复打包不会再动清单一个字节。
             val exportedHealthy = (node.exported ?: 0) == 0 &&
                 (node.exportedRaw == null || node.exportedRaw == RAW_VALUE_NONE) &&
                 (node.exportedType == null || node.exportedType == TYPE_INT_BOOLEAN)
@@ -138,36 +124,20 @@ class AxmlEditor(private val source: ByteArray) {
             if (healthy) return source
             return reuseProvider(node, authority)
         }
-        // 同名未命中但 authority 已被别的 provider 占用：再插一条会造成重复 authority。
         if (scan.sameAuthority != null) return source
         return insertProvider(className, authority)
     }
 
-    /** 只读探测：清单里是否已有同名或同 authority 的 provider（供调用方决定日志）。 */
     fun hasProvider(className: String, authority: String): Boolean {
         val scan = scanProviders(className, authority)
         return scan.sameName != null || scan.sameAuthority != null
     }
 
-    /**
-     * 幂等插入 `<uses-permission android:name="permission"/>`（`<manifest>` 的直接子元素）。
-     *
-     * 不变量：`<manifest>` 下最多一条同名 `uses-permission`；已存在时返回 `source` 本身（字节级不变），
-     * 否则插在 `<application>` 的 START_ELEMENT **之前**。
-     *
-     * 为什么必须写在 `<manifest>` 下：`<application>` 内部或之后的同名元素都不是权限声明，
-     * PackageManager 不会在安装时按它授权；而被注入的应用是模块保护广播的发送方，
-     * 缺了这条声明，signature 级 `ModuleCrashReceiver` 会把广播丢掉（静默失效）。
-     *
-     * 元素是裸的 `<uses-permission>`（`ns = -1`，不带 android 前缀），只有一条
-     * `android:name` 字符串属性；资源 map 的处理与 [addProvider] 一致。
-     */
     fun addUsesPermission(permission: String): ByteArray {
         if (hasUsesPermission(permission)) return source
         return insertUsesPermission(permission)
     }
 
-    /** 只读探测：`<manifest>` 的直接子元素里是否已声明该权限（供调用方决定日志）。 */
     fun hasUsesPermission(permission: String): Boolean {
         val pool = StringPool.parse(source)
         val manifest = findElement(pool, "manifest") ?: return false
@@ -193,8 +163,6 @@ class AxmlEditor(private val source: ByteArray) {
         val classIndex = stringIndex(pool, className)
         val authorityIndex = stringIndex(pool, authority)
 
-        // 字符串池后不一定有 RESOURCE_MAP（极简/加固清单）。缺 map 时按"旧 map 为空"继续：
-        // 下面的 mapCount / ids 逻辑本来就能从零生成一份新 map，不必让整个打包中断（审查 P2-18）。
         val oldBodyStart = 8 + pool.chunkSize
         val hasMap = u16(oldBodyStart) == CHUNK_RESOURCE_MAP
         val oldMapSize = if (hasMap) i32(oldBodyStart + 4) else 0
@@ -236,9 +204,9 @@ class AxmlEditor(private val source: ByteArray) {
         start.putShort(0, CHUNK_START_ELEMENT.toShort())
         start.putShort(2, 16)
         start.putInt(4, startSize)
-        start.putInt(8, 1) // aapt2 的 lineNumber 从 1 起，0 只会在错误日志里显示成第 0 行
+        start.putInt(8, 1)
         start.putInt(12, -1)
-        start.putInt(16, -1) // 元素自身不带命名空间；android 前缀只出现在属性上
+        start.putInt(16, -1)
         start.putInt(20, provider)
         start.putShort(24, 20)
         start.putShort(26, ATTRIBUTE_SIZE.toShort())
@@ -248,7 +216,6 @@ class AxmlEditor(private val source: ByteArray) {
         start.putShort(34, 0)
         putStringAttribute(start, 36, androidNs, nameAttr, classIndex)
         putStringAttribute(start, 56, androidNs, authoritiesAttr, authorityIndex)
-        // rawValue 用 -1（0xFFFFFFFF），布尔属性用 TYPE_INT_BOOLEAN；写资源 ID 会被当成字符串下标。
         putIntAttribute(start, 76, androidNs, exportedAttr, RAW_VALUE_NONE, 0, TYPE_INT_BOOLEAN)
 
         val end = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
@@ -271,14 +238,6 @@ class AxmlEditor(private val source: ByteArray) {
         return result
     }
 
-    /**
-     * 在 `<application>` 之前插入 `<uses-permission>`：结构照抄 [insertProvider]，
-     * 差别只有元素名（`uses-permission`）、属性数（1 条 `android:name`）和插入点。
-     *
-     * 插入点必须是 application 的 START_ELEMENT 起点本身（不是它的属性区之后）：
-     * 元素要成为 `<manifest>` 的直接子元素，写进 application 里就不算权限声明了。
-     * 因此这里不需要校验 application 的属性步长（不改它的属性区）。
-     */
     private fun insertUsesPermission(permission: String): ByteArray {
         val pool = StringPool.parse(source)
         val application = findElement(pool, "application") ?: error("manifest 中没有 <application>")
@@ -287,8 +246,6 @@ class AxmlEditor(private val source: ByteArray) {
         val nameAttr = stringIndex(pool, ATTR_NAME)
         val permissionIndex = stringIndex(pool, permission)
 
-        // 资源 map 规则与 addProvider 相同：保留旧条目、按池大小补零、写入 android:name 的资源 ID；
-        // 没有 map 的极简清单就从零生成一份（审查 P2-18）。
         val oldBodyStart = 8 + pool.chunkSize
         val hasMap = u16(oldBodyStart) == CHUNK_RESOURCE_MAP
         val oldMapSize = if (hasMap) i32(oldBodyStart + 4) else 0
@@ -318,7 +275,6 @@ class AxmlEditor(private val source: ByteArray) {
         System.arraycopy(map.array(), 0, body, 0, map.capacity())
         System.arraycopy(rest, 0, body, map.capacity(), rest.size)
 
-        // appOffset 是 application 在新 body 里的绝对偏移；插在它之前 = 插在 <application> 之前。
         val appOffset = application.start - restStart + map.capacity()
         val insertAt = appOffset
         val attrCount = 1
@@ -327,9 +283,9 @@ class AxmlEditor(private val source: ByteArray) {
         start.putShort(0, CHUNK_START_ELEMENT.toShort())
         start.putShort(2, 16)
         start.putInt(4, startSize)
-        start.putInt(8, 1) // 与 addProvider 一致：行号从 1 起，0 只会在错误日志里显示成第 0 行
+        start.putInt(8, 1)
         start.putInt(12, -1)
-        start.putInt(16, ELEMENT_NS_NONE) // 元素不带前缀，否则会变成非法的 <android:uses-permission>
+        start.putInt(16, ELEMENT_NS_NONE)
         start.putInt(20, usesPermission)
         start.putShort(24, 20)
         start.putShort(26, ATTRIBUTE_SIZE.toShort())
@@ -337,8 +293,6 @@ class AxmlEditor(private val source: ByteArray) {
         start.putShort(30, 0)
         start.putShort(32, 0)
         start.putShort(34, 0)
-        // 属性按约定写成 rawValue = 0xFFFFFFFF（不重复存一份原始串），取值只走 data 的字符串下标；
-        // type 仍是 TYPE_STRING，Android 的解析器（含 aapt2 dump）都按 data 解。
         putStringAttribute(start, 36, androidNs, nameAttr, permissionIndex, RAW_VALUE_NONE)
 
         val end = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
@@ -361,11 +315,6 @@ class AxmlEditor(private val source: ByteArray) {
         return result
     }
 
-    /**
-     * 复用既有 provider：只校正 authorities/exported，元素数量与顺序不变。
-     * `android:exported` 缺失时保持缺省（无 intent-filter 的 provider 缺省即 false），
-     * 不为一个等价属性去搬动整个 body。
-     */
     private fun reuseProvider(node: ProviderNode, authority: String): ByteArray {
         val pool = StringPool.parse(source)
         val element = node.element
@@ -373,7 +322,6 @@ class AxmlEditor(private val source: ByteArray) {
         val exportedAttr = findAttribute(pool, element, ATTR_EXPORTED)
         val authorityIndex = stringIndex(pool, authority)
         val appendAuthorities = authoritiesAttr == null
-        // 追加属性要往池里加新串：先把下标都算好再 build，否则记住的下标会错位。
         val androidNs = if (appendAuthorities) stringIndex(pool, ANDROID_NS) else -1
         val authoritiesName = if (appendAuthorities) stringIndex(pool, ATTR_AUTHORITIES) else -1
         val newPool = pool.build()
@@ -383,14 +331,10 @@ class AxmlEditor(private val source: ByteArray) {
         val elementInBody = element.start - bodyStart
         val bb = ByteBuffer.wrap(body).order(ByteOrder.LITTLE_ENDIAN)
 
-        // 先就地改写已有属性（不移动后续字节），再追加缺的属性，保证偏移始终有效。
-        // 旧版本把元素 ns 写成 android 命名空间（等价于 <android:provider>，aapt2 回编直接报错），
-        // lineNumber 写了 0；两者都是元素头里的定长字段，顺手纠正，让"重复打包"收敛到干净形态。
         if (u32(element.start + 16) != ELEMENT_NS_NONE) bb.putInt(elementInBody + 16, ELEMENT_NS_NONE)
         if (i32(element.start + 8) == 0) bb.putInt(elementInBody + 8, 1)
         exportedAttr?.let { attr ->
             val at = attr.offset - bodyStart
-            // 旧产物的 exported 是 TYPE_INT_DEC + rawValue=资源 ID，这里规范成布尔属性。
             val dirty = bb.getInt(at + 16) != 0 ||
                 bb.getInt(at + 8) != RAW_VALUE_NONE ||
                 (body[at + 15].toInt() and 0xFF) != TYPE_INT_BOOLEAN
@@ -424,7 +368,6 @@ class AxmlEditor(private val source: ByteArray) {
         return assemble(newPool, grown)
     }
 
-    /** 在元素属性区末尾追加一条属性；只支持 20 字节属性布局。 */
     private fun appendAttribute(
         body: ByteArray,
         elementInBody: Int,
@@ -473,7 +416,6 @@ class AxmlEditor(private val source: ByteArray) {
         return ProviderScan(sameName, sameAuthority)
     }
 
-    /** 顺序遍历 [parent] 的直接子元素（chunk 级走查，依赖每个 chunk 的 size 自洽）。 */
     private fun eachChildElement(parent: Element, action: (Int) -> Unit) {
         var pos = parent.start
         var depth = 0
@@ -532,14 +474,9 @@ class AxmlEditor(private val source: ByteArray) {
         attrSize = u16(start + 26),
     )
 
-    /** 池内已有则复用，避免重复 append 把字符串池撑大（审查 P3）。 */
     private fun stringIndex(pool: StringPool, value: String): Int =
         pool.strings.indexOf(value).takeIf { it >= 0 } ?: pool.append(value)
 
-    /**
-     * 写一条字符串属性。[raw] 缺省等于字符串下标（aapt2 自己的写法，W4 的 provider 名等都是这样），
-     * 传 [RAW_VALUE_NONE] 表示"没有独立的原始串"，取值只能走 `data`。
-     */
     private fun putStringAttribute(
         buffer: ByteBuffer,
         offset: Int,
@@ -692,17 +629,14 @@ class AxmlEditor(private val source: ByteArray) {
         private const val TYPE_INT_BOOLEAN = 0x12
         private const val ATTRIBUTE_SIZE = 20
 
-        /** AXML 用 -1（即 0xFFFFFFFF）表示"没有 rawValue"；写资源 ID 会被当成字符串下标。 */
         private const val RAW_VALUE_NONE = -1
 
-        /** 元素自身的 ns 恒为 -1（不带前缀）；android 前缀只出现在属性上。 */
         private const val ELEMENT_NS_NONE = -1
         private const val ANDROID_NS = "http://schemas.android.com/apk/res/android"
         private const val ATTR_NAME = "name"
         private const val ATTR_AUTHORITIES = "authorities"
         private const val ATTR_EXPORTED = "exported"
 
-        /** android:name / android:authorities / android:exported 的属性名资源 ID。 */
         private const val RES_ID_NAME = 0x01010003
         private const val RES_ID_EXPORTED = 0x01010010
         private const val RES_ID_AUTHORITIES = 0x01010018

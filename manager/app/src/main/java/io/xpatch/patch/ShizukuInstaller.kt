@@ -40,15 +40,8 @@ object ShizukuInstaller {
         ShizukuBridge.requestPermission { granted -> cont.resume(granted) }
     }
 
-    /**
-     * 选一个 system_server 读得到的路径再交给 pm install。
-     * /sdcard/Android/data 属于 FUSE 挂载，system_server 读取会被 SELinux 拒绝
-     * （avc denied ... fuse），必须复制到 /data/local/tmp 再安装。
-     */
     private fun readableByShell(context: Context, apk: File): File? {
         if (!apk.isFile) return null
-        // 应用私有目录 shell 读不到，外部目录 system_server 又因 FUSE 读不到，
-        // 所以先落到外部目录，再由 shell 复制到 /data/local/tmp 供 pm install 使用。
         val dir = File(context.getExternalFilesDir(null), "install-staging").apply { mkdirs() }
         val staged = File(dir, PREFIX + System.currentTimeMillis() + ".apk")
         runCatching { apk.copyTo(staged, overwrite = true) }.getOrNull() ?: return null
@@ -60,10 +53,6 @@ object ShizukuInstaller {
         return if (verified?.contains("OK") == true) File(tmpPath) else null
     }
 
-    /**
-     * 强行覆盖安装：签名不一致时先保留数据卸载旧包，再安装新包。
-     * 依赖 Shizuku 的 shell 权限，仅在可用且已授权时执行。
-     */
     suspend fun installForceOverwrite(
         context: Context,
         apk: File,
@@ -77,8 +66,6 @@ object ShizukuInstaller {
         val source = readableByShell(context, apk)
             ?: return@withContext Result.Failure("Shizuku 无法读取安装包")
 
-        // 按当前用户处理：设备上可能存在应用分身/隐私空间里的同名安装，
-        // 全用户卸载会因权限不足失败，全用户安装又会被别的用户的旧签名挡住。
         val wasInstalled = installedForCurrentUser(packageName)
         if (wasInstalled != false) {
             val uninstallOutput = ShizukuBridge.exec(
@@ -110,21 +97,18 @@ object ShizukuInstaller {
         }
     }
 
-    /** 安装结束后清理 /data/local/tmp 下的临时副本。 */
     private fun cleanupStaged(source: File) {
         val path = source.absolutePath
         if (!path.startsWith("/data/local/tmp/")) return
         ShizukuBridge.exec("rm -f " + shellQuote(path))
     }
 
-    /** 当前用户下是否已安装；执行失败返回 null，交由调用方按未知处理。 */
     private fun installedForCurrentUser(packageName: String): Boolean? {
         val listed = ShizukuBridge.exec("pm list packages --user current " + shellQuote(packageName))
             ?: return null
         return listed.contains(packageName)
     }
 
-    /** pm 的失败输出混着调用栈，取 Failure / Exception 行才有参考价值。 */
     private fun failureDetail(output: String?): String {
         val lines = output.orEmpty()
             .lineSequence()

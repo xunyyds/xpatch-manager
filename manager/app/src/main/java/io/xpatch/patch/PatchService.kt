@@ -23,9 +23,7 @@ data class PatchOptions(
     val forceOverwrite: Boolean = false,
     val sigMode: String = "java",
     val entryHook: Boolean = false,
-    // 注入路径混淆：条目名/清单类名随机化（实验，默认关；关时产物与旧行为逐字节等价）。
     val obfuscate: Boolean = false,
-    // 混淆时是否保留模块熔断权限声明（默认不保留，避免清单里留下 io.xpatch.permission.MODULE_CRASH）。
     val obfuscateKeepCrashPermission: Boolean = false,
 )
 
@@ -102,16 +100,10 @@ class PatchService(private val context: Context) {
         unsigned.delete()
         signed.delete()
         onLog("过签模式：" + SettingsStore.sigModeLabel(options.sigMode))
-        // 不变量：只要不是"纯 Java 门面 + bypass>=2"，产物必须自带字节级原包。
-        // 文件层（java_file）与原生 openat 重定向（bypass=1）没有 xp/source.apk 就无法工作，
-        // 所以这里不看 UI 开关，直接强制内嵌，避免"选了增强档却静默降级"。
         val sigMode = options.sigMode.trim().lowercase()
         val embedSource = options.embedSource ||
             (sigMode != SettingsStore.SIG_MODE_JAVA && sigMode != SettingsStore.SIG_MODE_OFF) ||
             (options.bypassLevel == 1 && sigMode != SettingsStore.SIG_MODE_OFF)
-        // FPA 的动态加载方式：产物只保留清单/资源/原生库 + xp/source.apk，
-        // 应用代码与 assets 由原包提供；这样不会出现"原条目 + 原包"双份体积。
-        // File/Seccomp/Extreme 这些必须内嵌的档位默认开启；用户显式关掉才走旧的静态双份。
         val dynamicMode = options.dynamicMode || embedSource
         val effectiveEmbed = embedSource || dynamicMode
         if (dynamicMode) {
@@ -131,8 +123,6 @@ class PatchService(private val context: Context) {
         } else if (options.entryHook) {
             onLog("动态加载：provider 备用入口已关闭（切换后 stub 不在原包里），仅保留工厂注入")
         }
-        // 混淆状态必须在打包前说清楚：条目名一旦随机化，用户拿不到可对照的名字就无从排查；
-        // 熔断权限的降级更要显式讲，否则"模块崩了管理器没反应"会被当成新 bug。
         if (options.obfuscate) {
             onLog("注入路径混淆已开启：条目名与清单类名随机化，产物里不再出现 xp/ 条目名与 io.xpatch.stub")
             if (options.obfuscateKeepCrashPermission) {
@@ -170,8 +160,6 @@ class PatchService(private val context: Context) {
         } else {
             null
         }
-        // signature 级 MODULE_CRASH 权限只在"目标应用与管理器同证书"时授予；非内置签名档
-        // （FPA/NPatch/自定义）下模块熔断广播会被系统静默丢弃，必须让用户在产物日志里看到。
         if (profile != null && profile.kind != SignatureStore.Kind.BUILTIN) {
             onLog("提示：非内置签名档下，模块保护通知可能无法送达管理器（signature 权限不跨证书授予）")
         }

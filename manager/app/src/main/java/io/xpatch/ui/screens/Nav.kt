@@ -92,7 +92,6 @@ internal class Navigator {
         page = target
     }
 
-    /** 同级页面互跳：替换当前页而不是压栈，避免仓库↔下载管理无限嵌套。 */
     fun replace(target: Page) {
         if (target == page) return
         if (target is Page.Home) {

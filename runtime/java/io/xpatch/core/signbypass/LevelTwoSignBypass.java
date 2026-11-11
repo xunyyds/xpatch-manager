@@ -5,13 +5,6 @@ import io.xpatch.core.NativeCalls;
 import io.xpatch.core.NativeLoader;
 import io.xpatch.hook.XpHook;
 
-/**
- * bypass=2：dobby（inline）版路径重定向。
- *
- * <p>不变量：与 LevelOne 同样的四条前置检查；但 {@code enable_io_redirect_dobby} 在 .so 里导出为
- * void（见 NativeCalls 的说明），拿不到 hooked 计数，所以"调用未抛异常"只能算**已提交**，
- * 日志必须写明这一点，不能宣称"已确认 hook 成功"。
- */
 class LevelTwoSignBypass extends BaseNativeSignBypass {
 
     private static final String TAG = "XpLevelTwo";

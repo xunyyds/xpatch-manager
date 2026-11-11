@@ -32,8 +32,6 @@ public final class CheckSignaturesBypass {
         boolean hooked = false;
         Class<?> manager = XClass.loadEx("android.app.ApplicationPackageManager");
         if (manager != null) {
-            // checkSignatures 的两个重载在 PackageManager 里都是 abstract，实现只在
-            // ApplicationPackageManager，所以只需要 hook 这个运行时类
             hooked |= hookCheckSignatures(manager, new Class[]{String.class, String.class});
             hooked |= hookCheckSignatures(manager, new Class[]{Integer.TYPE, Integer.TYPE});
         } else {

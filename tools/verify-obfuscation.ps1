@@ -1,37 +1,8 @@
-# XPatch 产物「反痕迹」离线体检
-#
-# 契约：XPatch/docs/inject-path-obfuscation.md §4.5（清单）、§6（熔断权限的取舍）、§7.1（离线验收口径）
-#
-# 用途：给一个已经打好补丁的产物 APK 做**静态**体检，判断它是否"看不出修补痕迹"。
-# 只读：只打开 APK 读取，不解包到磁盘、不写任何文件。退出码 0 = PASS，1 = FAIL。
-#
-# 用法：
-#   pwsh -File XPatch\tools\verify-obfuscation.ps1 -Apk work\patched.apk
-#   pwsh -File XPatch\tools\verify-obfuscation.ps1 -Apk work\patched.apk -Source work\original.apk
-#   pwsh -File XPatch\tools\verify-obfuscation.ps1 -Apk work\patched.apk -WithZipfp
-#   pwsh -File XPatch\tools\verify-obfuscation.ps1 -Apk work\patched.apk -AuditLegacy   # 旧命名产物也照常审计
-#
-# 判定口径（对应 §7.1 第 2 条）：
-#   1) 条目表（名字/DOS 时间/压缩方式/原始大小，按 zip 顺序）
-#   2) 条目名里不出现 xp/、xpatch、npatch、lspatch、fpa/、assets/xposed_init
-#   3) 清单原始字节里不出现 io.xpatch / xpatch / io/xpatch（UTF-8 与 UTF-16LE 两种编码）
-#   4) *.dex / *.so / assets/** 全文不含 io.xpatch.stub.AppEntry、io/xpatch/stub/AppEntry
-#   5) 注入条目的 DOS 时间戳"跟随众数"：必须等于非注入条目里出现最多的那个 (dosDate,dosTime)；
-#      并且注入条目不能形成"结束于最后一个条目"的连续区间（= 尾部追加指纹）
-#   6) config 的 res_cfg/res_core/res_boot_dex/res_factory 能解析，res_cfg 匹配布局发现正则，
-#      res_* 指向的条目都存在，res_boot_dex 是 classes*.dex
-#   7) 给了 -Source 时打印条目名差集（= 注入集合）
-#
-# 开关关掉的产物（旧命名 xp/*）不是反痕迹体检的对象：脚本会打出 RESULT: N/A (legacy layout)，退出码 0，
-# 方便 Lead 用同一个脚本做"关 = 行为不变"的回归对照。
-
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true, Position = 0)][string]$Apk,
     [Parameter(Position = 1)][string]$Source = '',
-    # 额外打印 litmus/tools/zipfp.py 的 zip 指纹（仅参考，不参与判定；需要 python）
     [switch]$WithZipfp,
-    # 旧命名产物（开关关）默认只打 N/A；加这个开关会照常审计它（用来证明脚本真的有检出能力）
     [switch]$AuditLegacy
 )
 
@@ -39,16 +10,9 @@ $ErrorActionPreference = 'Stop'
 try { Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop } catch { }
 try { Add-Type -AssemblyName System.IO.Compression -ErrorAction Stop } catch { }
 
-# ---------------------------------------------------------------------------
-# 通用小工具
-# ---------------------------------------------------------------------------
-
-# Latin-1 是"字节 <-> 字符"一一对应的编码：把二进制整体读成字符串后可以用 IndexOf 飞快地搜字节串。
-# 这样 UTF-8 / UTF-16LE 两种针都能在同一个 haystack 上搜（针也先用同一编码转成字符串）。
 $script:Latin1 = $null
 function Get-Latin1 {
     if ($null -eq $script:Latin1) {
-        # .NET 5+ 有 Latin1 属性；Windows PowerShell 5.1 上该属性不存在（取到 $null 而不是抛异常），回落到代码页 28591
         try { $script:Latin1 = [System.Text.Encoding]::Latin1 } catch { $script:Latin1 = $null }
         if ($null -eq $script:Latin1) {
             $script:Latin1 = [System.Text.Encoding]::GetEncoding(28591)
@@ -68,7 +32,6 @@ function Format-Size([long]$Bytes) {
     return "$Bytes B"
 }
 
-# DOS 日期/时间 → yyyy-MM-dd HH:mm:ss（zip 中央目录里的原始字段，不做时区换算）
 function Get-DosTimeText([int]$DosDate, [int]$DosTime) {
     if ($DosDate -le 0) { return '(无)' }
     $year = 1980 + (($DosDate -shr 9) -band 0x7F)
@@ -91,14 +54,9 @@ function Get-MethodName([int]$Method) {
     }
 }
 
-# 1980-01-01 00:00:00：Windows 打包器"没设时间"的默认值，也是本框架旧版本注入条目的样子
 function Test-DosEpoch([int]$DosDate, [int]$DosTime) {
     return (($DosDate -eq 0x0021) -and ($DosTime -eq 0)) -or ($DosDate -eq 0)
 }
-
-# ---------------------------------------------------------------------------
-# ZIP 中央目录解析（为了拿到**原始 DOS 时间**与**真实 zip 顺序**，ZipArchive 不给 DOS 原值）
-# ---------------------------------------------------------------------------
 
 function Read-ZipCentralDirectory {
     param([string]$Path)
@@ -109,7 +67,6 @@ function Read-ZipCentralDirectory {
         $length = $stream.Length
         if ($length -lt 22) { throw '文件太小，不是 zip' }
 
-        # 1) 尾部找 EOCD（签名 0x06054b50；zip 注释最长 65535 字节）
         $tailLen = [int][Math]::Min([long]66000, $length)
         $tail = New-Object byte[] $tailLen
         $stream.Position = $length - $tailLen
@@ -131,12 +88,10 @@ function Read-ZipCentralDirectory {
         $count = [BitConverter]::ToUInt16($tail, $eocd + 10)
         $cdSize = [BitConverter]::ToUInt32($tail, $eocd + 12)
         $cdOffset = [BitConverter]::ToUInt32($tail, $eocd + 16)
-        # 注意：PowerShell 里 0xFFFFFFFF 会被解析成 int32 的 -1，ZIP64 哨兵只能拿 [uint32]::MaxValue 比
         if ($cdOffset -eq [uint32]::MaxValue -or $count -eq 65535) {
             throw 'ZIP64 中央目录：本脚本不支持，请用 unzip -l 人工核对'
         }
 
-        # 2) 读中央目录本体
         $cd = New-Object byte[] $cdSize
         $stream.Position = $cdOffset
         $got = 0
@@ -146,7 +101,6 @@ function Read-ZipCentralDirectory {
             $got += $n
         }
 
-        # 3) 逐条解析（顺序即 zip 顺序，AndroidManifest.xml 正常是第一条）
         $pos = 0
         $index = 0
         while ($pos + 46 -le $cd.Length) {
@@ -183,10 +137,6 @@ function Read-ZipCentralDirectory {
     return $list
 }
 
-# ---------------------------------------------------------------------------
-# 解压读取（只读；整份过程只打开一次 ZipArchive）
-# ---------------------------------------------------------------------------
-
 $script:Zip = $null
 function Open-ProductZip([string]$Path) {
     $script:Zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
@@ -207,14 +157,12 @@ function Get-EntryBytes([string]$Name) {
     try {
         $ms = New-Object System.IO.MemoryStream
         $ds.CopyTo($ms)
-        # 逗号：避免 PowerShell 把 byte[] 展开成 object[]，导致后面 [Encoding]::GetString 拿错类型
         return , $ms.ToArray()
     } finally {
         $ds.Dispose()
     }
 }
 
-# 在"整段字节转成的 Latin-1 字符串"里找某个文本（按指定编码转成字节再一一映射），返回偏移列表
 function Find-TextIn {
     param(
         [string]$Haystack,
@@ -236,12 +184,7 @@ function Find-TextIn {
     return $result
 }
 
-# ---------------------------------------------------------------------------
-# 输出与计分
-# ---------------------------------------------------------------------------
-
 $script:Failures = New-Object System.Collections.Generic.List[string]
-# 旧命名产物（开关关）：反痕迹判据不适用，逐项打 N/A，最后输出 RESULT: N/A (legacy layout)
 $script:Legacy = $false
 $script:NotApplicable = New-Object System.Collections.Generic.List[string]
 
@@ -268,10 +211,6 @@ function Write-Check {
         $script:Failures.Add($Name)
     }
 }
-
-# ===========================================================================
-# 主流程
-# ===========================================================================
 
 $apkPath = ''
 try {
@@ -314,8 +253,6 @@ foreach ($e in $entries) { [void]$entryNames.Add($e.Name) }
 $isInjected = New-Object bool[] $entries.Count
 foreach ($e in $entries) { $isInjected[$e.Index] = $false }
 
-# 旧命名产物（开关关掉的基线）：没有任何 assets/<hex8>/... 形状的条目，但有 xp/ 条目。
-# 这种输入不是反痕迹体检的对象，逐项 N/A 而不是 FAIL——Lead 用它做"关 = 行为不变"的回归对照。
 $hasLayoutEntry = $false
 $legacyCount = 0
 foreach ($e in $entries) {
@@ -332,9 +269,6 @@ if ($script:Legacy) {
 try {
     Open-ProductZip $apkPath
 
-    # -----------------------------------------------------------------------
-    # 1. 条目表
-    # -----------------------------------------------------------------------
     Write-Section ('1. 条目表（zip 顺序，共 ' + $entries.Count + ' 项）')
     Write-Host ('  {0,4}  {1,-64}  {2,-19}  {3,-8}  {4,12}' -f '#', '名称', 'DOS 时间', '压缩', '原始大小') -ForegroundColor DarkGray
     foreach ($e in $entries) {
@@ -342,9 +276,6 @@ try {
                 $e.Index, $e.Name, (Get-DosTimeText $e.DosDate $e.DosTime), (Get-MethodName $e.Method), $e.Size)
     }
 
-    # -----------------------------------------------------------------------
-    # 2. 条目名反痕迹
-    # -----------------------------------------------------------------------
     Write-Section '2. 条目名反痕迹（xp/ xpatch npatch lspatch fpa/ assets/xposed_init）'
     $badPatterns = @('xp/', 'xpatch', 'npatch', 'lspatch', 'fpa/', 'assets/xposed_init')
     $badHits = New-Object System.Collections.Generic.List[object]
@@ -369,9 +300,6 @@ try {
     }
     Write-Check '条目名不含已知框架前缀' ($badHits.Count -eq 0)
 
-    # -----------------------------------------------------------------------
-    # 3. 清单字符串池
-    # -----------------------------------------------------------------------
     Write-Section '3. 清单（AndroidManifest.xml）原始字节'
     $manifestBytes = Get-EntryBytes 'AndroidManifest.xml'
     if ($null -eq $manifestBytes) {
@@ -379,10 +307,6 @@ try {
         Write-Check '清单里不含 io.xpatch / xpatch / io/xpatch' $false
     } else {
         Write-Note ('AndroidManifest.xml ' + (Format-Size $manifestBytes.Length))
-        # 目标应用自己的包名/组件名天然可能包含 xpatch 字样（本项目的金丝雀测试包就叫
-        # io.xpatch.canary）。那不是"修补痕迹"，所以先用**源包**清单里出现过的包名形状的
-        # 字符串把它们掩掉，再找框架痕迹：源包里本来就有的字符串，按定义不可能是我们注入的。
-        # 没给 -Source 时无法区分，只能照原样搜（可能出现"包名自身命中"的假 FAIL）。
         $sourceTokens = New-Object System.Collections.Generic.List[string]
         if ($Source -and (Test-Path -LiteralPath $Source)) {
             try {
@@ -406,7 +330,6 @@ try {
                 } finally { $srcZip.Dispose() }
             } catch { }
         }
-        # 只掩"像包名"的 token：至少 8 字符、至少 3 段，避免把关键词本身也掩掉
         $sourceTokens = @($sourceTokens | Where-Object { $_.Length -ge 8 -and ($_.Split('.').Count -ge 3) })
         if ($sourceTokens.Count -gt 0) {
             Write-Note ('已从源包清单掩掉 ' + $sourceTokens.Count + ' 个自身标识：' + ($sourceTokens -join ', '))
@@ -429,9 +352,6 @@ try {
         Write-Check '清单里不含 io.xpatch / xpatch / io/xpatch' ($manifestHits.Count -eq 0)
     }
 
-    # -----------------------------------------------------------------------
-    # 4. 内容反痕迹
-    # -----------------------------------------------------------------------
     Write-Section '4. 内容反痕迹（*.dex / *.so / assets/**）'
     $contentNeedles = @('io.xpatch.stub.AppEntry', 'io/xpatch/stub/AppEntry')
     $contentHits = New-Object System.Collections.Generic.List[object]
@@ -468,11 +388,7 @@ try {
     if ($contentHits.Count -eq 0) { Write-Note '2 个关键词 × 2 种编码均未命中' }
     Write-Check '内容里不含 io.xpatch.stub.AppEntry' ($contentHits.Count -eq 0)
 
-    # -----------------------------------------------------------------------
-    # 5. 注入条目元数据（时间戳 / 位置）
-    # -----------------------------------------------------------------------
     Write-Section '5. 注入条目元数据（DOS 时间戳 / 在 zip 里的位置）'
-    # §4.1 的布局形状：assets/<hex8>/<stem>.<ext>（ext 见 §4.1 表；config 的发现正则见 §3）
     $injectPattern = '^assets/[0-9a-f]{8}/[0-9a-z]{10,14}\.(dat|bin|json|so)$'
     $injected = New-Object System.Collections.Generic.List[object]
     $injectSource = '候选正则'
@@ -482,7 +398,6 @@ try {
             $isInjected[$e.Index] = $true
         }
     }
-    # 没有候选正则命中时退回旧前缀：这样未混淆的产物也能把时间戳/位置证据打出来（而不是只报"没发现"）
     if ($injected.Count -eq 0) {
         foreach ($e in $entries) {
             if ($e.Name -match '^(xp/|assets/xposed_init)') {
@@ -492,7 +407,6 @@ try {
         }
         if ($injected.Count -gt 0) { $injectSource = '旧前缀 xp/（说明仍是未混淆产物）' }
     }
-    # 给了源包时，把"新增但不在候选正则里"的条目也算进来（§4.1 的 boot dex 除外：它必须留在根目录）
     $addedNames = New-Object System.Collections.Generic.List[string]
     if ($srcPath) {
         $srcEntries = Read-ZipCentralDirectory -Path $srcPath
@@ -533,9 +447,6 @@ try {
             [void]$stampSet.Add((Get-DosTimeText $e.DosDate $e.DosTime))
         }
 
-        # 时间戳判据：跟随"真实条目（非注入）"的众数。
-        # 不能要求"不等于 1980-01-01"——canary 这类基线包本身的真实条目就全是 1980-01-01，
-        # 那样会把正确实现判成 FAIL。正确做法是注入条目抄一个真实条目的时间戳。
         $modeMap = @{}
         foreach ($e in $entries) {
             if ($isInjected[$e.Index]) { continue }
@@ -553,10 +464,6 @@ try {
             Write-Note '没有任何非注入条目可作参照，时间戳判据跳过'
             $stampOk = $true
         } else {
-            # 判据用 .NET 的 ZipArchiveEntry.LastWriteTime 读**同一个条目**的时间，
-            # 而不是手写中央目录解析里的 (dosDate,dosTime)：后者对长条目名的记录偏移
-            # 在本脚本里并不可靠（实测：注入条目被读成 (无)，而 .NET 与 Java 的
-            # ZipEntry.getTime() 都看到 1980-01-01；检测器用的是后者，判据也就必须用后者）。
             $stampOf = @{}
             foreach ($e in $injected) {
                 $ze = $script:Zip.GetEntry($e.Name)
@@ -581,8 +488,6 @@ try {
         }
         Write-Check '注入条目时间戳等于真实条目众数（.NET LastWriteTime）' $stampOk
 
-        # 位置判据（"尾部追加"指纹）：注入条目若构成一段**连续区间且该区间结束于最后一个条目** → FAIL。
-        # 允许"部分注入条目在中间"（§4.4 要求注入条目插到真实条目之间）。
         $maxInjectedIndex = -1
         foreach ($e in $injected) { if ($e.Index -gt $maxInjectedIndex) { $maxInjectedIndex = $e.Index } }
         $afterCount = 0
@@ -601,11 +506,7 @@ try {
         Write-Check '注入条目未形成结束于末尾的连续区间' (-not $tailAppend)
     }
 
-    # -----------------------------------------------------------------------
-    # 6. 布局自洽
-    # -----------------------------------------------------------------------
     Write-Section '6. 布局自洽（config 的 res_* 键与条目表）'
-    # §3 的发现正则（.so 不参与 config 发现：so 里不会放 JSON）
     $cfgPattern = '^assets/[0-9a-f]{8}/[0-9a-z]{10,14}\.(dat|bin|json)$'
     $configEntry = $null
     $configText = $null
@@ -661,7 +562,6 @@ try {
         if ($missing.Count -gt 0) { Write-Note ('缺少键：' + ($missing -join ', ')) }
         Write-Check 'config 能解析出 res_cfg / res_core / res_boot_dex / res_factory' ($missing.Count -eq 0)
 
-        # 引导桩/内核靠这条正则去"发现" config：res_cfg 自己必须匹配它，否则产物启动后找不到配置。
         $cfgSelf = ''
         if ($null -ne $configObj) {
             $cfgProp = $configObj.PSObject.Properties['res_cfg']
@@ -671,8 +571,6 @@ try {
         if (-not $cfgSelfOk) { Write-Note ('res_cfg = "' + $cfgSelf + '"（要求匹配 ^assets/[0-9a-f]{8}/[0-9a-z]{10,14}\.(dat|bin|json)$）') }
         Write-Check 'res_cfg 匹配布局发现正则' $cfgSelfOk
 
-        # res_* 里凡是"路径"形状的值，必须在条目表里存在（res_factory/res_runtime_class/res_provider 是类名，跳过）
-        # 例外：res_dir 是目录前缀（§4.2），不是条目名——只要有条目落在它下面即可。
         $pathMissing = New-Object System.Collections.Generic.List[string]
         $pathChecked = 0
         if ($null -ne $configObj) {
@@ -713,9 +611,6 @@ try {
         Write-Check 'res_boot_dex 是 classes*.dex' $bootOk
     }
 
-    # -----------------------------------------------------------------------
-    # 7. 与源包对比
-    # -----------------------------------------------------------------------
     if ($srcPath) {
         Write-Section '7. 与源包对比（新增条目 = 注入集合）'
         Write-Note ('源包条目数 ' + $srcEntries.Count + '，产物条目数 ' + $entries.Count + '，新增 ' + $addedNames.Count + ' 项')
@@ -735,9 +630,6 @@ try {
         Write-Note '给了 -Source 时会打印条目名差集，即注入集合'
     }
 
-    # -----------------------------------------------------------------------
-    # 参考行：zip 指纹（不参与判定）
-    # -----------------------------------------------------------------------
     if ($WithZipfp) {
         $zipfp = 'D:\ovo\wrok\fpa\litmus\tools\zipfp.py'
         if (Test-Path -LiteralPath $zipfp) {
@@ -756,11 +648,8 @@ try {
     Close-ProductZip
 }
 
-# 源包条目数在 §5 里已经算过（$srcEntries），这里直接用；不再重复解析一遍中央目录。
-
 Write-Host ''
 if ($script:Legacy) {
-    # 开关关掉的产物（旧命名）不是反痕迹体检对象：给 N/A + 退出码 0，方便做回归对照。
     Write-Host ('RESULT: N/A (legacy layout)') -ForegroundColor Yellow
     Write-Host ('        旧命名条目 ' + $legacyCount + ' 项；反痕迹判据 ' + $script:NotApplicable.Count + ' 项不适用') -ForegroundColor DarkGray
     exit 0
