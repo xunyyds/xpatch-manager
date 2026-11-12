@@ -48,6 +48,7 @@ public class AppEntry extends AppComponentFactory {
     private static volatile boolean injecting;
     private static AppComponentFactory delegate;
     private static ApplicationInfo selfInfo;
+    private static volatile ClassLoader dynamicLoader;
 
     @Override
     public ClassLoader instantiateClassLoader(ClassLoader cl, ApplicationInfo info) {
@@ -102,6 +103,14 @@ public class AppEntry extends AppComponentFactory {
                 Class<?> entry = Class.forName(cls, true, runtime);
                 Method method = entry.getMethod("loadAppInPack", ClassLoader.class, ApplicationInfo.class);
                 method.invoke(null, cl, info);
+                try {
+                    Method loaderMethod = entry.getMethod("dynamicClassLoader");
+                    Object loader = loaderMethod.invoke(null);
+                    if (loader instanceof ClassLoader) {
+                        dynamicLoader = (ClassLoader) loader;
+                    }
+                } catch (Throwable ignored) {
+                }
                 injected = true;
                 Log.i(TAG, "运行时已注入：" + info.packageName);
                 return true;
@@ -139,7 +148,8 @@ public class AppEntry extends AppComponentFactory {
             return null;
         }
         try {
-            Class<?> cls = Class.forName(name, true, cl);
+            ClassLoader effective = effectiveLoader(cl);
+            Class<?> cls = Class.forName(name, true, effective);
             Object instance = cls.newInstance();
             if (instance instanceof AppComponentFactory) {
                 factory = (AppComponentFactory) instance;
@@ -149,6 +159,11 @@ public class AppEntry extends AppComponentFactory {
             Log.w(TAG, "原厂工厂不可用：" + name + " -> " + t);
         }
         return factory;
+    }
+
+    private static ClassLoader effectiveLoader(ClassLoader cl) {
+        ClassLoader loader = dynamicLoader;
+        return loader != null ? loader : cl;
     }
 
     private static boolean isSelf(String name) {
@@ -370,17 +385,18 @@ public class AppEntry extends AppComponentFactory {
     @Override
     public Application instantiateApplication(ClassLoader cl, String className)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        AppComponentFactory factory = delegate(cl, null);
+        ClassLoader loader = effectiveLoader(cl);
+        AppComponentFactory factory = delegate(loader, null);
         if (factory != null) {
             try {
-                return factory.instantiateApplication(cl, className);
+                return factory.instantiateApplication(loader, className);
             } catch (Throwable t) {
                 fatal("委派 instantiateApplication(" + className + ")", t);
                 throw t;
             }
         }
         try {
-            return super.instantiateApplication(cl, className);
+            return super.instantiateApplication(loader, className);
         } catch (Throwable t) {
             fatal("super.instantiateApplication(" + className + ")", t);
             throw t;
@@ -390,41 +406,45 @@ public class AppEntry extends AppComponentFactory {
     @Override
     public Activity instantiateActivity(ClassLoader cl, String className, android.content.Intent intent)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        AppComponentFactory factory = delegate(cl, null);
+        ClassLoader loader = effectiveLoader(cl);
+        AppComponentFactory factory = delegate(loader, null);
         if (factory != null) {
-            return factory.instantiateActivity(cl, className, intent);
+            return factory.instantiateActivity(loader, className, intent);
         }
-        return super.instantiateActivity(cl, className, intent);
+        return super.instantiateActivity(loader, className, intent);
     }
 
     @Override
     public Service instantiateService(ClassLoader cl, String className, android.content.Intent intent)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        AppComponentFactory factory = delegate(cl, null);
+        ClassLoader loader = effectiveLoader(cl);
+        AppComponentFactory factory = delegate(loader, null);
         if (factory != null) {
-            return factory.instantiateService(cl, className, intent);
+            return factory.instantiateService(loader, className, intent);
         }
-        return super.instantiateService(cl, className, intent);
+        return super.instantiateService(loader, className, intent);
     }
 
     @Override
     public BroadcastReceiver instantiateReceiver(ClassLoader cl, String className, android.content.Intent intent)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        AppComponentFactory factory = delegate(cl, null);
+        ClassLoader loader = effectiveLoader(cl);
+        AppComponentFactory factory = delegate(loader, null);
         if (factory != null) {
-            return factory.instantiateReceiver(cl, className, intent);
+            return factory.instantiateReceiver(loader, className, intent);
         }
-        return super.instantiateReceiver(cl, className, intent);
+        return super.instantiateReceiver(loader, className, intent);
     }
 
     @Override
     public ContentProvider instantiateProvider(ClassLoader cl, String className)
             throws InstantiationException, IllegalAccessException, ClassNotFoundException {
-        AppComponentFactory factory = delegate(cl, null);
+        ClassLoader loader = effectiveLoader(cl);
+        AppComponentFactory factory = delegate(loader, null);
         if (factory != null) {
-            return factory.instantiateProvider(cl, className);
+            return factory.instantiateProvider(loader, className);
         }
-        return super.instantiateProvider(cl, className);
+        return super.instantiateProvider(loader, className);
     }
 
     private static final String[] FACTORY_KEYS = {

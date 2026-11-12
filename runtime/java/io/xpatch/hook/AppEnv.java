@@ -13,6 +13,7 @@ public class AppEnv {
     public static final String SIG_MODE_DEEP = "deep";
 
     public static ClassLoader appClassLoader = null;
+    public static ClassLoader dynamicLoader = null;
     public static Context appContext = null;
     public static ApplicationInfo baseApp = null;
     public static String buildNonce = null;

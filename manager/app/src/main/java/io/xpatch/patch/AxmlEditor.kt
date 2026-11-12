@@ -133,6 +133,175 @@ class AxmlEditor(private val source: ByteArray) {
         return scan.sameName != null || scan.sameAuthority != null
     }
 
+    fun addDocumentsProvider(
+        providerClass: String,
+        authority: String,
+        activityClass: String,
+        activityAffinity: String,
+    ): ByteArray {
+        val scan = scanProviders(providerClass, authority)
+        if (scan.sameName != null || scan.sameAuthority != null) return source
+        val pool = StringPool.parse(source)
+        val application = findElement(pool, "application") ?: error("manifest 中没有 <application>")
+        val androidNs = stringIndex(pool, ANDROID_NS)
+        val providerName = stringIndex(pool, "provider")
+        val intentFilterName = stringIndex(pool, "intent-filter")
+        val actionName = stringIndex(pool, "action")
+        val activityName = stringIndex(pool, "activity")
+        val attrName = stringIndex(pool, ATTR_NAME)
+        val attrAuthorities = stringIndex(pool, ATTR_AUTHORITIES)
+        val attrPermission = stringIndex(pool, ATTR_PERMISSION)
+        val attrReadPermission = stringIndex(pool, ATTR_READ_PERMISSION)
+        val attrWritePermission = stringIndex(pool, ATTR_WRITE_PERMISSION)
+        val attrExported = stringIndex(pool, ATTR_EXPORTED)
+        val attrGrantUriPermissions = stringIndex(pool, ATTR_GRANT_URI_PERMISSIONS)
+        val attrTaskAffinity = stringIndex(pool, ATTR_TASK_AFFINITY)
+        val attrExcludeFromRecents = stringIndex(pool, ATTR_EXCLUDE_FROM_RECENTS)
+        val attrNoHistory = stringIndex(pool, ATTR_NO_HISTORY)
+        val providerClassIndex = stringIndex(pool, providerClass)
+        val authorityIndex = stringIndex(pool, authority)
+        val manageDocumentsIndex = stringIndex(pool, PERMISSION_MANAGE_DOCUMENTS)
+        val documentsActionIndex = stringIndex(pool, ACTION_DOCUMENTS_PROVIDER)
+        val activityClassIndex = stringIndex(pool, activityClass)
+        val affinityIndex = stringIndex(pool, activityAffinity)
+        val attrs = ArrayList<Triple<Int, Int, Int>>()
+        val resourceIds = HashMap<Int, Int>()
+
+        fun stringAttr(name: Int, value: Int, resourceId: Int) {
+            attrs += Triple(name, value, TYPE_STRING)
+            resourceIds[name] = resourceId
+        }
+
+        fun boolAttr(name: Int, value: Boolean, resourceId: Int) {
+            attrs += Triple(name, if (value) -1 else 0, TYPE_INT_BOOLEAN)
+            resourceIds[name] = resourceId
+        }
+
+        stringAttr(attrName, providerClassIndex, RES_ID_NAME)
+        stringAttr(attrPermission, manageDocumentsIndex, RES_ID_PERMISSION)
+        stringAttr(attrReadPermission, manageDocumentsIndex, RES_ID_READ_PERMISSION)
+        stringAttr(attrWritePermission, manageDocumentsIndex, RES_ID_WRITE_PERMISSION)
+        boolAttr(attrExported, true, RES_ID_EXPORTED)
+        stringAttr(attrAuthorities, authorityIndex, RES_ID_AUTHORITIES)
+        boolAttr(attrGrantUriPermissions, true, RES_ID_GRANT_URI_PERMISSIONS)
+        attrs.sortBy { resourceIds[it.first] ?: Int.MAX_VALUE }
+        val providerStart = startElement(androidNs, providerName, attrs)
+        val providerEnd = endElement(providerName)
+
+        attrs.clear()
+        stringAttr(attrName, documentsActionIndex, RES_ID_NAME)
+        val actionStart = startElement(androidNs, actionName, attrs)
+        val actionEnd = endElement(actionName)
+        val intentFilterStart = startElement(androidNs, intentFilterName, emptyList())
+        val intentFilterEnd = endElement(intentFilterName)
+
+        attrs.clear()
+        stringAttr(attrName, activityClassIndex, RES_ID_NAME)
+        boolAttr(attrExported, true, RES_ID_EXPORTED)
+        stringAttr(attrTaskAffinity, affinityIndex, RES_ID_TASK_AFFINITY)
+        boolAttr(attrExcludeFromRecents, true, RES_ID_EXCLUDE_FROM_RECENTS)
+        boolAttr(attrNoHistory, true, RES_ID_NO_HISTORY)
+        attrs.sortBy { resourceIds[it.first] ?: Int.MAX_VALUE }
+        val activityStart = startElement(androidNs, activityName, attrs)
+        val activityEnd = endElement(activityName)
+
+        val elements = providerStart + intentFilterStart + actionStart + actionEnd +
+            intentFilterEnd + providerEnd + activityStart + activityEnd
+
+        val oldBodyStart = 8 + pool.chunkSize
+        val hasMap = u16(oldBodyStart) == CHUNK_RESOURCE_MAP
+        val oldMapSize = if (hasMap) i32(oldBodyStart + 4) else 0
+        val oldIds = ArrayList<Int>()
+        if (hasMap) {
+            var pos = oldBodyStart + 8
+            while (pos < oldBodyStart + oldMapSize) {
+                oldIds.add(i32(pos))
+                pos += 4
+            }
+        }
+        val newPool = pool.build()
+        val mapCount = maxOf(oldIds.size, pool.count)
+        val ids = IntArray(mapCount)
+        oldIds.forEachIndexed { index, value -> if (index < ids.size) ids[index] = value }
+        for ((index, value) in resourceIds) {
+            if (index < ids.size) ids[index] = value
+        }
+        val map = ByteBuffer.allocate(8 + ids.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        map.putShort(0, CHUNK_RESOURCE_MAP.toShort())
+        map.putShort(2, 8)
+        map.putInt(4, 8 + ids.size * 4)
+        ids.forEachIndexed { index, value -> map.putInt(8 + index * 4, value) }
+
+        val restStart = oldBodyStart + oldMapSize
+        val rest = source.copyOfRange(restStart, source.size)
+        val body = ByteArray(map.capacity() + rest.size)
+        System.arraycopy(map.array(), 0, body, 0, map.capacity())
+        System.arraycopy(rest, 0, body, map.capacity(), rest.size)
+
+        val appOffset = application.start - restStart + map.capacity()
+        require(application.attrSize == ATTRIBUTE_SIZE) { "不支持的属性布局（attributeSize=${application.attrSize}）" }
+        val insertAt = appOffset + application.headerSize + application.attrStart +
+            application.attrCount * application.attrSize
+        val result = ByteArray(8 + newPool.size + body.size + elements.size)
+        System.arraycopy(source, 0, result, 0, 8)
+        System.arraycopy(newPool, 0, result, 8, newPool.size)
+        System.arraycopy(body, 0, result, 8 + newPool.size, insertAt)
+        System.arraycopy(elements, 0, result, 8 + newPool.size + insertAt, elements.size)
+        System.arraycopy(
+            body,
+            insertAt,
+            result,
+            8 + newPool.size + insertAt + elements.size,
+            body.size - insertAt,
+        )
+        putInt(result, 4, result.size)
+        return result
+    }
+
+    private fun startElement(
+        androidNs: Int,
+        name: Int,
+        attrs: List<Triple<Int, Int, Int>>,
+    ): ByteArray {
+        val count = attrs.size
+        val buffer = ByteBuffer.allocate(36 + count * ATTRIBUTE_SIZE).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putShort(0, CHUNK_START_ELEMENT.toShort())
+        buffer.putShort(2, 16)
+        buffer.putInt(4, 36 + count * ATTRIBUTE_SIZE)
+        buffer.putInt(8, 1)
+        buffer.putInt(12, -1)
+        buffer.putInt(16, -1)
+        buffer.putInt(20, name)
+        buffer.putShort(24, 20)
+        buffer.putShort(26, ATTRIBUTE_SIZE.toShort())
+        buffer.putShort(28, count.toShort())
+        buffer.putShort(30, 0)
+        buffer.putShort(32, 0)
+        buffer.putShort(34, 0)
+        var offset = 36
+        for ((attrName, value, type) in attrs) {
+            if (type == TYPE_STRING) {
+                putStringAttribute(buffer, offset, androidNs, attrName, value)
+            } else {
+                putIntAttribute(buffer, offset, androidNs, attrName, RAW_VALUE_NONE, value, type)
+            }
+            offset += ATTRIBUTE_SIZE
+        }
+        return buffer.array()
+    }
+
+    private fun endElement(name: Int): ByteArray {
+        val buffer = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putShort(0, CHUNK_END_ELEMENT.toShort())
+        buffer.putShort(2, 16)
+        buffer.putInt(4, 24)
+        buffer.putInt(8, 0)
+        buffer.putInt(12, -1)
+        buffer.putInt(16, -1)
+        buffer.putInt(20, name)
+        return buffer.array()
+    }
+
     fun addUsesPermission(permission: String): ByteArray {
         if (hasUsesPermission(permission)) return source
         return insertUsesPermission(permission)
@@ -215,8 +384,8 @@ class AxmlEditor(private val source: ByteArray) {
         start.putShort(32, 0)
         start.putShort(34, 0)
         putStringAttribute(start, 36, androidNs, nameAttr, classIndex)
-        putStringAttribute(start, 56, androidNs, authoritiesAttr, authorityIndex)
-        putIntAttribute(start, 76, androidNs, exportedAttr, RAW_VALUE_NONE, 0, TYPE_INT_BOOLEAN)
+        putIntAttribute(start, 56, androidNs, exportedAttr, RAW_VALUE_NONE, 0, TYPE_INT_BOOLEAN)
+        putStringAttribute(start, 76, androidNs, authoritiesAttr, authorityIndex)
 
         val end = ByteBuffer.allocate(24).order(ByteOrder.LITTLE_ENDIAN)
         end.putShort(0, CHUNK_END_ELEMENT.toShort())
@@ -384,7 +553,7 @@ class AxmlEditor(private val source: ByteArray) {
         extra.putInt(0, ns)
         extra.putInt(4, name)
         extra.putInt(8, valueIndex)
-        extra.putShort(12, ATTRIBUTE_SIZE.toShort())
+        extra.putShort(12, TYPED_VALUE_SIZE.toShort())
         extra.put(14, 0)
         extra.put(15, type.toByte())
         extra.putInt(16, valueIndex)
@@ -488,7 +657,7 @@ class AxmlEditor(private val source: ByteArray) {
         buffer.putInt(offset, ns)
         buffer.putInt(offset + 4, name)
         buffer.putInt(offset + 8, raw)
-        buffer.putShort(offset + 12, ATTRIBUTE_SIZE.toShort())
+        buffer.putShort(offset + 12, TYPED_VALUE_SIZE.toShort())
         buffer.put(offset + 14, 0)
         buffer.put(offset + 15, TYPE_STRING.toByte())
         buffer.putInt(offset + 16, value)
@@ -506,7 +675,7 @@ class AxmlEditor(private val source: ByteArray) {
         buffer.putInt(offset, ns)
         buffer.putInt(offset + 4, name)
         buffer.putInt(offset + 8, raw)
-        buffer.putShort(offset + 12, ATTRIBUTE_SIZE.toShort())
+        buffer.putShort(offset + 12, TYPED_VALUE_SIZE.toShort())
         buffer.put(offset + 14, 0)
         buffer.put(offset + 15, type.toByte())
         buffer.putInt(offset + 16, value)
@@ -536,7 +705,7 @@ class AxmlEditor(private val source: ByteArray) {
         inserted.putInt(0, androidNsIndex)
         inserted.putInt(4, spec.nameIndex)
         inserted.putInt(8, spec.valueStringIndex)
-        inserted.putShort(12, ATTRIBUTE_SIZE.toShort())
+        inserted.putShort(12, TYPED_VALUE_SIZE.toShort())
         inserted.put(14, 0)
         inserted.put(15, type.toByte())
         inserted.putInt(16, data)
@@ -628,6 +797,7 @@ class AxmlEditor(private val source: ByteArray) {
         private const val TYPE_LAST_INT = 0x1f
         private const val TYPE_INT_BOOLEAN = 0x12
         private const val ATTRIBUTE_SIZE = 20
+        private const val TYPED_VALUE_SIZE = 8
 
         private const val RAW_VALUE_NONE = -1
 
@@ -636,10 +806,26 @@ class AxmlEditor(private val source: ByteArray) {
         private const val ATTR_NAME = "name"
         private const val ATTR_AUTHORITIES = "authorities"
         private const val ATTR_EXPORTED = "exported"
+        private const val ATTR_PERMISSION = "permission"
+        private const val ATTR_READ_PERMISSION = "readPermission"
+        private const val ATTR_WRITE_PERMISSION = "writePermission"
+        private const val ATTR_GRANT_URI_PERMISSIONS = "grantUriPermissions"
+        private const val ATTR_TASK_AFFINITY = "taskAffinity"
+        private const val ATTR_EXCLUDE_FROM_RECENTS = "excludeFromRecents"
+        private const val ATTR_NO_HISTORY = "noHistory"
+        private const val ACTION_DOCUMENTS_PROVIDER = "android.content.action.DOCUMENTS_PROVIDER"
+        private const val PERMISSION_MANAGE_DOCUMENTS = "android.permission.MANAGE_DOCUMENTS"
 
         private const val RES_ID_NAME = 0x01010003
         private const val RES_ID_EXPORTED = 0x01010010
         private const val RES_ID_AUTHORITIES = 0x01010018
+        private const val RES_ID_PERMISSION = 0x01010006
+        private const val RES_ID_READ_PERMISSION = 0x01010007
+        private const val RES_ID_WRITE_PERMISSION = 0x01010008
+        private const val RES_ID_GRANT_URI_PERMISSIONS = 0x0101001b
+        private const val RES_ID_TASK_AFFINITY = 0x01010012
+        private const val RES_ID_EXCLUDE_FROM_RECENTS = 0x01010017
+        private const val RES_ID_NO_HISTORY = 0x0101022d
 
         private fun putInt(array: ByteArray, offset: Int, value: Int) {
             array[offset] = (value and 0xFF).toByte()

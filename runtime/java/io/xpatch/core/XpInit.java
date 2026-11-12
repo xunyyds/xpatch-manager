@@ -117,14 +117,20 @@ public class XpInit {
             preDeopt();
             preloadWrapperAssets();
             installSignBypass();
-            if (AppEnv.dynamicMode && AppEnv.packageName.equals(AppEnv.processName)) {
+            if (AppEnv.dynamicMode) {
                 try {
                     getApplicationInfo();
                     initClassLoaderInject();
-                    injectFileProviderDexFile();
                     XpHook.log0(TAG, "切换应用成功");
                 } catch (Throwable th) {
                     XpHook.log0(TAG, "切换应用失败：" + Log.getStackTraceString(th));
+                }
+            }
+            if (AppEnv.fileProvider) {
+                try {
+                    injectFileProviderDexFile();
+                } catch (Throwable th) {
+                    XpHook.log0(TAG, "注入文件提供器 dex 失败：" + Log.getStackTraceString(th));
                 }
             }
             if (AppEnv.appContext == null) {
@@ -507,6 +513,7 @@ public class XpInit {
             switchField(loadedApk2, loadedApk, "mDefaultClassLoader");
             setFieldValue(obj, "info", loadedApk2);
             AppEnv.appClassLoader = (ClassLoader) getObjectField(loadedApk2, "mClassLoader");
+            AppEnv.dynamicLoader = AppEnv.appClassLoader;
             switched = true;
         } finally {
             selfApplicationInfo.sourceDir = previousSourceDir;

@@ -8,6 +8,8 @@ import android.graphics.drawable.Drawable
 import android.os.Build
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
+import io.xpatch.patch.obfuscate.InjectLayout
+import io.xpatch.patch.obfuscate.Logical
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -227,13 +229,77 @@ class ManagerRepository(private val context: Context) {
         val apk = File(apkPath)
         if (!apk.canRead()) return@runCatching PATCH_NONE
         ZipFile(apk).use { zip ->
-            val config = zip.getEntry(CONFIG_ENTRY) ?: return@runCatching PATCH_NONE
-            val text = zip.getInputStream(config).use { it.readBytes() }.toString(Charsets.UTF_8)
-            val json = JSONObject(text)
-            val core = HOOK_CORES[json.optInt("hook_core", 0).coerceIn(0, HOOK_CORES.size - 1)]
-            encodePatch(core, json.optInt("ver", 0))
+            if (zip.getEntry(CONFIG_ENTRY) != null) legacyPatch(zip) else layoutPatch(zip)
         }
     }.getOrNull()
+
+    private fun legacyPatch(zip: ZipFile): String {
+        val config = zip.getEntry(CONFIG_ENTRY) ?: return PATCH_NONE
+        val text = zip.getInputStream(config).use { it.readBytes() }.toString(Charsets.UTF_8)
+        val json = JSONObject(text)
+        return encodePatch(hookCoreOf(json.optInt("hook_core", 0)), json.optInt("ver", 0))
+    }
+
+    private fun layoutPatch(zip: ZipFile): String {
+        if (!hasLayoutMark(zip)) return PATCH_NONE
+        val found = runCatching {
+            val entries = ArrayList<Pair<String, Long>>()
+            val enumeration = zip.entries()
+            while (enumeration.hasMoreElements()) {
+                val entry = enumeration.nextElement()
+                if (entry.isDirectory) continue
+                entries += entry.name to entry.size
+            }
+            InjectLayout.discoverConfigEntry(entries) { name -> entryBytes(zip, name) }
+        }.getOrNull() ?: return PATCH_NONE
+        val text = entryBytes(zip, found)?.toString(Charsets.UTF_8) ?: return PATCH_NONE
+        val json = runCatching { JSONObject(text) }.getOrNull() ?: return PATCH_NONE
+        val layout = InjectLayout.fromConfig(text)
+        val hasCore = layout?.entry(Logical.CORE)?.let { zip.getEntry(it) } != null ||
+            zip.getEntry(RUNTIME_ENTRY) != null
+        if (!hasCore) return PATCH_NONE
+        return encodePatch(hookCoreOf(json.optInt("hook_core", 0)), json.optInt("ver", 0))
+    }
+
+    private fun hasLayoutMark(zip: ZipFile): Boolean {
+        val enumeration = zip.entries()
+        while (enumeration.hasMoreElements()) {
+            val entry = enumeration.nextElement()
+            if (entry.isDirectory) continue
+            if (!isClassesDex(entry.name)) continue
+            if (entry.size <= 0L || entry.size > MAX_SCAN_DEX) continue
+            val body = entryBytes(zip, entry.name) ?: continue
+            if (containsAscii(body, LAYOUT_MARK)) return true
+        }
+        return false
+    }
+
+    private fun isClassesDex(name: String) =
+        name.startsWith(CLASSES_PREFIX) && name.endsWith(DEX_SUFFIX) && name.indexOf('/') < 0
+
+    private fun containsAscii(body: ByteArray, text: String): Boolean {
+        val needle = text.toByteArray(Charsets.US_ASCII)
+        if (needle.isEmpty() || body.size < needle.size) return false
+        val last = body.size - needle.size
+        var index = 0
+        while (index <= last) {
+            if (body[index] == needle[0]) {
+                var offset = 1
+                while (offset < needle.size && body[index + offset] == needle[offset]) offset++
+                if (offset == needle.size) return true
+            }
+            index++
+        }
+        return false
+    }
+
+    private fun entryBytes(zip: ZipFile, name: String): ByteArray? = runCatching {
+        val entry = zip.getEntry(name) ?: return@runCatching null
+        zip.getInputStream(entry).use { it.readBytes() }
+    }.getOrNull()
+
+    private fun hookCoreOf(index: Int): String =
+        HOOK_CORES[index.coerceIn(0, HOOK_CORES.size - 1)]
 
     private fun encodePatch(hookCore: String, runtimeVersion: Int) = "$PATCH_YES|$hookCore|$runtimeVersion"
 
@@ -345,6 +411,10 @@ class ManagerRepository(private val context: Context) {
         const val META_SCOPE = "xposedscope"
         const val RUNTIME_ENTRY = "xp/core.dex"
         const val CONFIG_ENTRY = "xp/config.json"
+        const val LAYOUT_MARK = "res_core"
+        const val CLASSES_PREFIX = "classes"
+        const val DEX_SUFFIX = ".dex"
+        const val MAX_SCAN_DEX = 2L * 1024 * 1024
         const val UNKNOWN_CORE = "未知"
         const val PATCH_PREFS = "patch_cache"
         const val PATCH_NONE = "0"

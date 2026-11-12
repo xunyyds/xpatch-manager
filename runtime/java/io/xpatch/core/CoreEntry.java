@@ -29,6 +29,28 @@ public class CoreEntry {
         }
     }
 
+    public static ClassLoader dynamicClassLoader() {
+        if (!AppEnv.dynamicMode) {
+            return null;
+        }
+        String source = AppEnv.source_apk_path;
+        if (source == null || source.length() == 0) {
+            return null;
+        }
+        ClassLoader loader = AppEnv.dynamicLoader;
+        if (loader != null) {
+            return loader;
+        }
+        synchronized (CoreEntry.class) {
+            loader = AppEnv.dynamicLoader;
+            if (loader == null) {
+                loader = new dalvik.system.PathClassLoader(source, ClassLoader.getSystemClassLoader());
+                AppEnv.dynamicLoader = loader;
+            }
+        }
+        return loader;
+    }
+
     private static boolean isIsolatedProcess() {
         try {
             if (Process.isIsolated()) {

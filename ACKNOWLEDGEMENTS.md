@@ -24,6 +24,7 @@ XPatch 建立在许多优秀项目之上。本文件用于说明来源、许可�
 | [jmpews / Dobby](https://github.com/jmpews/Dobby) | Apache-2.0 | 内联 Hook 后端（静态链接进 `hook_core.so`） |
 | [LSPosed / LSPlant](https://github.com/LSPosed/LSPlant) | Apache-2.0 | ART Hook 后端（静态链接进 `hook_core.so`） |
 | [Android Open Source Project](https://source.android.com/) | Apache-2.0 | 平台类与工具代码片段 |
+| [L-JINBIN / MTDataFilesProvider](https://github.com/L-JINBIN/MTDataFilesProvider) | 仓库未声明许可证 | MT 文件提供器（`bin.mt.file.content.*`，已去注释并适配 XPatch 注入） |
 
 ## 三、管理器与 UI
 
