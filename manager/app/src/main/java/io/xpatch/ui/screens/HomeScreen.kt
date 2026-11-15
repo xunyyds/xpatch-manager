@@ -162,7 +162,6 @@ internal fun ShizukuSettingsRows(
 ) {
     SettingItem(
         title = "Shizuku 服务",
-        subtitle = "检测服务状态；授权与其它权限统一在「权限管理」中处理",
         value = when {
             ready -> "可用"
             available -> "未授权"

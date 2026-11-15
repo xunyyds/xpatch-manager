@@ -57,6 +57,7 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 @Composable
 internal fun AboutScreen(
     onOpenDisclaimer: () -> Unit,
+    onOpenAcknowledgements: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val context = LocalContext.current
@@ -156,10 +157,10 @@ internal fun AboutScreen(
                 )
                 RowDivider(startPadding = 16.dp)
                 SettingItem(
-                    "内核与致谢",
-                    "FPA 内核与第三方组件清单",
+                    "特别鸣谢",
+                    "致谢项目与提供建议的小伙伴",
                     arrow = true,
-                    onClick = { runCatching { uriHandler.openUri(UpdateChecker.REPO_URL + "/blob/main/ACKNOWLEDGEMENTS.md") } },
+                    onClick = { onOpenAcknowledgements() },
                 )
                 RowDivider(startPadding = 16.dp)
                 SettingItem(

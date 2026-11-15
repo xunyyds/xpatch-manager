@@ -49,6 +49,7 @@ internal sealed interface Page {
     data object PatchHistory : Page
     data object About : Page
     data object Disclaimer : Page
+    data object Acknowledgements : Page
     data class LogModule(
         val groupKey: String,
         val module: String,
@@ -151,6 +152,7 @@ internal fun navKeyOf(page: Page, tab: Tab): String = when (page) {
     is Page.RepoDetail -> "repoDetail:" + page.module.packageName
     is Page.About -> "about"
     is Page.Disclaimer -> "disclaimer"
+    is Page.Acknowledgements -> "acknowledgements"
     is Page.Config -> "config:" + page.target.stableKey()
     is Page.ModuleScope -> "moduleScope:" + page.module.packageName
     is Page.AppScope -> "appScope:" + page.app.packageName

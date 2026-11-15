@@ -2,6 +2,7 @@ package io.xpatch.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
@@ -10,6 +11,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -24,6 +26,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.ripple
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -45,7 +48,10 @@ import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
+import io.xpatch.ui.theme.HitArea
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.Radius
+import io.xpatch.ui.theme.Space
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -233,13 +239,41 @@ private fun HistoryEntryBody(
             overflow = TextOverflow.Ellipsis,
         )
         if (record.optionSummary.isNotBlank()) {
-            Text(
-                record.optionSummary,
-                style = MaterialTheme.typography.labelSmall,
-                color = secondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            var infoExpanded by remember(record.id) { mutableStateOf(false) }
+            var infoOverflow by remember(record.id) { mutableStateOf(false) }
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(Radius.control))
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = if (infoOverflow) ripple(color = primary) else null,
+                        enabled = infoOverflow,
+                    ) { infoExpanded = !infoExpanded }
+                    .heightIn(min = if (infoOverflow) HitArea.minimum else 0.dp)
+                    .padding(horizontal = Space.xs, vertical = Space.xs),
+                verticalAlignment = if (infoExpanded) Alignment.Top else Alignment.CenterVertically,
+            ) {
+                Text(
+                    record.optionSummary,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = secondary,
+                    maxLines = if (infoExpanded) Int.MAX_VALUE else 1,
+                    overflow = TextOverflow.Ellipsis,
+                    onTextLayout = { if (!infoExpanded) infoOverflow = it.hasVisualOverflow },
+                    modifier = Modifier.weight(1f),
+                )
+                if (infoOverflow) {
+                    Icon(
+                        imageVector = if (infoExpanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                        contentDescription = if (infoExpanded) "收起信息" else "展开信息",
+                        tint = primary,
+                        modifier = Modifier
+                            .padding(start = Space.xs)
+                            .size(HitArea.icon),
+                    )
+                }
+            }
         }
         Row(
             Modifier

@@ -106,29 +106,28 @@ private val BYPASS_MODES = listOf(
         name = "PLT（GOT 重定向，实验性）",
         desc = "实验性档位：在 Java 层之外改写已加载库的 open/openat/fopen GOT 槽，" +
             "把按路径读取签名指回原包。覆盖率随宿主实现浮动，部分宿主 patched=0 后仅剩 Java 层，" +
-            "排障请先看 _framework 日志里的「扫描 N 个库 / 改写 M 个槽」。" +
-            "本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
+            "排障请先看 _framework 日志里的「扫描 N 个库 / 改写 M 个槽」",
         sigMode = SettingsStore.SIG_MODE_JAVA,
         bypassLevel = 4,
     ),
     BypassMode(
         key = "file",
         name = "File（+ 文件层）",
-        desc = "在 Strict 之上把代码/资源路径重定向到原始安装包，处理按 APK 文件路径读签名的校验。本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
+        desc = "在 Strict 之上把代码/资源路径重定向到原始安装包，处理按 APK 文件路径读签名的校验",
         sigMode = SettingsStore.SIG_MODE_JAVA_FILE,
         bypassLevel = 2,
     ),
     BypassMode(
         key = "seccomp",
         name = "Seccomp（native 重定向）",
-        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件层；不含 hasSigningCertificate 严格校验。本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
+        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件层；不含 hasSigningCertificate 严格校验",
         sigMode = SettingsStore.SIG_MODE_JAVA,
         bypassLevel = 1,
     ),
     BypassMode(
         key = "extreme",
         name = "Extreme（最高档）",
-        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件层路径重定向 + dobby/inline 混合 native 重定向三层叠加。本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
+        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件层路径重定向 + dobby/inline 混合 native 重定向三层叠加",
         sigMode = SettingsStore.SIG_MODE_DEEP,
         bypassLevel = 3,
     ),

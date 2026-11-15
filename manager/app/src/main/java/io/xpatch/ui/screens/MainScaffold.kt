@@ -754,6 +754,7 @@ fun MainScaffold(
         is Page.PatchHistory -> "打包历史"
         is Page.About -> "关于"
         is Page.Disclaimer -> "免责声明"
+        is Page.Acknowledgements -> AcknowledgementsData.TITLE
         is Page.LogModule -> if (current.framework) LogLayer.Framework.label
         else labelOf(current.module)
     }
@@ -1635,8 +1636,12 @@ fun MainScaffold(
                     onOpenPicker = { },
                 )
 
-                is Page.About -> AboutScreen(onOpenDisclaimer = { nav.navigate(Page.Disclaimer) })
+                is Page.About -> AboutScreen(
+                    onOpenDisclaimer = { nav.navigate(Page.Disclaimer) },
+                    onOpenAcknowledgements = { nav.navigate(Page.Acknowledgements) },
+                )
                 is Page.Disclaimer -> DisclaimerScreen()
+                is Page.Acknowledgements -> AcknowledgementsScreen()
 
                 is Page.ModuleScope -> ModuleScopeScreen(
                     module = current.module,
