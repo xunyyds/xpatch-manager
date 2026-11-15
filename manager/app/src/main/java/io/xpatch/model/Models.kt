@@ -12,6 +12,7 @@ data class ModuleInfo(
     val icon: Drawable?,
     val recommendedApps: Set<String> = emptySet(),
     val recommendedLabels: List<String> = emptyList(),
+    val missingRecommended: List<String> = emptyList(),
     val availableApiLevels: List<Int> = emptyList(),
     val autoApiLevel: Int = 100,
     val modernModule: Boolean = false,

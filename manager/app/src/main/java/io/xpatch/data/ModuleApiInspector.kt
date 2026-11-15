@@ -18,6 +18,7 @@ class ModuleApiInspector(private val context: Context) {
         val minApiVersion: Int,
         val targetApiVersion: Int,
         val legacyApiLevel: Int,
+        val isModule: Boolean,
     )
 
     fun inspect(modulePackage: String): Info? = runCatching {
@@ -37,6 +38,7 @@ class ModuleApiInspector(private val context: Context) {
         var legacyModule = false
         var minApiVersion = 0
         var targetApiVersion = 0
+        var modernEntry = false
 
         ZipFile(apkPath).use { zip ->
             val propEntry = zip.getEntry(MODULE_PROP)
@@ -47,11 +49,16 @@ class ModuleApiInspector(private val context: Context) {
                 minApiVersion = parseInt(props.getProperty(KEY_MIN_API))
                 targetApiVersion = parseInt(props.getProperty(KEY_TARGET_API))
             }
+            modernEntry = MODERN_ENTRIES.any { zip.getEntry(it) != null }
             legacyModule = zip.getEntry(LEGACY_INIT) != null
         }
+        val isModule = modernModule || modernEntry || legacyModule
 
         var legacyApiLevel = installedLegacyApiLevel(modulePackage)
         if (legacyApiLevel <= 0) legacyApiLevel = archiveLegacyApiLevel(apkPath)
+
+        if (minApiVersion <= 0 && legacyApiLevel in API_100..API_102) minApiVersion = legacyApiLevel
+        if (targetApiVersion <= 0 && minApiVersion > 0) targetApiVersion = minApiVersion
 
         val levels = buildLevels(legacyApiLevel, minApiVersion, targetApiVersion, modernModule, legacyModule)
         val info = Info(
@@ -62,6 +69,7 @@ class ModuleApiInspector(private val context: Context) {
             minApiVersion = minApiVersion,
             targetApiVersion = targetApiVersion,
             legacyApiLevel = legacyApiLevel,
+            isModule = isModule,
         )
         cacheKey(apkPath, modulePackage)?.let { key ->
             synchronized(lock) { cache[key] = info }
@@ -102,6 +110,7 @@ class ModuleApiInspector(private val context: Context) {
         val modernLow = when {
             minApiVersion >= API_100 -> minApiVersion
             targetApiVersion >= API_100 -> API_100
+            modernModule -> API_100
             else -> 0
         }
         val modernHigh = when {
@@ -165,6 +174,10 @@ class ModuleApiInspector(private val context: Context) {
 
         private const val MODULE_PROP = "META-INF/xposed/module.prop"
         private const val LEGACY_INIT = "assets/xposed_init"
+        private val MODERN_ENTRIES = listOf(
+            "META-INF/xposed/java_init.list",
+            "META-INF/xposed/scope.list",
+        )
         private const val KEY_MIN_API = "minApiVersion"
         private const val KEY_TARGET_API = "targetApiVersion"
         private const val META_MIN_VERSION = "xposedminversion"

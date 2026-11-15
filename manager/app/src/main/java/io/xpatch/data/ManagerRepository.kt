@@ -140,11 +140,7 @@ class ManagerRepository(private val context: Context) {
             .sortedBy { it.label.lowercase() }
         val labels = HashMap<String, String>(apps.size)
         apps.forEach { labels[it.packageName] = it.label }
-        val moduleCandidates = packages.filter { info ->
-            runCatching {
-                info.applicationInfo?.metaData?.getBoolean(META_MODULE) == true
-            }.getOrDefault(false)
-        }
+        val moduleCandidates = packages.filter { info -> isModuleCandidate(info) }
         val modules = moduleCandidates
             .mapParallel(APP_PARALLEL) { info -> toModule(info, labels) }
             .filterNotNull()
@@ -157,6 +153,17 @@ class ManagerRepository(private val context: Context) {
     private fun installedPackages(): List<PackageInfo> = runCatching {
         pm.getInstalledPackages(PackageManager.GET_META_DATA or PackageManager.GET_SIGNATURES)
     }.getOrDefault(emptyList())
+
+    private fun isModuleCandidate(info: PackageInfo): Boolean {
+        val applicationInfo = info.applicationInfo ?: return false
+        val declared = runCatching {
+            applicationInfo.metaData?.getBoolean(META_MODULE) == true
+        }.getOrDefault(false)
+        if (declared) return true
+        return runCatching {
+            apiInspector.inspect(applicationInfo.sourceDir, info.packageName)?.isModule == true
+        }.getOrDefault(false)
+    }
 
     private suspend fun detectPatches(
         packages: List<PackageInfo>,
@@ -335,14 +342,18 @@ class ManagerRepository(private val context: Context) {
 
     private fun toModule(info: PackageInfo, labels: Map<String, String>): ModuleInfo? {
         val applicationInfo = info.applicationInfo ?: return null
-        val metaData = applicationInfo.metaData ?: return null
-        if (!runCatching { metaData.getBoolean(META_MODULE) }.getOrDefault(false)) return null
-
-        val description = runCatching { metaData.getString(META_DESCRIPTION) }.getOrNull().orEmpty()
-        val minVersion = runCatching { metaData.getInt(META_MIN_VERSION) }.getOrDefault(0)
-        val scopeResId = runCatching { metaData.getInt(META_SCOPE) }.getOrDefault(0)
-        val recommended = recommendedApps(info.packageName, scopeResId)
+        val metaData = applicationInfo.metaData
+        val declaredModule = runCatching {
+            metaData?.getBoolean(META_MODULE) == true
+        }.getOrDefault(false)
         val apiInfo = apiInspector.inspect(applicationInfo.sourceDir, info.packageName)
+        if (!declaredModule && apiInfo?.isModule != true) return null
+
+        val description = runCatching { metaData?.getString(META_DESCRIPTION) }.getOrNull().orEmpty()
+        val minVersion = runCatching { metaData?.getInt(META_MIN_VERSION) ?: 0 }.getOrDefault(0)
+        val scopeResId = runCatching { metaData?.getInt(META_SCOPE) ?: 0 }.getOrDefault(0)
+        val recommended = recommendedApps(info.packageName, scopeResId)
+            .ifEmpty { staticScopeApps(applicationInfo.sourceDir) }
 
         return ModuleInfo(
             packageName = info.packageName,
@@ -353,7 +364,9 @@ class ManagerRepository(private val context: Context) {
             enabledApps = 0,
             icon = iconFor(applicationInfo, info.lastUpdateTime),
             recommendedApps = recommended,
-            recommendedLabels = recommended.mapNotNull { pkg -> labels[pkg] },
+            recommendedLabels = recommended.filter { labels.containsKey(it) }
+                .map { pkg -> labels.getValue(pkg) },
+            missingRecommended = recommended.filter { !labels.containsKey(it) }.toList(),
             availableApiLevels = apiInfo?.availableLevels.orEmpty(),
             autoApiLevel = apiInfo?.resolvedLevel ?: ModuleApiInspector.API_100,
             modernModule = apiInfo?.modernModule ?: false,
@@ -362,8 +375,22 @@ class ManagerRepository(private val context: Context) {
     }
 
     private fun recommendedApps(packageName: String, resId: Int): Set<String> = runCatching {
+        if (resId == 0) return@runCatching emptySet()
         val res = pm.getResourcesForApplication(packageName)
-        res.getStringArray(resId).filterNotNull().toSet()
+        LinkedHashSet(res.getStringArray(resId).filterNotNull())
+    }.getOrDefault(emptySet())
+
+    private fun staticScopeApps(apkPath: String): Set<String> = runCatching {
+        java.util.zip.ZipFile(apkPath).use { zip ->
+            val entry = zip.getEntry(MODERN_SCOPE_LIST) ?: return@use emptySet()
+            zip.getInputStream(entry).bufferedReader().useLines { lines ->
+                LinkedHashSet(
+                    lines.map { it.trim() }
+                        .filter { it.isNotEmpty() && !it.startsWith("#") }
+                        .toList(),
+                )
+            }
+        }
     }.getOrDefault(emptySet())
 
     private fun iconFor(info: ApplicationInfo, lastUpdateTime: Long): Drawable? {
@@ -409,6 +436,7 @@ class ManagerRepository(private val context: Context) {
         const val META_DESCRIPTION = "xposeddescription"
         const val META_MIN_VERSION = "xposedminversion"
         const val META_SCOPE = "xposedscope"
+        const val MODERN_SCOPE_LIST = "META-INF/xposed/scope.list"
         const val RUNTIME_ENTRY = "xp/core.dex"
         const val CONFIG_ENTRY = "xp/config.json"
         const val LAYOUT_MARK = "res_core"
