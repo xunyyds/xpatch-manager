@@ -27,6 +27,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.isUnspecified
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
@@ -61,15 +62,23 @@ fun LiquidBottomTabs(
     backdrop: Backdrop,
     tabsCount: Int,
     modifier: Modifier = Modifier,
+    accentColor: Color = Color.Unspecified,
+    containerColor: Color = Color.Unspecified,
     content: @Composable RowScope.() -> Unit
 ) {
-    val isLightTheme = !isSystemInDarkTheme()
-    val accentColor =
-        if (isLightTheme) Color(0xFF0088FF)
-        else Color(0xFF0091FF)
-    val containerColor =
-        if (isLightTheme) Color(0xFFFAFAFA).copy(0.4f)
-        else Color(0xFF121212).copy(0.4f)
+    val isLightTheme = accentColor.isUnspecified && !isSystemInDarkTheme()
+    val resolvedAccent =
+        if (accentColor.isUnspecified) {
+            if (isLightTheme) Color(0xFF0088FF) else Color(0xFF0091FF)
+        } else {
+            accentColor
+        }
+    val resolvedContainer =
+        if (containerColor.isUnspecified) {
+            if (isLightTheme) Color(0xFFFAFAFA).copy(0.4f) else Color(0xFF121212).copy(0.4f)
+        } else {
+            containerColor
+        }
 
     val tabsBackdrop = rememberLayerBackdrop()
 
@@ -182,7 +191,7 @@ fun LiquidBottomTabs(
                         scaleX = scale
                         scaleY = scale
                     },
-                    onDrawSurface = { drawRect(containerColor) }
+                    onDrawSurface = { drawRect(resolvedContainer) }
                 )
                 .then(interactiveHighlight.modifier)
                 .height(64f.dp)
@@ -221,13 +230,13 @@ fun LiquidBottomTabs(
                             val progress = dampedDragAnimation.pressProgress
                             Highlight.Default.copy(alpha = progress)
                         },
-                        onDrawSurface = { drawRect(containerColor) }
+                        onDrawSurface = { drawRect(resolvedContainer) }
                     )
                     .then(interactiveHighlight.modifier)
                     .height(56.dp)
                     .fillMaxWidth()
                     .padding(horizontal = 4.dp)
-                    .graphicsLayer(colorFilter = ColorFilter.tint(accentColor)),
+                    .graphicsLayer(colorFilter = ColorFilter.tint(resolvedAccent)),
                 verticalAlignment = Alignment.CenterVertically,
                 content = content
             )

@@ -134,7 +134,7 @@ class ScopeFileWriter(private val context: Context) {
         val payload = payloadOf(appPackage, modules)
         val mediaOk = runCatching {
             mediaFile.parentFile?.mkdirs()
-            mediaFile.writeText(payload)
+            writeAtomic(mediaFile, payload)
         }.onFailure { errors.add("media: " + (it.message ?: "未知错误")) }.isSuccess
         return Result(
             appPackage = appPackage,
@@ -144,6 +144,24 @@ class ScopeFileWriter(private val context: Context) {
             dataViaShizuku = false,
             errors = errors,
         )
+    }
+
+    private fun writeAtomic(target: File, payload: String) {
+        val tmp = File(target.absolutePath + ".tmp")
+        val backup = File(target.absolutePath + ".bak")
+        try {
+            tmp.writeText(payload)
+            if (target.isFile && !backup.exists() && !target.renameTo(backup)) {
+                backup.delete()
+            }
+            if (!tmp.renameTo(target)) {
+                tmp.copyTo(target, overwrite = true)
+                tmp.delete()
+            }
+        } catch (error: Throwable) {
+            runCatching { tmp.delete() }
+            throw error
+        }
     }
 
     private fun payloadOf(appPackage: String, modules: Set<String>): String {

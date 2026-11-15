@@ -89,7 +89,7 @@ data class InjectLayout(
                 for (logical in Logical.values()) {
                     if (logical == Logical.SOURCE && !includeSource) continue
                     val name: String? = when (logical) {
-                        Logical.HOOK_SO -> profile.soName(random, taken, "arm64-v8a", false)
+                        Logical.HOOK_SO -> profile.soName(random, taken, "arm64-v8a", true)
                         Logical.HOOK_SO_X86_64 -> profile.soName(random, taken, "x86_64", true)
                         Logical.CFG, Logical.PKG, Logical.SOURCE_MANIFEST ->
                             profile.dataName(random, taken, logical.ext, false)

@@ -208,6 +208,9 @@ fun MainScaffold(
     var patchProgress by remember { mutableIntStateOf(0) }
     var patchFailure by remember { mutableStateOf<String?>(null) }
     val patchLog = remember { mutableStateListOf<String>() }
+    val appendLog: (String) -> Unit = { line ->
+        patchLog.add(line)
+    }
     var result by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var pendingInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
@@ -283,7 +286,6 @@ fun MainScaffold(
         settingsStore.setDynamicMode(options.dynamicMode)
         settingsStore.setForceOverwrite(options.forceOverwrite)
         settingsStore.setSigMode(options.sigMode)
-        settingsStore.setEntryHook(options.entryHook)
         settingsStore.setInjectObfuscate(options.obfuscate)
         settingsStore.setInjectKeepCrashPermission(options.obfuscateKeepCrashPermission)
         settings = settings.copy(
@@ -294,7 +296,6 @@ fun MainScaffold(
             dynamicMode = options.dynamicMode,
             forceOverwrite = options.forceOverwrite,
             sigMode = options.sigMode,
-            entryHook = options.entryHook,
             injectObfuscate = options.obfuscate,
             injectKeepCrashPermission = options.obfuscateKeepCrashPermission,
         )
@@ -308,20 +309,21 @@ fun MainScaffold(
         patchProgress = 0
         patchFailure = null
         patchRunning = true
+        val runOptions = options.copy(logLevel = settings.patchLogLevel)
         runCatching {
             when (target) {
                 is PatchTarget.Installed -> patchService.build(
                     target.app,
-                    options,
-                    onLog = { line -> patchLog.add(line) },
+                    runOptions,
+                    onLog = appendLog,
                     onProgress = { patchProgress = it },
                 )
 
                 is PatchTarget.FromFile -> patchService.buildFromFile(
                     target.file,
                     target.label,
-                    options,
-                    onLog = { line -> patchLog.add(line) },
+                    runOptions,
+                    onLog = appendLog,
                     onProgress = { patchProgress = it },
                 )
             }
@@ -353,7 +355,7 @@ fun MainScaffold(
             token++
         }.onFailure {
             eventLog.add("打包失败 " + it.message)
-            patchLog.add("失败：" + it.message)
+            appendLog("失败：" + it.message)
             patchFailure = it.message ?: "未知错误"
         }
         patchRunning = false
@@ -557,7 +559,7 @@ fun MainScaffold(
             }.onSuccess {
                 eventLog.add("已导出日志包 " + (name ?: ""))
             }.onFailure {
-                failure = "写入导出文件失败：" + (it.message ?: "未知错误")
+                failure = "日志导出失败：写入导出文件失败：" + (it.message ?: "未知错误")
                 eventLog.add("日志导出失败 " + (it.message ?: ""))
             }
             logs = eventLog.entries()
@@ -594,7 +596,7 @@ fun MainScaffold(
                         hasAccess = true,
                     )
                 } else {
-                    logsRuntime.copy(loading = false, error = "读取运行日志失败")
+                    logsRuntime.copy(loading = false, error = "日志读取失败")
                 }
                 if (loaded?.second == true) {
                     eventLog.add("运行日志已达单次载入上限（$MAX_LOG_ENTRIES 条 / 约 32 MB），更早的日志未载入")
@@ -603,7 +605,7 @@ fun MainScaffold(
             } catch (error: Throwable) {
                 logsRuntime = logsRuntime.copy(
                     loading = false,
-                    error = "读取运行日志失败：" + (error.message ?: "未知错误"),
+                    error = "日志读取失败：" + (error.message ?: "未知错误"),
                 )
             } finally {
                 logsRefreshing = false
@@ -1282,6 +1284,10 @@ fun MainScaffold(
                             token++
                         },
                         onOpenSignatures = { nav.navigate(Page.Signatures) },
+                        onLogLevelChange = {
+                            settingsStore.setPatchLogLevel(it)
+                            settings = settings.copy(patchLogLevel = it)
+                        },
                         onThemeChange = {
                             settingsStore.setThemeMode(it)
                             settings = settings.copy(themeMode = it)
@@ -1496,14 +1502,12 @@ fun MainScaffold(
                         eventLog.add(if (on) "已开启强行覆盖安装" else "已关闭强行覆盖安装")
                         logs = eventLog.entries()
                     },
-                    onSignatureModeChange = { mode, level, hook ->
+                    onSignatureModeChange = { mode, level ->
                         settingsStore.setSigMode(mode)
                         settingsStore.setSignatureBypassLevel(level)
-                        settingsStore.setEntryHook(hook)
                         settings = settings.copy(
                             sigMode = mode,
                             signatureBypassLevel = level,
-                            entryHook = hook,
                         )
                     },
                     onObfuscateChange = { obfuscate, keepCrash ->
@@ -1527,7 +1531,7 @@ fun MainScaffold(
                     },
                     onReuse = { record ->
                         patchLog.clear()
-                        patchLog.add("复用已打包产物：" + record.apkPath)
+                        appendLog("复用已打包产物：" + record.apkPath)
                         patchProgress = 100
                         patchFailure = null
                         patchRunning = false
@@ -1905,12 +1909,12 @@ fun MainScaffold(
                             }
                             historyTick++
                         }
-                        patchLog.add("已导出到 " + path)
+                        appendLog("已导出到 " + path)
                         eventLog.add("已导出到 " + path)
                         showToast("已导出 " + path.substringAfterLast('/'))
                     }.onFailure {
                         val msg = "导出失败：" + (it.message ?: "未知错误")
-                        patchLog.add(msg)
+                        appendLog(msg)
                         eventLog.add(msg)
                         showToast(msg)
                     }
@@ -2063,12 +2067,20 @@ fun MainScaffold(
         XPatchDialog(
             miuix = miuix,
             onDismiss = { failure = null },
-            title = "操作失败",
+            title = failureTitleOf(message),
             actions = listOf(DialogAction("知道了") { failure = null }),
         ) {
             Text(message, style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+private fun failureTitleOf(message: String): String = when {
+    "签名" in message && ("安装" in message || "卸载" in message) -> "安装失败"
+    "安装" in message -> "安装失败"
+    "日志" in message -> "日志读取失败"
+    "导入" in message || "配置" in message -> "配置导入失败"
+    else -> "操作失败"
 }
 
 @Suppress("DEPRECATION")

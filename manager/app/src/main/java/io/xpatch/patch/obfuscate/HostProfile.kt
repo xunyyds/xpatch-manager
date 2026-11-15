@@ -16,8 +16,9 @@ class HostProfile private constructor(
     }
 
     fun soName(random: SecureRandom, taken: Set<String>, abi: String, required: Boolean): String? {
-        if (required && abi.isNotEmpty() && abi !in abiDirs) return null
-        val dir = if (abi.isNotEmpty() && abi in abiDirs) "lib/$abi/" else libDir
+        val abiPresent = abi.isNotEmpty() && abi in abiDirs
+        if (!abiPresent && required && abiDirs.isNotEmpty()) return null
+        val dir = if (abiPresent) "lib/$abi/" else if (abiDirs.isEmpty()) dataDir else libDir
         if (dir.isEmpty() || libTemplates.isEmpty()) {
             return sibling(random, taken, dataDir, dataTemplates, "so", true, "")
         }

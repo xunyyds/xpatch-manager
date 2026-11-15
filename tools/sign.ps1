@@ -25,7 +25,7 @@ $aligned = [System.IO.Path]::ChangeExtension($Out, '.aligned.apk')
 if (Test-Path $aligned) { Remove-Item $aligned -Force }
 if (Test-Path $Out) { Remove-Item $Out -Force }
 
-& $zipalign -p -f 4 $In $aligned
+& $zipalign -P 16 -f 4 $In $aligned
 if ($LASTEXITCODE -ne 0) { throw "zipalign 失败 (exit $LASTEXITCODE)" }
 
 & $apksigner sign `
@@ -41,6 +41,9 @@ if ($LASTEXITCODE -ne 0) { throw "zipalign 失败 (exit $LASTEXITCODE)" }
 if ($LASTEXITCODE -ne 0) { throw "apksigner 签名失败 (exit $LASTEXITCODE)" }
 
 & $apksigner verify --min-sdk-version $MinSdk --print-certs $Out | Select-Object -First 3
+
+& $zipalign -c -P 16 4 $Out
+if ($LASTEXITCODE -ne 0) { throw "zipalign -c -P 16 校验失败 (exit $LASTEXITCODE)" }
 
 Remove-Item $aligned -Force -ErrorAction SilentlyContinue
 Write-Host "完成: $Out"

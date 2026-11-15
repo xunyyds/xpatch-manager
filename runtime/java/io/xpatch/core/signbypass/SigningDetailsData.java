@@ -18,13 +18,34 @@ public final class SigningDetailsData {
     public final int scheme;
     public final Signature[] apk;
     public final Signature[] history;
+    public final Signature[] oldest;
     public final boolean fromConfig;
 
-    private SigningDetailsData(int scheme, Signature[] apk, Signature[] history, boolean fromConfig) {
+    private SigningDetailsData(int scheme, Signature[] apk, Signature[] history, Signature[] oldest,
+                               boolean fromConfig) {
         this.scheme = scheme;
         this.apk = apk == null ? new Signature[0] : apk;
-        this.history = history == null ? this.apk : history;
+        this.history = history == null || history.length == 0 ? this.apk : history;
+        this.oldest = oldest == null || oldest.length == 0
+                ? pickOldest(this.apk, this.history) : oldest;
         this.fromConfig = fromConfig;
+    }
+
+    private static Signature[] pickOldest(Signature[] apk, Signature[] history) {
+        if (history == null || history.length == 0) {
+            return apk;
+        }
+        if (apk == null || apk.length == 0) {
+            return history;
+        }
+        if (history.length < 2) {
+            return apk;
+        }
+        byte[] first = history[0] == null ? null : history[0].toByteArray();
+        boolean historyStartsWithCurrent = first != null && apk[0] != null
+                && java.util.Arrays.equals(first, apk[0].toByteArray());
+        return historyStartsWithCurrent ? new Signature[]{history[history.length - 1]}
+                : new Signature[]{history[0]};
     }
 
     public static SigningDetailsData fromJson(String json) {
@@ -52,7 +73,11 @@ public final class SigningDetailsData {
             if (history.length == 0) {
                 history = apk;
             }
-            return new SigningDetailsData(scheme, apk, history, true);
+            Signature[] oldest = parseSignatures(object.optJSONArray("oldest"), "oldest");
+            if (oldest == null) {
+                oldest = pickOldest(apk, history);
+            }
+            return new SigningDetailsData(scheme, apk, history, oldest, true);
         } catch (Throwable th) {
             XpHook.log0("XpSignBypass", "解析 signing_details 失败，退回 legacy sign：" + th);
             return null;
@@ -63,7 +88,8 @@ public final class SigningDetailsData {
         if (signatures == null || signatures.length == 0) {
             return null;
         }
-        return new SigningDetailsData(SCHEME_UNKNOWN, cloneSignatures(signatures), cloneSignatures(signatures), false);
+        return new SigningDetailsData(SCHEME_UNKNOWN, cloneSignatures(signatures),
+                cloneSignatures(signatures), cloneSignatures(signatures), false);
     }
 
     public static synchronized void init(String json, Signature[] legacySignatures) {
@@ -121,9 +147,41 @@ public final class SigningDetailsData {
         Signature[] copy = new Signature[signatures.length];
         for (int i = 0; i < signatures.length; i++) {
             Signature signature = signatures[i];
-            copy[i] = signature == null ? null : new Signature(signature.toByteArray());
+            copy[i] = signature == null ? null : withFlags(signature, flagsOf(signature));
         }
         return copy;
+    }
+
+    public static Signature withFlags(Signature source, int flags) {
+        if (source == null) {
+            return null;
+        }
+        Signature derived = new Signature(source.toByteArray());
+        setFlags(derived, flags);
+        return derived;
+    }
+
+    private static void setFlags(Signature target, int flags) {
+        try {
+            java.lang.reflect.Method method = Signature.class.getMethod("setFlags", Integer.TYPE);
+            method.invoke(target, Integer.valueOf(flags));
+        } catch (Throwable ignored) {
+        }
+    }
+
+    public static int flagsOf(Signature signature) {
+        if (signature == null) {
+            return 0;
+        }
+        try {
+            java.lang.reflect.Method method = Signature.class.getMethod("getFlags", new Class[0]);
+            Object value = method.invoke(signature, new Object[0]);
+            if (value instanceof Integer) {
+                return ((Integer) value).intValue();
+            }
+        } catch (Throwable ignored) {
+        }
+        return 0;
     }
 
     private static Signature[] parseSignatures(JSONArray array, String field) {

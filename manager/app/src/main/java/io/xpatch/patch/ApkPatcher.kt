@@ -26,8 +26,11 @@ import java.util.concurrent.atomic.AtomicReference
 import java.util.zip.CRC32
 import java.util.zip.Deflater
 import java.util.zip.Inflater
+import java.util.zip.ZipFile
 
 class ApkPatcher(private val context: Context) {
+
+    private val strippedBootDex = LinkedHashSet<String>()
 
     data class Options(
         val bypassLevel: Int = 3,
@@ -39,7 +42,6 @@ class ApkPatcher(private val context: Context) {
         val versionCode: Int? = null,
         val embedSource: Boolean = false,
         val sigMode: String = "java",
-        val entryHook: Boolean = false,
         val obfuscate: Boolean = false,
         val obfuscateKeepCrashPermission: Boolean = false,
     )
@@ -57,9 +59,11 @@ class ApkPatcher(private val context: Context) {
         outputApk: File,
         options: Options,
         onProgress: (Int) -> Unit = {},
-        onLog: (String) -> Unit = {},
+        onLog: PatchLog = PatchLog.silent(),
     ): Result {
-        onLog("读取目标应用清单")
+        val log = onLog
+        log.debug("apk path: ${sourceApk.absolutePath}")
+        log.step("解析原始 apk...")
         onProgress(10)
 
         var effectiveSource = sourceApk
@@ -67,20 +71,21 @@ class ApkPatcher(private val context: Context) {
         var manifest: ByteArray
         var originalManifest: ByteArray
         val originalFactory: String?
-        var providerReady = false
         val temps = ArrayList<File>()
 
+        val parseStart = System.currentTimeMillis()
         RandomAccessFile(sourceApk, "r").use { source ->
             entries = readCentralDirectory(source, sourceApk.length())
         }
-        onLog("解析完成，共 ${entries.size} 个条目")
+        log.milestone("清单 ${entries.size} 条目 · ${PatchLog.secs(System.currentTimeMillis() - parseStart)}")
 
-        var strip = discoverLayout(sourceApk, entries, onLog)
+        var strip = discoverLayout(sourceApk, entries, log)
         val outerLayout = strip.layout
         val injectedBefore = entries.any { strip.isInjected(it.name) || strip.isEmbeddedSource(it.name) }
         val beforeBootDex = entries.size
+        strippedBootDex.clear()
         RandomAccessFile(sourceApk, "r").use { source ->
-            entries = dropStaleBootDex(source, entries, onLog)
+            entries = dropStaleBootDex(source, entries, log, strippedBootDex)
         }
         val hadInjected = injectedBefore || entries.size != beforeBootDex
         val ourStubFactories = buildSet {
@@ -98,33 +103,38 @@ class ApkPatcher(private val context: Context) {
         var depth = 0
         while (
             depth < MAX_STRIP_DEPTH &&
-            entries.any { strip.isInjected(it.name) || strip.isEmbeddedSource(it.name) }
+            (
+                entries.any { strip.isInjected(it.name) || strip.isEmbeddedSource(it.name) } ||
+                    oversizedNested(entries, effectiveSource.length()).isNotEmpty()
+                )
         ) {
             val legacyFamily = if (strip.layout == null) legacyFamily(entries) else null
-            onLog(
+            val hasTrace = entries.any { strip.isInjected(it.name) || strip.isEmbeddedSource(it.name) }
+            log.step(
                 if (depth == 0) {
                     when {
-                        strip.layout != null -> "检测到本框架混淆产物，按布局剥离后重新打包"
+                        strip.layout != null -> "检测到本框架混淆产物，先剥离再重新打包"
                         legacyFamily != null -> "检测到历史注入层，剥离后重新打包"
-                        else -> "检测到源包已注入，剥离旧内核层"
+                        hasTrace -> "检测到源包已注入，剥离旧内核层"
+                        else -> "检测到大体积内嵌包，尝试剥离原始包"
                     }
                 } else {
                     "第 ${depth + 1} 层仍有注入痕迹，继续剥离"
                 },
             )
             if (depth == 0 && legacyFamily != null) {
-                onLog("源包可能由 $legacyFamily 旧签名签发，覆盖安装需在打包页选择对应签名，或卸载后重装")
+                log.step("源包可能由 $legacyFamily 旧签名签发，覆盖安装需选择对应签名或卸载后重装")
             }
             val stripped = try {
-                stripInjected(effectiveSource, entries, strip, onLog, strip.sourceEntry)
+                stripInjected(effectiveSource, entries, strip, log, strip.sourceEntry)
             } catch (ambiguous: EmbeddedSource.AmbiguousException) {
-                onLog("内嵌来源歧义，停止打包：${ambiguous.message}")
+                log.step("内嵌来源歧义，停止打包：${ambiguous.message}")
                 throw ambiguous
             }
             val extracted = stripped.file
             if (extracted == null) {
                 if (stripped.rejected.isNotEmpty()) {
-                    onLog("内嵌来源候选全部未通过验证（共 ${stripped.candidates.size} 个候选）")
+                    log.step("内嵌来源候选全部未通过验证（共 ${stripped.candidates.size} 个候选）")
                 }
                 if (stripped.unproven.isNotEmpty() && (options.dynamicMode || options.embedSource)) {
                     error(
@@ -132,11 +142,10 @@ class ApkPatcher(private val context: Context) {
                             stripped.unproven.take(3).joinToString("，") + "）",
                     )
                 }
-                onLog("第 ${depth + 1} 层无法提取内嵌原始包，仅移除注入条目")
+                log.step("第 ${depth + 1} 层无法提取内嵌原始包，仅移除注入条目")
                 entries = dropOverlappingNested(
                     effectiveSource,
                     entries.filter { !strip.isInjected(it.name) },
-                    onLog,
                 )
                 break
             }
@@ -147,15 +156,15 @@ class ApkPatcher(private val context: Context) {
             }
             depth++
             if (depth < MAX_STRIP_DEPTH) {
-                strip = discoverLayout(effectiveSource, entries, onLog)
+                strip = discoverLayout(effectiveSource, entries, log)
             }
         }
 
         if (effectiveSource != sourceApk) {
-            onLog("剥离完成，共 $depth 层，最终源 ${effectiveSource.length() / 1024 / 1024} MB")
+            log.milestone("剥离 $depth 层 · 源 ${PatchLog.mb(effectiveSource.length())}")
         }
         RandomAccessFile(effectiveSource, "r").use { source ->
-            entries = dropStaleBootDex(source, entries, onLog)
+            entries = dropStaleBootDex(source, entries, log, strippedBootDex)
         }
 
         val inputManifest: ByteArray
@@ -170,12 +179,12 @@ class ApkPatcher(private val context: Context) {
                 recorded = if (effectiveSource == sourceApk) recordedManifest else null,
                 input = inputManifest,
                 expectedPackage = manifestPackage,
-                onLog = onLog,
+                log = log,
                 ourStubs = ourStubFactories,
             )
             inputFactory = sanitizeFactory(
                 editor.readApplicationAttribute(ATTR_FACTORY_NAME),
-                onLog,
+                log,
                 ourStubFactories,
             )
         }
@@ -187,16 +196,16 @@ class ApkPatcher(private val context: Context) {
                 File(context.cacheDir, "patch").apply { mkdirs() },
                 "clean-source.${System.nanoTime()}.apk",
             )
-            onLog("内嵌来源：按剥离结果重建原始安装包（不含注入条目）")
+            log.step("重建干净原始安装包（不含注入条目）...")
             materializeCleanSource(effectiveSource, clean, entries, originalManifest)
             temps += clean
             effectiveSource = clean
             RandomAccessFile(effectiveSource, "r").use { source ->
                 entries = readCentralDirectory(source, effectiveSource.length())
             }
-            onLog("已重建干净原始安装包 ${clean.length() / 1024 / 1024} MB，共 ${entries.size} 个条目")
+            log.step("重建完成 ${PatchLog.mb(clean.length())} · ${entries.size} 条目")
         }
-        assertClean(entries, effectiveSource, onLog, strip, options.embedSource)
+        assertClean(entries, effectiveSource, log, strip, options.embedSource)
 
         if (options.dynamicMode && options.embedSource) {
             val before = entries.size
@@ -205,7 +214,15 @@ class ApkPatcher(private val context: Context) {
                     !entry.name.startsWith("META-INF/") &&
                     entry.name != "stamp-cert-sha256"
             }
-            onLog("动态加载：保留 ${entries.size}/$before 个条目（清单/资源/assets/原生库/根目录资源），代码由原包提供")
+            log.step("动态加载：保留 ${entries.size}/$before 条目，代码由原包提供")
+        }
+
+        if (!options.embedSource && entries.none { isBootDexName(it.name) }) {
+            error(
+                "宿主代码已丢失，拒绝打包：输入是动态加载的补丁产物，宿主 dex 只存在于内嵌原包里，" +
+                    "剥离旧注入层后没有可恢复的原始代码，继续打包只会得到比原包更小、无法运行的空壳。" +
+                    "请改用原始 APK 重新打包，或选择文件层/原生重定向等内嵌档位、开启动态加载以提供代码。",
+            )
         }
 
         val bootDexIndex = nextBootDexIndex(entries)
@@ -232,7 +249,7 @@ class ApkPatcher(private val context: Context) {
                     bootDex = bootDexName,
                     includeSource = options.embedSource,
                     factoryDashed = stub.factoryDashed,
-                    providerDashed = if (options.entryHook && !options.dynamicMode) stub.providerDashed else null,
+                    providerDashed = null,
                     seed = obfuscationSeed,
                 )
             }.mapCatching { generated ->
@@ -241,62 +258,45 @@ class ApkPatcher(private val context: Context) {
                 } else {
                     generated.copy(entries = generated.entries - Logical.HOOK_SO_X86_64)
                 }
-            }.onFailure { onLog("生成注入布局失败（${it.message}），本次按不混淆打包") }.getOrNull()
+            }.onFailure { log.step("生成注入布局失败（${it.message}），本次按不混淆打包") }.getOrNull()
         }
         if (options.obfuscate && layout == null) {
             stub = StubRewriter.skipped(stubAsset, "注入布局生成失败")
         }
         if (layout != null) {
-            onLog("注入路径混淆：开（目录 ${layout.dir}，类名 ${layout.factoryDashed}）")
+            log.milestone("混淆布局 ${layout.dir} · 类名 ${layout.factoryDashed}")
             if (!stub.renamed) {
-                onLog("类名混淆已降级，清单仍指向 ${stub.factoryDashed}（${stub.reason}）")
+                log.step("类名混淆降级，清单仍指向 ${stub.factoryDashed}（${stub.reason}）")
             } else if (outerLayout != null) {
-                onLog("复用上一版产物的类名：${layout.factoryDashed}")
+                log.debug("复用上一版类名：${layout.factoryDashed}")
             }
-        } else if (!options.obfuscate) {
-            onLog("注入路径混淆：关（沿用 xp/ 前缀与 io.xpatch.stub 类名）")
-        } else {
-            onLog("注入路径混淆：关（布局生成失败，本次按旧名字打包）")
-        }
-        val staleProvider = outerLayout?.providerDashed
-        if (options.obfuscate && options.entryHook && !options.dynamicMode &&
-            staleProvider != null && staleProvider != layout?.providerDashed
-        ) {
-            onLog("提示：输入清单里的旧 provider（$staleProvider）无法复用，可能残留指向旧类名的入口")
+        } else if (options.obfuscate) {
+            log.step("布局生成失败，本次按旧名字打包")
         }
 
         val manifestBase = if (rebuilt) originalManifest else inputManifest
         val editor = AxmlEditor(manifestBase)
         val manifestPackage = editor.readAttribute("manifest", "package").orEmpty()
-        originalFactory = inputFactory ?: recoverFactory(originalManifest, onLog, ourStubFactories)
+        originalFactory = inputFactory ?: recoverFactory(originalManifest, log, ourStubFactories)
 
         val factoryName = layout?.factoryDashed ?: STUB_CLASS
-        val providerName = layout?.providerDashed ?: XP_PROVIDER_CLASS
-        var patched = editor.setApplicationAttribute(ATTR_FACTORY_NAME, factoryName)
-        if (options.entryHook && !options.dynamicMode) {
-            if (manifestPackage.isBlank()) {
-                onLog("清单缺少 package 属性，无法生成 provider authority，仅保留工厂注入")
-            } else {
-                val authority = if (layout != null) {
-                    "$manifestPackage.${layout.hex8}"
-                } else {
-                    "$manifestPackage.xpatch"
-                }
-                if (editor.hasProvider(providerName, authority)) {
-                    onLog("清单已含 $providerName，复用既有 provider，不重复插入")
-                }
-                patched = AxmlEditor(patched).addProvider(providerName, authority)
-                providerReady = true
-            }
-        }
+        var patched = stripStaleManifestComponents(
+            manifest = manifestBase,
+            manifestPackage = manifestPackage,
+            outerProvider = outerLayout?.providerDashed,
+            keepFactory = factoryName,
+            log = log,
+        )
+        patched = AxmlEditor(patched).setApplicationAttribute(ATTR_FACTORY_NAME, factoryName)
         if (options.fileProvider) {
             if (manifestPackage.isBlank()) {
-                onLog("清单缺少 package 属性，无法生成文件提供器 authority，跳过文件提供器注入")
+                log.step("清单缺少 package 属性，跳过文件提供器注入")
             } else {
+                log.step("正在注入文件提供器")
                 val authority = "$manifestPackage.MTDataFilesProvider"
                 val editorNow = AxmlEditor(patched)
                 if (editorNow.hasProvider(MT_PROVIDER_CLASS, authority)) {
-                    onLog("清单已含 $MT_PROVIDER_CLASS，复用既有文件提供器")
+                    log.debug("文件提供器已存在，复用 authority=$authority")
                 } else {
                     patched = editorNow.addDocumentsProvider(
                         MT_PROVIDER_CLASS,
@@ -304,7 +304,7 @@ class ApkPatcher(private val context: Context) {
                         MT_WAKEUP_CLASS,
                         "$manifestPackage.MTDataFilesWakeUp",
                     )
-                    onLog("已注入 MT 文件提供器：authority=$authority")
+                    log.debug("已注入 MT 文件提供器 authority=$authority")
                 }
             }
         }
@@ -315,15 +315,16 @@ class ApkPatcher(private val context: Context) {
             patched = AxmlEditor(patched).setIntAttribute("manifest", "versionCode", code)
         }
         manifest = patched
-        onLog(if (providerReady) "已写入工厂注入（+ provider 备用入口）" else "已写入工厂注入")
+        assertManifestClean(manifest, factoryName, options, log)
+        log.debug("工厂注入写入完成")
         manifest = if (options.obfuscate && !options.obfuscateKeepCrashPermission) {
-            onLog("注入路径混淆已开启：跳过 $MODULE_CRASH_PERMISSION，模块崩溃时管理器收不到熔断广播")
+            log.debug("跳过 $MODULE_CRASH_PERMISSION（混淆：模块崩溃时管理器收不到广播）")
             manifest
         } else {
-            injectModuleCrashPermission(manifest, onLog)
+            injectModuleCrashPermission(manifest, log)
         }
         if (options.versionName?.isNotBlank() == true || options.versionCode != null) {
-            onLog("自定义版本：" + listOfNotNull(
+            log.debug("自定义版本：" + listOfNotNull(
                 options.versionName?.takeIf { it.isNotBlank() }?.let { "versionName=$it" },
                 options.versionCode?.let { "versionCode=$it" },
             ).joinToString("，"))
@@ -331,7 +332,21 @@ class ApkPatcher(private val context: Context) {
         onProgress(25)
 
         val packageInfo = packageInfoOf(signedSource)
-        val config = buildConfig(packageInfo, originalFactory, options, signedSource, layout)
+        val recorded = if (hadInjected || sourceApk != effectiveSource) {
+            readRecordedSigning(sourceApk, log)
+        } else {
+            null
+        }
+        assertSigningOrigin(signedSource, recorded, hadInjected, options.embedSource, options, log)
+        val config = buildConfig(
+            packageInfo,
+            originalFactory,
+            options,
+            signedSource,
+            layout,
+            recordedSign = recorded?.first,
+            recordedSigningDetails = recorded?.second,
+        )
 
         val embeddedCrc = AtomicLong()
         val embeddedFailure = AtomicReference<Throwable?>()
@@ -365,7 +380,7 @@ class ApkPatcher(private val context: Context) {
                 embeddedFailure = embeddedFailure,
                 embeddedReady = embeddedReady,
                 onProgress = onProgress,
-                onLog = onLog,
+                log = log,
                 embedSource = options.embedSource,
                 layout = layout,
             )
@@ -387,7 +402,7 @@ class ApkPatcher(private val context: Context) {
     private fun discoverLayout(
         sourceApk: File,
         entries: List<Entry>,
-        onLog: (String) -> Unit,
+        log: PatchLog,
     ): InjectedEntrySet {
         val found = runCatching {
             RandomAccessFile(sourceApk, "r").use { source ->
@@ -406,12 +421,12 @@ class ApkPatcher(private val context: Context) {
             if (bytes != null) {
                 layout = InjectLayout.fromConfig(String(bytes, Charsets.UTF_8))
                 if (layout == null && found != InjectLayout.LEGACY_CONFIG_ENTRY) {
-                    onLog("config $found 没有 res_cfg，按旧产物处理")
+                    log.debug("config $found 无 res_cfg，按旧产物处理")
                 }
             }
         }
         if (layout != null) {
-            onLog("发现本框架混淆布局：目录 ${layout.dir}（config $found）")
+            log.debug("发现上一版混淆布局：目录 ${layout.dir}（config $found）")
         }
         return InjectedEntrySet(
             layout = layout,
@@ -422,12 +437,12 @@ class ApkPatcher(private val context: Context) {
 
     private fun sanitizeFactory(
         factory: String?,
-        onLog: (String) -> Unit,
+        log: PatchLog,
         ourStubs: Set<String> = LEGACY_STUB_CLASSES,
     ): String? {
         if (factory.isNullOrBlank()) return null
         if (factory in ourStubs) {
-            onLog("源包工厂指向引导桩（$factory），已忽略以免自我委派")
+            log.debug("源包工厂指向引导桩（$factory），已忽略以免自我委派")
             return null
         }
         return factory
@@ -437,55 +452,170 @@ class ApkPatcher(private val context: Context) {
         recorded: ByteArray?,
         input: ByteArray,
         expectedPackage: String,
-        onLog: (String) -> Unit,
+        log: PatchLog,
         ourStubs: Set<String> = LEGACY_STUB_CLASSES,
     ): ByteArray {
         if (recorded == null) return input
         val parsed = runCatching { AxmlEditor(recorded) }.getOrNull()
         val packageName = parsed?.let { runCatching { it.readAttribute("manifest", "package") }.getOrNull() }
         if (parsed == null || packageName == null) {
-            onLog("xp/source.manifest 解析失败，退回输入清单作为原始清单")
+            log.debug("xp/source.manifest 解析失败，退回输入清单")
             return input
         }
         if (expectedPackage.isNotBlank() && packageName != expectedPackage) {
-            onLog("xp/source.manifest 的包名 $packageName 与输入清单不一致，退回输入清单")
+            log.debug("xp/source.manifest 包名 $packageName 不一致，退回输入清单")
             return input
         }
         val factory = runCatching { parsed.readApplicationAttribute(ATTR_FACTORY_NAME) }.getOrNull()
         if (factory != null && factory in ourStubs) {
-            onLog("xp/source.manifest 已含引导桩工厂，更早的原始清单已不可恢复")
+            log.debug("xp/source.manifest 已含引导桩工厂，原始清单不可恢复")
         } else {
-            onLog("复用上一版记录的原始清单 xp/source.manifest")
+            log.debug("复用上一版原始清单 xp/source.manifest")
         }
         return recorded
     }
 
+    private fun assertManifestClean(
+        manifest: ByteArray,
+        factoryName: String,
+        options: Options,
+        log: PatchLog,
+    ) {
+        val editor = runCatching { AxmlEditor(manifest) }.getOrElse { error ->
+            log.debug("清单断言跳过（无法解析注入后的清单）：${error.message}")
+            return
+        }
+        val factory = runCatching { editor.readApplicationAttribute(ATTR_FACTORY_NAME) }.getOrNull()
+        check(factory == factoryName) {
+            "注入后的清单 appComponentFactory=$factory，与期望的 $factoryName 不一致"
+        }
+        check(runCatching { editor.hasResolvedAttribute("application", ATTR_FACTORY_NAME) }.getOrDefault(false)) {
+            "注入后的清单 appComponentFactory 没有资源 ID（resource map 缺项），平台会忽略该属性，" +
+                "工厂注入等于没写。宿主原本没有该属性时必须补 resource map。"
+        }
+        val staleProviderClasses = LEGACY_PROVIDER_CLASSES
+        val providerClasses = runCatching {
+            editor.childAttributeValues("application", "provider", ATTR_NAME)
+        }.getOrDefault(emptyList())
+        val leaked = providerClasses.filter { it in staleProviderClasses }
+        check(leaked.isEmpty()) {
+            "注入后的清单仍含指向已剥离类的 provider：$leaked（会导致启动 ClassNotFoundException）"
+        }
+        val activities = runCatching {
+            editor.childAttributeValues("application", "activity", ATTR_NAME)
+        }.getOrDefault(emptyList())
+        if (options.fileProvider && activities.none { it == MT_WAKEUP_CLASS }) {
+            log.debug("清单断言：未找到文件提供器 activity $MT_WAKEUP_CLASS")
+        }
+    }
+
+    private fun stripStaleManifestComponents(
+        manifest: ByteArray,
+        manifestPackage: String,
+        outerProvider: String?,
+        keepFactory: String,
+        log: PatchLog,
+    ): ByteArray {
+        var result = manifest
+        val authorities = buildList {
+            if (manifestPackage.isNotBlank()) {
+                add("$manifestPackage.xpatch")
+                add("$manifestPackage.MTDataFilesProvider")
+            }
+        }
+        val providerCandidates = buildList {
+            addAll(LEGACY_PROVIDER_CLASSES)
+            outerProvider?.takeIf { it.isNotBlank() }?.let { add(it) }
+        }
+        for (authorityPrefix in authorities) {
+            for (candidate in blankClassPatterns(providerCandidates)) {
+                val tried = runCatching {
+                    AxmlEditor(result).removeChildElement(
+                        "application",
+                        "provider",
+                        ATTR_NAME,
+                        candidate,
+                    )
+                }.getOrElse { error ->
+                    log.step("清理旧 provider 失败（$authorityPrefix / $candidate）：${error.message}")
+                    result
+                }
+                if (!tried.contentEquals(result)) {
+                    log.step("已从清单移除残留 provider：$candidate（authority 前缀 $authorityPrefix）")
+                    result = tried
+                }
+            }
+        }
+        val activityCandidates = buildList {
+            add(MT_WAKEUP_CLASS)
+            add(LEGACY_WAKEUP_CLASS)
+        }
+        for (candidate in activityCandidates) {
+            val tried = runCatching {
+                AxmlEditor(result).removeChildElement(
+                    "application",
+                    "activity",
+                    ATTR_NAME,
+                    candidate,
+                )
+            }.getOrElse { error ->
+                log.step("清理旧 activity 失败（$candidate）：${error.message}")
+                result
+            }
+            if (!tried.contentEquals(result)) {
+                log.step("已从清单移除残留 activity：$candidate")
+                result = tried
+            }
+        }
+        val currentFactory = runCatching {
+            AxmlEditor(result).readApplicationAttribute(ATTR_FACTORY_NAME)
+        }.getOrNull()
+        if (currentFactory != null && currentFactory != keepFactory &&
+            currentFactory in LEGACY_STUB_CLASSES
+        ) {
+            val cleared = runCatching {
+                AxmlEditor(result).removeAttribute("application", ATTR_FACTORY_NAME)
+            }.getOrElse { error ->
+                log.step("清理旧 appComponentFactory 失败：${error.message}")
+                result
+            }
+            if (!cleared.contentEquals(result)) {
+                log.step("已从清单移除旧工厂声明：$currentFactory")
+                result = cleared
+            }
+        }
+        return result
+    }
+
+    private fun blankClassPatterns(candidates: Iterable<String>): List<String> =
+        candidates.map { it.trim() }.filter { it.isNotEmpty() }.distinct()
+
     private fun recoverFactory(
         originalManifest: ByteArray,
-        onLog: (String) -> Unit,
+        log: PatchLog,
         ourStubs: Set<String> = LEGACY_STUB_CLASSES,
     ): String? {
         val factory = runCatching {
             AxmlEditor(originalManifest).readApplicationAttribute(ATTR_FACTORY_NAME)
         }.getOrNull()
         if (factory.isNullOrBlank() || factory in ourStubs) return null
-        onLog("从原始清单恢复 appComponentFactory=$factory")
+        log.debug("从原始清单恢复 appComponentFactory=$factory")
         return factory
     }
 
-    private fun injectModuleCrashPermission(manifest: ByteArray, onLog: (String) -> Unit): ByteArray {
+    private fun injectModuleCrashPermission(manifest: ByteArray, log: PatchLog): ByteArray {
         val editor = AxmlEditor(manifest)
         return try {
             if (editor.hasUsesPermission(MODULE_CRASH_PERMISSION)) {
-                onLog("清单已含 $MODULE_CRASH_PERMISSION，跳过权限注入")
+                log.debug("清单已含 $MODULE_CRASH_PERMISSION，跳过权限注入")
                 manifest
             } else {
                 val patched = editor.addUsesPermission(MODULE_CRASH_PERMISSION)
-                onLog("已写入权限声明 $MODULE_CRASH_PERMISSION")
+                log.debug("已写入权限声明 $MODULE_CRASH_PERMISSION")
                 patched
             }
         } catch (error: Exception) {
-            onLog("清单注入权限失败，模块保护广播可能不可达（${error.javaClass.simpleName}: ${error.message}）")
+            log.step("权限注入失败，模块保护广播可能不可达（${error.javaClass.simpleName}: ${error.message}）")
             manifest
         }
     }
@@ -521,50 +651,169 @@ class ApkPatcher(private val context: Context) {
     private fun dropStaleBootDex(
         source: RandomAccessFile,
         entries: List<Entry>,
-        onLog: (String) -> Unit,
+        log: PatchLog,
+        removed: MutableSet<String>?,
     ): List<Entry> {
         val stale = entries.filter { entry ->
             if (!isBootDexName(entry.name)) return@filter false
             if (entry.compressedSize !in 1..MAX_BOOTDEX) return@filter false
             val body = runCatching { readRawEntry(source, entry) }.getOrNull() ?: return@filter false
-            val text = String(body, Charsets.ISO_8859_1)
-            text.contains("Lio/xpatch/stub/AppEntry;") ||
-                text.contains("Lfpa/AppEntry;") ||
-                text.contains("xp/core.dex")
+            val verdict = classifyBootDex(body)
+            if (verdict == BootDexVerdict.NOT_STALE) return@filter false
+            val reason = bootDexReason(body)
+            if (reason != null) log.debug("${entry.name} 判定为旧引导桩：$reason")
+            verdict == BootDexVerdict.STALE
         }
         if (stale.isEmpty()) return entries
-        stale.forEach { onLog("移除旧引导桩 ${it.name}") }
+        stale.forEach { log.step("移除旧引导桩 ${it.name}") }
         val names = stale.mapTo(HashSet()) { it.name }
+        removed?.addAll(names)
         return entries.filter { it.name !in names }
+    }
+
+    private fun bootDexReason(body: ByteArray): String? {
+        val defined = runCatching { dexDefinedClassDescriptors(body) }.getOrNull()
+        if (defined.isNullOrEmpty()) return null
+        val ourStubs = defined.filter { it in STUB_CLASS_DESCRIPTORS }
+        if (ourStubs.isNotEmpty()) return "class_defs 含引导桩 ${ourStubs.take(2)}"
+        if (defined.size == 1 && isFactorySubclass(body, defined[0])) {
+            return "class_defs 只有 1 个类，且继承 AppComponentFactory（混淆桩）：${defined[0]}"
+        }
+        val markers = listOf("xp/core.dex", "xp/source.manifest", "xp/config.json", "res_boot_dex")
+        val text = String(body, Charsets.ISO_8859_1)
+        if (defined.size == 1 && markers.any { text.contains(it) }) {
+            return "class_defs 只有 1 个类，且引用框架注入条目（混淆桩）：${defined[0]}"
+        }
+        return null
+    }
+
+    private fun classifyBootDex(body: ByteArray): BootDexVerdict {
+        val defined = runCatching { dexDefinedClassDescriptors(body) }.getOrNull() ?: return BootDexVerdict.NOT_STALE
+        if (defined.isEmpty()) return BootDexVerdict.NOT_STALE
+        if (defined.any { it in STUB_CLASS_DESCRIPTORS }) return BootDexVerdict.STALE
+        if (defined.size != 1) return BootDexVerdict.NOT_STALE
+        if (isFactorySubclass(body, defined[0])) return BootDexVerdict.STALE
+        val text = String(body, Charsets.ISO_8859_1)
+        val markers = listOf("xp/core.dex", "xp/source.manifest", "xp/config.json", "res_boot_dex")
+        return if (markers.any { text.contains(it) }) BootDexVerdict.STALE else BootDexVerdict.NOT_STALE
+    }
+
+    private fun isFactorySubclass(body: ByteArray, descriptor: String): Boolean {
+        val text = String(body, Charsets.ISO_8859_1)
+        if (!text.contains("Landroid/app/AppComponentFactory;")) return false
+        return text.contains(descriptor)
+    }
+
+    private fun dexDefinedClassDescriptors(dex: ByteArray): List<String> {
+        if (dex.size < 0x70) return emptyList()
+        if (dex[0] != 0x64.toByte() || dex[1] != 0x65.toByte() ||
+            dex[2] != 0x78.toByte() || dex[3] != 0x0A.toByte()
+        ) {
+            return emptyList()
+        }
+        val stringIdsSize = readLe32(dex, 0x38)
+        val stringIdsOff = readLe32(dex, 0x3C)
+        val typeIdsSize = readLe32(dex, 0x40)
+        val typeIdsOff = readLe32(dex, 0x44)
+        val classDefsSize = readLe32(dex, 0x60)
+        val classDefsOff = readLe32(dex, 0x64)
+        if (classDefsSize <= 0 || classDefsOff <= 0) return emptyList()
+        if (classDefsOff.toLong() + classDefsSize.toLong() * 32L > dex.size) return emptyList()
+        val result = ArrayList<String>(classDefsSize)
+        for (index in 0 until classDefsSize) {
+            val defOff = classDefsOff + index * 32
+            if (defOff + 32 > dex.size) break
+            val classIdx = readLe32(dex, defOff)
+            if (classIdx < 0 || classIdx >= typeIdsSize) continue
+            val typeOff = typeIdsOff + classIdx * 4
+            if (typeOff + 4 > dex.size) continue
+            val descriptorIdx = readLe32(dex, typeOff)
+            if (descriptorIdx < 0 || descriptorIdx >= stringIdsSize) continue
+            val stringOff = stringIdsOff + descriptorIdx * 4
+            if (stringOff + 4 > dex.size) continue
+            val offset = readLe32(dex, stringOff)
+            if (offset <= 0 || offset >= dex.size) continue
+            val descriptor = readMutf8String(dex, offset)
+            if (descriptor != null) result.add(descriptor)
+        }
+        return result
+    }
+
+    private fun readLe32(data: ByteArray, offset: Int): Int =
+        (data[offset].toInt() and 0xFF) or
+            ((data[offset + 1].toInt() and 0xFF) shl 8) or
+            ((data[offset + 2].toInt() and 0xFF) shl 16) or
+            ((data[offset + 3].toInt() and 0xFF) shl 24)
+
+    private fun readMutf8String(data: ByteArray, offset: Int): String? {
+        var pos = offset
+        var utf16Size = 0L
+        var shift = 0
+        while (pos < data.size && shift <= 28) {
+            val byte = data[pos].toInt() and 0xFF
+            pos++
+            utf16Size = utf16Size or ((byte and 0x7F).toLong() shl shift)
+            if (byte and 0x80 == 0) break
+            shift += 7
+        }
+        if (utf16Size <= 0L || utf16Size > 65535L) return null
+        val builder = StringBuilder()
+        var guard = 0
+        while (pos < data.size && guard < 4096) {
+            val byte = data[pos].toInt() and 0xFF
+            pos++
+            if (byte == 0) break
+            when {
+                byte < 0x80 -> builder.append(byte.toChar())
+                byte and 0xE0 == 0xC0 -> {
+                    if (pos >= data.size) return null
+                    val next = data[pos].toInt() and 0xFF
+                    pos++
+                    builder.append((((byte and 0x1F) shl 6) or (next and 0x3F)).toChar())
+                }
+
+                byte and 0xF0 == 0xE0 -> {
+                    if (pos + 1 >= data.size) return null
+                    val b2 = data[pos].toInt() and 0xFF
+                    val b3 = data[pos + 1].toInt() and 0xFF
+                    pos += 2
+                    builder.append((((byte and 0x0F) shl 12) or ((b2 and 0x3F) shl 6) or (b3 and 0x3F)).toChar())
+                }
+
+                else -> return null
+            }
+            guard++
+        }
+        return builder.toString()
+    }
+
+    private enum class BootDexVerdict { STALE, NOT_STALE }
+
+    private fun oversizedNested(entries: List<Entry>, outerSize: Long): List<Entry> {
+        if (outerSize <= 0) return emptyList()
+        return entries.filter {
+            it.name.endsWith(APK_SUFFIX, ignoreCase = true) &&
+                it.uncompressedSize >= MIN_EMBEDDED &&
+                it.compressedSize.toDouble() / outerSize >= NESTED_APK_COST_LIMIT
+        }
     }
 
     private fun dropOverlappingNested(
         sourceApk: File,
         entries: List<Entry>,
-        onLog: (String) -> Unit,
     ): List<Entry> {
-        val outerSize = sourceApk.length()
-        if (outerSize <= 0) return entries
-        val oversized = entries.filter {
-            it.name.endsWith(APK_SUFFIX, ignoreCase = true) &&
-                it.uncompressedSize >= MIN_EMBEDDED &&
-                it.compressedSize.toDouble() / outerSize >= NESTED_APK_COST_LIMIT
-        }
+        val oversized = oversizedNested(entries, sourceApk.length())
         if (oversized.isEmpty()) return entries
-        oversized.forEach {
-            onLog(
-                "移除未还原的内嵌包 ${it.name}，写入代价占外层 " +
-                    "${"%.0f".format(it.compressedSize * 100.0 / outerSize)}%，避免产物翻倍",
-            )
-        }
-        val names = oversized.mapTo(HashSet()) { it.name }
-        return entries.filter { it.name !in names }
+        error(
+            "源包自带大体积 .apk 资产（" + oversized.take(3).map { it.name } +
+                "），尝试剥离后仍无法还原原始包，内嵌会让产物接近翻倍。请改用不含大体积内嵌 APK 的原始安装包。",
+        )
     }
 
     private fun assertClean(
         entries: List<Entry>,
         sourceApk: File,
-        onLog: (String) -> Unit,
+        log: PatchLog,
         strip: InjectedEntrySet,
         embed: Boolean,
     ) {
@@ -594,7 +843,7 @@ class ApkPatcher(private val context: Context) {
                 "源包内已有内嵌来源条目，重复内嵌会让体积翻倍：${stale.take(3).map { it.name }}"
             }
         }
-        val leftover = stripInjected(sourceApk, scope, strip, onLog, null)
+        val leftover = stripInjected(sourceApk, scope, strip, log, null)
         val found = leftover.file
         if (found != null) {
             val name = leftover.entry
@@ -603,14 +852,13 @@ class ApkPatcher(private val context: Context) {
         }
         val outerSize = sourceApk.length()
         if (outerSize <= 0) return
-        val heavy = entries.filter {
-            it.name.endsWith(APK_SUFFIX, ignoreCase = true) &&
-                it.uncompressedSize >= MIN_EMBEDDED &&
-                it.compressedSize.toDouble() / outerSize >= NESTED_APK_COST_LIMIT
-        }
-        require(heavy.isEmpty()) {
-            "源包内嵌大体积 APK，产物必然接近翻倍：" +
-                heavy.take(3).map { "${it.name} ${it.compressedSize / 1024 / 1024} MB" }
+        val heavy = oversizedNested(entries, outerSize)
+        if (heavy.isNotEmpty()) {
+            val detail = heavy.take(3).joinToString("，") {
+                "${it.name} ${it.compressedSize} B"
+            }
+            log.step("源包内嵌大体积 APK，尝试剥离后仍无法还原原始包：$detail")
+            error("源包内嵌大体积 APK，剥离失败且内嵌后产物必然接近翻倍：$detail。请改用不含大体积内嵌 APK 的原始安装包。")
         }
     }
 
@@ -618,7 +866,7 @@ class ApkPatcher(private val context: Context) {
         sourceApk: File,
         entries: List<Entry>,
         strip: InjectedEntrySet,
-        onLog: (String) -> Unit,
+        log: PatchLog,
         preferredName: String? = null,
     ): EmbeddedSource.Outcome {
         val outerPackage = packageInfoOf(sourceApk)?.packageName.orEmpty()
@@ -641,7 +889,8 @@ class ApkPatcher(private val context: Context) {
                 packageNameOf = { file -> packageInfoOf(file)?.packageName },
                 outDir = File(context.cacheDir, "patch"),
                 score = { entry -> scoreEmbedded(entry.name, entry.uncompressedSize, sourceApk.length()) },
-                onLog = onLog,
+                strippedBootDex = strippedBootDex.toSet(),
+                onLog = log.asStepSink(),
             ).locate()
         }
     }
@@ -686,12 +935,21 @@ class ApkPatcher(private val context: Context) {
         embeddedFailure: AtomicReference<Throwable?>,
         embeddedReady: CountDownLatch,
         onProgress: (Int) -> Unit,
-        onLog: (String) -> Unit,
+        log: PatchLog,
         embedSource: Boolean,
         layout: InjectLayout?,
     ) {
         fun nameOf(logical: Logical, legacy: String): String = layout?.entry(logical) ?: legacy
         val sourceEntryName = nameOf(Logical.SOURCE, SOURCE_ENTRY)
+        if (layout != null) {
+            val leaked = Logical.values()
+                .map { nameOf(it, it.key) }
+                .filter { it.startsWith(LEGACY_DIR) }
+            check(leaked.isEmpty()) {
+                "混淆档的注入条目仍使用 xp/ 原名：$leaked，" +
+                    "宿主静态检查能直接看到修补痕迹。请检查 InjectLayout 的条目命名回退路径。"
+            }
+        }
 
         val added = buildList {
             add(Added(nameOf(Logical.SOURCE_MANIFEST, ORIGINAL_MANIFEST_ENTRY), DEFLATED) { originalManifest })
@@ -712,7 +970,6 @@ class ApkPatcher(private val context: Context) {
             add(Added(nameOf(Logical.DEX100, "xp/xp100.dex"), DEFLATED) { asset("xp/xp100.dex") })
             add(Added(nameOf(Logical.DEX101, "xp/xp101.dex"), DEFLATED) { asset("xp/xp101.dex") })
             add(Added(nameOf(Logical.DEX102, "xp/xp102.dex"), DEFLATED) { asset("xp/xp102.dex") })
-            if (embedSource) add(Added(sourceEntryName, STORED, null))
             add(Added(nameOf(Logical.CFG, CONFIG_ENTRY), DEFLATED) { config.toByteArray() })
             add(Added(nameOf(Logical.PKG, "xp/pkg"), DEFLATED) { packageName.toByteArray() })
             add(Added(nameOf(Logical.FILE_PROVIDER, "xp/file_provider"), DEFLATED) { asset("xp/file_provider.dex") })
@@ -734,12 +991,14 @@ class ApkPatcher(private val context: Context) {
                 it.dosTime = stamp.first
                 it.dosDate = stamp.second
             }
-            onLog("注入条目时间戳跟随原包 ${timestampText(stamp)}")
+            log.step("注入条目时间戳跟随原包 ${timestampText(stamp)}")
         }
         val plan = carried.map { Plan.Carried(it) } + added.map { Plan.Injected(it) }
 
-        val total = plan.size
-        onLog("开始写入 $total 个条目（保留 ${carried.size}，注入 ${added.size}）")
+        val hostStamp = if (layout != null) modeTimestamp(carried) else 0 to DOS_DATE_EPOCH
+        val total = plan.size + if (embedSource) 1 else 0
+        log.milestone("写入 $total（复用 ${carried.size} + 注入 ${added.size}${if (embedSource) " + 内嵌原包" else ""}）")
+        val writeStart = System.currentTimeMillis()
         var done = 0
         var reported = 25
 
@@ -755,73 +1014,96 @@ class ApkPatcher(private val context: Context) {
         outputApk.delete()
         val records = ArrayList<Record>(total)
 
-        FileOutputStream(outputApk, false).buffered(BUFFER_SIZE).use { out ->
-            var position = 0L
+        try {
+            FileOutputStream(outputApk, false).buffered(BUFFER_SIZE).use { out ->
+                var position = 0L
 
-            RandomAccessFile(sourceApk, "r").use { source ->
-                onLog("注入内核与引导桩 $bootDexName")
+                RandomAccessFile(sourceApk, "r").use { source ->
+                    log.step("内核 + 引导桩 $bootDexName")
 
-                for (step in plan) {
-                    when (step) {
-                        is Plan.Carried -> {
-                            val written = writeCarried(source, step.entry, manifest, out, position)
-                            position += written.first
-                            records += written.second
-                            advance()
-                        }
+                    var hostDataOffset = -1L
+                    if (embedSource) {
+                        embeddedReady.await()
+                        embeddedFailure.get()?.let { throw it }
+                        val length = sourceApk.length()
+                        val crc = embeddedCrc.get()
+                        val hostEntry = addedEntry(sourceEntryName, STORED, hostStamp.first, hostStamp.second)
+                        val headerOffset = position
+                        val header = localHeader(hostEntry, headerOffset, crc, length, length, PAGE_ALIGNMENT)
+                        out.write(header)
+                        position += header.size
+                        hostDataOffset = position
+                        source.seek(0)
+                        position += copyRange(source, length, out)
+                        records += Record(hostEntry, headerOffset, crc, length, length)
+                        log.step("内嵌原包 · ${PatchLog.mb(length)}（嵌套链接，资源条目共享原包字节，不翻倍）")
+                        advance()
+                    }
 
-                        is Plan.Injected -> {
-                            val item = step.added
-                            if (item.name == sourceEntryName) {
-                                onLog("内嵌原始安装包 ${item.name}")
-                                embeddedReady.await()
-                                embeddedFailure.get()?.let { throw it }
-                                val length = sourceApk.length()
-                                val crc = embeddedCrc.get()
-                                val entry = addedEntry(item.name, STORED, item.dosTime, item.dosDate)
+                    for (step in plan) {
+                        when (step) {
+                            is Plan.Carried -> {
+                                val entry = step.entry
+                                if (embedSource && entry.name != MANIFEST && !isBootDexName(entry.name)) {
+                                    records += Record(
+                                        entry,
+                                        hostDataOffset + entry.headerOffset,
+                                        entry.crc,
+                                        entry.compressedSize,
+                                        entry.uncompressedSize,
+                                        virtual = true,
+                                    )
+                                    advance()
+                                    continue
+                                }
+                                val written = writeCarried(source, entry, manifest, out, position)
+                                position += written.first
+                                records += written.second
+                                advance()
+                            }
+
+                            is Plan.Injected -> {
+                                val item = step.added
+                                val entry = addedEntry(item.name, item.method, item.dosTime, item.dosDate)
+                                val data = requireNotNull(item.data).invoke()
+                                val payload = compress(data, item.method)
+                                val crc = crc32(data)
                                 val headerOffset = position
-                                val header = localHeader(entry, headerOffset, crc, length, length)
+                                val header = localHeader(
+                                    entry = entry,
+                                    headerOffset = headerOffset,
+                                    crc = crc,
+                                    compressed = payload.size.toLong(),
+                                    uncompressed = data.size.toLong(),
+                                )
                                 out.write(header)
                                 position += header.size
-                                source.seek(0)
-                                position += copyRange(source, length, out)
-                                records += Record(entry, headerOffset, crc, length, length)
+                                out.write(payload)
+                                position += payload.size
+                                records += Record(entry, headerOffset, crc, payload.size.toLong(), data.size.toLong())
                                 advance()
-                                continue
                             }
-                            val entry = addedEntry(item.name, item.method, item.dosTime, item.dosDate)
-                            val data = requireNotNull(item.data).invoke()
-                            val payload = compress(data, item.method)
-                            val crc = crc32(data)
-                            val headerOffset = position
-                            val header = localHeader(
-                                entry = entry,
-                                headerOffset = headerOffset,
-                                crc = crc,
-                                compressed = payload.size.toLong(),
-                                uncompressed = data.size.toLong(),
-                            )
-                            out.write(header)
-                            position += header.size
-                            out.write(payload)
-                            position += payload.size
-                            records += Record(entry, headerOffset, crc, payload.size.toLong(), data.size.toLong())
-                            advance()
                         }
                     }
                 }
-            }
 
-            val centralOffset = position
-            var centralSize = 0L
-            for (record in records) {
-                val bytes = centralRecord(record)
-                out.write(bytes)
-                centralSize += bytes.size
+                val centralOffset = position
+                var centralSize = 0L
+                for (record in records) {
+                    val bytes = centralRecord(record)
+                    out.write(bytes)
+                    centralSize += bytes.size
+                }
+                endOfCentralDirectory(out, records.size, centralOffset, centralSize)
             }
-            endOfCentralDirectory(out, records.size, centralOffset, centralSize)
+        } catch (error: Throwable) {
+            outputApk.delete()
+            log.step("写包失败，已删除不完整产物：${outputApk.name}（${error.message}）")
+            throw error
         }
-        onLog("写入完成，产物 ${outputApk.length() / 1024 / 1024} MB")
+        log.milestone(
+            "写包 ${PatchLog.mb(outputApk.length())} · ${PatchLog.secs(System.currentTimeMillis() - writeStart)}",
+        )
     }
 
     private fun writeCarried(
@@ -884,7 +1166,8 @@ class ApkPatcher(private val context: Context) {
         if (!name.startsWith("META-INF/")) return false
         val leaf = name.substringAfterLast('/').uppercase()
         return leaf == "MANIFEST.MF" || leaf.startsWith("SIG-") ||
-            leaf.endsWith(".SF") || leaf.endsWith(".RSA") || leaf.endsWith(".DSA")
+            leaf.endsWith(".SF") || leaf.endsWith(".RSA") || leaf.endsWith(".DSA") ||
+            leaf.endsWith(".EC")
     }
 
     private fun modeTimestamp(carried: List<Entry>): Pair<Int, Int> {
@@ -944,9 +1227,10 @@ class ApkPatcher(private val context: Context) {
         crc: Long,
         compressed: Long,
         uncompressed: Long,
+        alignmentOverride: Int = 0,
     ): ByteArray {
         require(compressed in 0..UINT32_MAX && uncompressed in 0..UINT32_MAX) { "条目超出 ZIP 格式上限" }
-        val extra = alignedExtra(entry, headerOffset)
+        val extra = alignedExtra(entry, headerOffset, alignmentOverride)
         val buffer = ByteBuffer.allocate(LOCAL_HEADER_SIZE + entry.nameBytes.size + extra.size)
             .order(ByteOrder.LITTLE_ENDIAN)
         buffer.putInt(LOCAL_HEADER_SIG)
@@ -965,8 +1249,8 @@ class ApkPatcher(private val context: Context) {
         return buffer.array()
     }
 
-    private fun alignedExtra(entry: Entry, headerOffset: Long): ByteArray {
-        val multiple = alignmentOf(entry).toLong()
+    private fun alignedExtra(entry: Entry, headerOffset: Long, alignmentOverride: Int = 0): ByteArray {
+        val multiple = (if (alignmentOverride > 0) alignmentOverride else alignmentOf(entry)).toLong()
         if (multiple <= 1L) return entry.extra
         val prefix = headerOffset + LOCAL_HEADER_SIZE + entry.nameBytes.size
         if ((prefix + entry.extra.size) % multiple == 0L) return entry.extra
@@ -1000,7 +1284,8 @@ class ApkPatcher(private val context: Context) {
         buffer.putInt(CENTRAL_HEADER_SIG)
         buffer.putShort(entry.versionMadeBy.toShort())
         buffer.putShort(entry.versionNeeded.toShort())
-        buffer.putShort((entry.flags and FLAG_DATA_DESCRIPTOR.inv()).toShort())
+        val flags = if (record.virtual) entry.flags else entry.flags and FLAG_DATA_DESCRIPTOR.inv()
+        buffer.putShort(flags.toShort())
         buffer.putShort(entry.method.toShort())
         buffer.putShort(entry.dosTime.toShort())
         buffer.putShort(entry.dosDate.toShort())
@@ -1100,6 +1385,7 @@ class ApkPatcher(private val context: Context) {
                 internalAttrs = internalAttrs,
                 externalAttrs = externalAttrs,
                 dataStart = dataStart,
+                headerOffset = localOffset,
             )
         }
         require(entries.isNotEmpty()) { "APK 内没有任何条目" }
@@ -1227,20 +1513,71 @@ class ApkPatcher(private val context: Context) {
         return if (!found) 1 else max + 1
     }
 
+    private fun readRecordedSigning(apk: File, log: PatchLog): Pair<String, String>? {
+        val names = listOf(
+            CONFIG_ENTRY,
+            LEGACY_DIR + "config.json",
+            "fpa/config.json",
+            "npatch/config.json",
+            "assets/npatch/config.json",
+            "lspatch/config.json",
+            "assets/lspatch/config.json",
+        )
+        return runCatching {
+            ZipFile(apk).use { zip ->
+                for (name in names) {
+                    val entry = zip.getEntry(name) ?: continue
+                    if (entry.size <= 0 || entry.size > MAX_RECORDED_CONFIG) continue
+                    val text = zip.getInputStream(entry).use { String(it.readBytes(), Charsets.UTF_8) }
+                    val json = JSONObject(text)
+                    val sign = json.optString("sign", "")
+                    val details = json.optString("signing_details", "")
+                    if (sign.isBlank() && details.isBlank()) continue
+                    log.debug("从旧产物 $name 读取原签名作为回退（sign=${sign.length}B，details=${details.length}B）")
+                    return@use sign to details
+                }
+                null
+            }
+        }.onFailure { log.debug("读取旧产物签名失败：${it.message}") }.getOrNull()
+    }
+
+    private fun assertSigningOrigin(
+        source: File,
+        recorded: Pair<String, String>?,
+        hadInjected: Boolean,
+        embedSource: Boolean,
+        options: Options,
+        log: PatchLog,
+    ) {
+        if (!hadInjected || embedSource) return
+        if (recorded != null) return
+        val own = runCatching { signaturesJson(packageInfoOf(source)) }.getOrNull()
+        if (own.isNullOrBlank() || own == "[]") return
+        log.step(
+            "输入是上一代补丁产物、没有内嵌原包、也读不到旧 config 里的原签名。" +
+                "新产物的过签会拿 XPatch 证书当原证书，等于关掉签名伪装。",
+        )
+        error(
+            "无法确认原始签名：输入是旧补丁产物（无内嵌原包），且旧产物里没有可用的 sign/signing_details。" +
+                "请改用原始 APK 重新打包；否则产物里的签名伪装会指向 XPatch 自己的证书而失效。",
+        )
+    }
+
     private fun buildConfig(
         info: PackageInfo?,
         originalFactory: String?,
         options: Options,
         apk: File,
         layout: InjectLayout?,
+        recordedSign: String? = null,
+        recordedSigningDetails: String? = null,
     ): String {
         val json = JSONObject()
         json.put("hook_core", options.hookCore)
         json.put("app_component_name", originalFactory.orEmpty())
-        json.put("sign", signaturesJson(info))
+        json.put("sign", recordedSign ?: signaturesJson(info))
         json.put("sig_mode", normalizeSigMode(options.sigMode))
-        json.put("entry_hook", options.entryHook && !options.dynamicMode)
-        json.put("signing_details", signingDetailsJson(apk))
+        json.put("signing_details", recordedSigningDetails ?: signingDetailsJson(apk))
         json.put("ver", RUNTIME_VERSION)
         json.put("build_nonce", nonce())
         json.put("bypass_sign_type", options.bypassLevel)
@@ -1278,16 +1615,36 @@ class ApkPatcher(private val context: Context) {
             @Suppress("NewApi")
             val history = runCatching { signing.signingCertificateHistory }.getOrNull()
             val current = if (apkCerts.isNullOrEmpty()) legacySignatures(apk) else apkCerts
+            val chain = if (history.isNullOrEmpty()) current else history
+            val rotating = current != null && chain != null &&
+                current.size == 1 && chain.isNotEmpty() &&
+                chain[0].toByteArray().contentEquals(current[0].toByteArray()) &&
+                chain.size == 1
+            val stale = if (rotating) current else chain
             json.put("scheme", signingSchemeVersion(signing))
             json.put("apk", certificatesJson(current))
-            json.put("history", certificatesJson(if (history.isNullOrEmpty()) current else history))
+            json.put("history", certificatesJson(stale))
+            json.put("oldest", certificatesJson(oldestCertificate(current, chain)))
             return json.toString()
         }
         val legacy = legacySignatures(apk)
         json.put("scheme", 1)
         json.put("apk", certificatesJson(legacy))
         json.put("history", certificatesJson(legacy))
+        json.put("oldest", certificatesJson(legacy))
         return json.toString()
+    }
+
+    @Suppress("NewApi")
+    private fun oldestCertificate(
+        current: Array<Signature>?,
+        chain: Array<Signature>?,
+    ): Array<Signature>? {
+        if (chain.isNullOrEmpty()) return current
+        if (current == null || current.isEmpty()) return chain
+        if (chain.size < 2) return current
+        val sameAsCurrent = chain[0].toByteArray().contentEquals(current[0].toByteArray())
+        return if (sameAsCurrent) arrayOf(chain[chain.size - 1]) else arrayOf(chain[0])
     }
 
     @Suppress("NewApi")
@@ -1370,6 +1727,7 @@ class ApkPatcher(private val context: Context) {
         val internalAttrs: Int,
         val externalAttrs: Long,
         val dataStart: Long,
+        val headerOffset: Long = 0L,
     )
 
     private class Record(
@@ -1378,6 +1736,7 @@ class ApkPatcher(private val context: Context) {
         val crc: Long,
         val compressed: Long,
         val uncompressed: Long,
+        val virtual: Boolean = false,
     )
 
     private sealed class Plan {
@@ -1403,12 +1762,12 @@ class ApkPatcher(private val context: Context) {
         const val HOOK_DEX_ENTRY = "xp/hook_core.dex"
         const val HOOK_SO_ENTRY = "xp/hook_core.so"
         const val STUB_CLASS = "io.xpatch.stub.AppEntry"
-        const val XP_PROVIDER_CLASS = "io.xpatch.stub.XpProvider"
         const val MT_PROVIDER_CLASS = "bin.mt.file.content.MTDataFilesProvider"
         const val MT_WAKEUP_CLASS = "bin.mt.file.content.MTDataFilesWakeUpActivity"
 
         const val MODULE_CRASH_PERMISSION = "io.xpatch.permission.MODULE_CRASH"
         const val ATTR_FACTORY_NAME = "appComponentFactory"
+        const val ATTR_NAME = "name"
         const val RUNTIME_VERSION = 42
 
         val SIG_MODES = setOf("off", "java", "java_file", "deep")
@@ -1420,6 +1779,20 @@ class ApkPatcher(private val context: Context) {
             "xpt.stub.AppEntry",
             "io.xpatch.stub.AppEntry",
         )
+
+        val STUB_CLASS_DESCRIPTORS = setOf(
+            "Lfpa/AppEntry;",
+            "Lxpt/stub/AppEntry;",
+            "Lio/xpatch/stub/AppEntry;",
+        )
+
+        val LEGACY_PROVIDER_CLASSES = setOf(
+            "fpa.XpProvider",
+            "xpt.stub.XpProvider",
+            "io.xpatch.stub.XpProvider",
+        )
+
+        const val LEGACY_WAKEUP_CLASS = "bin.mt.file.content.MTDataFilesWakeUpActivity"
 
         val INJECTED_NAMES = setOf(
             "xp/core.dex",
@@ -1497,6 +1870,7 @@ class ApkPatcher(private val context: Context) {
         const val MAX_STRIP_DEPTH = 5
         const val NESTED_APK_COST_LIMIT = 0.25
         const val MAX_BOOTDEX = 2L * 1024 * 1024
+        const val MAX_RECORDED_CONFIG = 256L * 1024
 
         fun isInjectedEntry(name: String): Boolean =
             name in INJECTED_NAMES ||

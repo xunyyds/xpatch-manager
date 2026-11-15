@@ -168,6 +168,10 @@ public class PMSignBypass {
         if (earlyInstalled) {
             return true;
         }
+        if (!hookHasSigningCertificateEnabled) {
+            XpHook.log0(TAG, "hasSigningCertificate hook 按当前档位跳过（仅 Strict/deep 才启用）");
+            return false;
+        }
         if (Build.VERSION.SDK_INT < 28) {
             XpHook.log0(TAG, "hasSigningCertificate 需要 API 28+，当前 " + Build.VERSION.SDK_INT + "，跳过");
             return false;
@@ -182,7 +186,7 @@ public class PMSignBypass {
         }
         earlyInstalled = hooked;
         XpHook.log0(TAG, hooked
-                ? "hasSigningCertificate hook 已安装（默认档位即生效；String/uid 两种重载）"
+                ? "hasSigningCertificate hook 已安装（Strict/deep 档；String/uid 两种重载）"
                 : "hasSigningCertificate hook 未安装（应用若用它自校验会看到补丁证书）");
         return hooked;
     }
@@ -387,8 +391,10 @@ public class PMSignBypass {
         if (originals == null || originals.length == 0) {
             return;
         }
+        Signature[] legacySignatures = data != null && data.oldest != null && data.oldest.length > 0
+                ? data.oldest : originals;
         if (packageInfo.signatures != null && packageInfo.signatures.length > 0) {
-            packageInfo.signatures = cloneSignatures(originals);
+            packageInfo.signatures = cloneSignatures(legacySignatures);
         }
         if (Build.VERSION.SDK_INT < 28) {
             return;
@@ -488,10 +494,10 @@ public class PMSignBypass {
                 continue;
             }
             byte[] actual = SignatureFacade.bytesOf(target[i]);
-            if (actual != null && Arrays.equals(desired, actual)) {
+            if (actual != null && Arrays.equals(desired, actual) && SigningDetailsData.flagsOf(target[i]) == SigningDetailsData.flagsOf(source[i])) {
                 continue;
             }
-            target[i] = new Signature(desired);
+            target[i] = SigningDetailsData.withFlags(source[i], SigningDetailsData.flagsOf(source[i]));
             changed = true;
         }
         return changed;
@@ -736,7 +742,8 @@ public class PMSignBypass {
             }
             Signature[] signatures = new Signature[array.length()];
             for (int i = 0; i < array.length(); i++) {
-                signatures[i] = new Signature(DataUtils.hexToByteArray(array.getString(i)));
+                signatures[i] = SigningDetailsData.withFlags(
+                        new Signature(DataUtils.hexToByteArray(array.getString(i))), 0);
             }
             return signatures;
         } catch (Throwable th) {
@@ -785,7 +792,8 @@ public class PMSignBypass {
         }
         Signature[] signatureArr2 = new Signature[signatureArr.length];
         for (int i = 0; i < signatureArr.length; i++) {
-            signatureArr2[i] = signatureArr[i] == null ? null : new Signature(signatureArr[i].toByteArray());
+            signatureArr2[i] = signatureArr[i] == null
+                    ? null : SigningDetailsData.withFlags(signatureArr[i], SigningDetailsData.flagsOf(signatureArr[i]));
         }
         return signatureArr2;
     }

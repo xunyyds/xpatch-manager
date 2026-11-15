@@ -1,13 +1,4 @@
 #!/usr/bin/env python3
-"""零注释守门：扫描仓库源码里是否还有注释。
-
-用法：
-    python tools/check_no_comments.py -Staged    只查暂存区将要提交的新增行
-    python tools/check_no_comments.py -All       全仓库对账
-    python tools/check_no_comments.py -Path a.kt 只查某个文件
-
-退出码：0 = 干净；1 = 发现问题。
-"""
 from __future__ import annotations
 
 import argparse
@@ -25,8 +16,10 @@ SLASH_EXTS = {".kt", ".kts", ".java", ".smali"}
 XML_EXTS = {".xml"}
 
 SKIP_DIRS = {
-    ".git", "build", "build-alt", ".gradle", ".kotlin", "work", "out", "node_modules", "__pycache__",
+    ".git", "build", "build-alt", "build-app", "build-XPatchManager", "build-stub",
+    ".gradle", ".kotlin", "work", "out", "node_modules", "__pycache__",
 }
+SKIP_DIR_PREFIXES = ("build-",)
 
 STRING_LITERAL = re.compile(r'"(?:[^"\\]|\\.)*"' + "|" + r"'(?:[^'\\]|\\.)*'")
 
@@ -58,7 +51,10 @@ def classify(path: str, line: str) -> str | None:
 def iter_files(root: str):
     import os
     for base, dirs, files in os.walk(root):
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS]
+        dirs[:] = [
+            d for d in dirs
+            if d not in SKIP_DIRS and not d.startswith(SKIP_DIR_PREFIXES)
+        ]
         for name in files:
             path = os.path.join(base, name)
             ext = "." + name.rsplit(".", 1)[-1].lower() if "." in name else ""

@@ -46,16 +46,36 @@ public class XpHelper {
 
     private static String primaryAbi() {
         try {
-            if (android.os.Build.SUPPORTED_ABIS != null && android.os.Build.SUPPORTED_ABIS.length > 0) {
-                String abi = android.os.Build.SUPPORTED_ABIS[0];
-                if (abi != null && abi.length() > 0 && abi.indexOf('/') < 0
-                        && abi.indexOf(' ') < 0 && abi.indexOf('.') < 0) {
-                    return abi;
-                }
+            boolean is64 = android.os.Process.is64Bit();
+            String[] candidates = is64
+                    ? android.os.Build.SUPPORTED_64_BIT_ABIS : android.os.Build.SUPPORTED_32_BIT_ABIS;
+            String abi = firstUsable(candidates);
+            if (abi != null) {
+                return abi;
+            }
+            String[] fallback = is64
+                    ? android.os.Build.SUPPORTED_32_BIT_ABIS : android.os.Build.SUPPORTED_64_BIT_ABIS;
+            abi = firstUsable(fallback);
+            if (abi != null) {
+                return abi;
             }
         } catch (Throwable ignored) {
         }
         return "";
+    }
+
+    private static String firstUsable(String[] abis) {
+        if (abis == null) {
+            return null;
+        }
+        for (int i = 0; i < abis.length; i++) {
+            String abi = abis[i];
+            if (abi != null && abi.length() > 0 && abi.indexOf('/') < 0
+                    && abi.indexOf(' ') < 0 && abi.indexOf('.') < 0) {
+                return abi;
+            }
+        }
+        return null;
     }
 
     public static void setClassLoaderTrusted(ClassLoader classLoader) {

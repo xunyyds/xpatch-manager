@@ -34,12 +34,251 @@ class AxmlEditor(private val source: ByteArray) {
     fun readApplicationAttribute(attrName: String): String? =
         readAttribute("application", attrName)
 
+    fun childElementNames(parentName: String): List<String> {
+        val pool = StringPool.parse(source)
+        val parent = findElement(pool, parentName) ?: return emptyList()
+        val names = ArrayList<String>()
+        eachChildElement(parent) { start ->
+            val nameIndex = u32(start + 20)
+            if (nameIndex in 0 until pool.count) names.add(pool.strings[nameIndex])
+        }
+        return names
+    }
+
+    fun findChildElements(parentName: String, childName: String, attrName: String, attrValue: String): List<Int> {
+        val pool = StringPool.parse(source)
+        val parent = findElement(pool, parentName) ?: return emptyList()
+        val found = ArrayList<Int>()
+        eachChildElement(parent) { start ->
+            val nameIndex = u32(start + 20)
+            if (nameIndex in 0 until pool.count && pool.strings[nameIndex] == childName) {
+                if (stringAttribute(pool, elementAt(start), attrName) == attrValue) found.add(start)
+            }
+        }
+        return found
+    }
+
+    fun childAttributeValues(parentName: String, childName: String, attrName: String): List<String> {
+        val pool = StringPool.parse(source)
+        val parent = findElement(pool, parentName) ?: return emptyList()
+        val values = ArrayList<String>()
+        eachChildElement(parent) { start ->
+            val nameIndex = u32(start + 20)
+            if (nameIndex in 0 until pool.count && pool.strings[nameIndex] == childName) {
+                stringAttribute(pool, elementAt(start), attrName)?.let { values.add(it) }
+            }
+        }
+        return values
+    }
+
+    fun removeChildElement(parentName: String, childName: String, attrName: String, attrValuePrefix: String): ByteArray {
+        val pool = StringPool.parse(source)
+        val parent = findElement(pool, parentName) ?: return source
+        var result: ByteArray = source
+        var guard = 0
+        while (guard < 64) {
+            guard++
+            val runtimePool = StringPool.parse(result)
+            val runtimeParent = findElementIn(result, runtimePool, parentName) ?: return result
+            val target = firstChildMatching(result, runtimePool, runtimeParent, childName, attrName, attrValuePrefix)
+                ?: return result
+            val span = elementSpan(result, target) ?: return result
+            result = deleteRange(result, span.first, span.second)
+        }
+        return result
+    }
+
+    private fun findElementIn(data: ByteArray, pool: StringPool, elementName: String): Element? {
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        var pos = 8 + pool.chunkSize
+        while (pos + 8 <= data.size) {
+            val type = buffer.getShort(pos).toInt() and 0xFFFF
+            val size = buffer.getInt(pos + 4)
+            if (size <= 0) break
+            if (type == CHUNK_START_ELEMENT) {
+                val nameIndex = buffer.getInt(pos + 20)
+                if (nameIndex in 0 until pool.count && pool.strings[nameIndex] == elementName) {
+                    return Element(
+                        start = pos,
+                        headerSize = buffer.getShort(pos + 2).toInt() and 0xFFFF,
+                        attrStart = buffer.getShort(pos + 24).toInt() and 0xFFFF,
+                        attrCount = buffer.getShort(pos + 28).toInt() and 0xFFFF,
+                        attrSize = buffer.getShort(pos + 26).toInt() and 0xFFFF,
+                    )
+                }
+            }
+            pos += size
+        }
+        return null
+    }
+
+    private fun firstChildMatching(
+        data: ByteArray,
+        pool: StringPool,
+        parent: Element,
+        childName: String,
+        attrName: String,
+        attrValuePrefix: String,
+    ): Int? {
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        var pos = parent.start
+        var depth = 0
+        while (pos + 8 <= data.size) {
+            val type = buffer.getShort(pos).toInt() and 0xFFFF
+            val size = buffer.getInt(pos + 4)
+            if (size < 8 || pos + size > data.size) return null
+            when (type) {
+                CHUNK_START_ELEMENT -> {
+                    if (depth == 1) {
+                        val nameIndex = buffer.getInt(pos + 20)
+                        if (nameIndex in 0 until pool.count && pool.strings[nameIndex] == childName) {
+                            val value = childStringAttribute(data, buffer, pool, pos, attrName)
+                            if (value != null && value.startsWith(attrValuePrefix)) return pos
+                        }
+                    }
+                    depth++
+                }
+
+                CHUNK_END_ELEMENT -> {
+                    depth--
+                    if (depth <= 0) return null
+                }
+            }
+            pos += size
+        }
+        return null
+    }
+
+    private fun childStringAttribute(
+        data: ByteArray,
+        buffer: ByteBuffer,
+        pool: StringPool,
+        start: Int,
+        attrName: String,
+    ): String? {
+        val headerSize = buffer.getShort(start + 2).toInt() and 0xFFFF
+        val attrStart = buffer.getShort(start + 24).toInt() and 0xFFFF
+        val attrCount = buffer.getShort(start + 28).toInt() and 0xFFFF
+        val stride = buffer.getShort(start + 26).toInt() and 0xFFFF
+        val effective = if (stride > 0) stride else ATTRIBUTE_SIZE
+        for (i in 0 until attrCount) {
+            val offset = start + headerSize + attrStart + i * effective
+            if (offset < 0 || offset + effective > data.size) return null
+            val nameIndex = buffer.getInt(offset + 4)
+            if (nameIndex !in 0 until pool.count || pool.strings[nameIndex] != attrName) continue
+            if ((data[offset + 15].toInt() and 0xFF) != TYPE_STRING) return null
+            val index = buffer.getInt(offset + 16)
+            return if (index in 0 until pool.count) pool.strings[index] else null
+        }
+        return null
+    }
+
+    private fun elementSpan(data: ByteArray, start: Int): Pair<Int, Int>? {
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        var pos = start
+        var depth = 0
+        while (pos + 8 <= data.size) {
+            val type = buffer.getShort(pos).toInt() and 0xFFFF
+            val size = buffer.getInt(pos + 4)
+            if (size < 8 || pos + size > data.size) return null
+            if (type == CHUNK_START_ELEMENT) depth++
+            if (type == CHUNK_END_ELEMENT) {
+                depth--
+                if (depth == 0) return start to (pos + size)
+            }
+            pos += size
+        }
+        return null
+    }
+
+    private fun deleteRange(data: ByteArray, from: Int, to: Int): ByteArray {
+        if (from < 0 || to > data.size || from >= to) return data
+        val result = ByteArray(data.size - (to - from))
+        System.arraycopy(data, 0, result, 0, from)
+        System.arraycopy(data, to, result, from, data.size - to)
+        val buffer = ByteBuffer.wrap(result).order(ByteOrder.LITTLE_ENDIAN)
+        buffer.putInt(4, result.size)
+        return result
+    }
+
+    fun removeAttribute(elementName: String, attrName: String): ByteArray {
+        val current = removeAttributeOnce(source, elementName, attrName)
+        if (current === source) return source
+        return current
+    }
+
+    private fun removeAttributeOnce(data: ByteArray, elementName: String, attrName: String): ByteArray {
+        val pool = StringPool.parse(data)
+        val element = findElementIn(data, pool, elementName) ?: return data
+        val attrOffset = findAttributeOffsetIn(data, pool, element, attrName) ?: return data
+        val bodyStart = 8 + pool.chunkSize
+        val stride = if (element.attrSize > 0) element.attrSize else ATTRIBUTE_SIZE
+        val body = data.copyOfRange(bodyStart, data.size)
+        val relative = attrOffset - bodyStart
+        if (relative < 0 || relative + stride > body.size) return data
+        val shrunk = ByteArray(body.size - stride)
+        System.arraycopy(body, 0, shrunk, 0, relative)
+        System.arraycopy(body, relative + stride, shrunk, relative, body.size - relative - stride)
+        val bb = ByteBuffer.wrap(shrunk).order(ByteOrder.LITTLE_ENDIAN)
+        val elementInBody = element.start - bodyStart
+        if (element.attrCount > 0) {
+            bb.putShort(elementInBody + 28, (element.attrCount - 1).toShort())
+        }
+        bb.putInt(elementInBody + 4, buffer32(body, elementInBody + 4) - stride)
+        val result = ByteArrayOutputStream()
+        result.write(data, 0, 8)
+        result.write(pool.build())
+        result.write(shrunk)
+        val merged = result.toByteArray()
+        ByteBuffer.wrap(merged).order(ByteOrder.LITTLE_ENDIAN).putInt(4, merged.size)
+        return merged
+    }
+
+    private fun findAttributeOffsetIn(
+        data: ByteArray,
+        pool: StringPool,
+        element: Element,
+        attrName: String,
+    ): Int? {
+        val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+        val attrStart = element.start + element.headerSize + element.attrStart
+        val stride = if (element.attrSize > 0) element.attrSize else ATTRIBUTE_SIZE
+        for (i in 0 until element.attrCount) {
+            val offset = attrStart + i * stride
+            if (offset < 0 || offset + stride > data.size) return null
+            val nameIndex = buffer.getInt(offset + 4)
+            if (nameIndex in 0 until pool.count && pool.strings[nameIndex] == attrName) {
+                return offset
+            }
+        }
+        return null
+    }
+
+    private fun buffer32(data: ByteArray, offset: Int): Int =
+        ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN).getInt(offset)
+
     fun readAttribute(elementName: String, attrName: String): String? {
         val pool = StringPool.parse(source)
         val node = findElement(pool, elementName) ?: return null
         val attr = findAttribute(pool, node, attrName) ?: return null
         val index = u32(attr.offset + 16)
         return if (index in 0 until pool.count) pool.strings[index] else null
+    }
+
+    fun hasResolvedAttribute(elementName: String, attrName: String): Boolean {
+        val pool = StringPool.parse(source)
+        val node = findElement(pool, elementName) ?: return false
+        val attr = findAttribute(pool, node, attrName) ?: return false
+        val nameIndex = u32(attr.offset + 4)
+        if (nameIndex < 0) return false
+        val bodyStart = 8 + pool.chunkSize
+        if (bodyStart + 8 > source.size) return false
+        if (u16(bodyStart) != CHUNK_RESOURCE_MAP) return false
+        val mapSize = i32(bodyStart + 4)
+        if (mapSize < 8 || mapSize > source.size - bodyStart || (mapSize - 8) % 4 != 0) return false
+        val ids = (mapSize - 8) / 4
+        val expected = androidResIdOf(attrName)
+        return expected != 0 && nameIndex < ids && i32(bodyStart + 8 + nameIndex * 4) == expected
     }
 
     fun setApplicationAttribute(attrName: String, value: String): ByteArray =
@@ -63,11 +302,11 @@ class AxmlEditor(private val source: ByteArray) {
             bb.put(offsetInBody + 14, 0)
             bb.put(offsetInBody + 15, TYPE_STRING.toByte())
             bb.putInt(offsetInBody + 16, valueIndex)
-            assemble(poolBytes, body)
+            ensureAttrResourceId(assemble(poolBytes, body), u32(attr.offset + 4), androidResIdOf(attrName))
         } else {
             val nameIndex = pool.strings.indexOf(attrName).takeIf { it >= 0 }
                 ?: pool.append(attrName)
-            injectAttribute(
+            val injected = injectAttribute(
                 pool,
                 elementName,
                 element,
@@ -76,7 +315,18 @@ class AxmlEditor(private val source: ByteArray) {
                 valueIndex,
                 pool.strings.indexOf(ANDROID_NS).takeIf { it >= 0 } ?: pool.append(ANDROID_NS),
             )
+            ensureAttrResourceId(injected, nameIndex, androidResIdOf(attrName))
         }
+    }
+
+    private fun androidResIdOf(attrName: String): Int = when (attrName) {
+        "name" -> RES_ID_NAME
+        "exported" -> RES_ID_EXPORTED
+        "authorities" -> RES_ID_AUTHORITIES
+        "appComponentFactory" -> RES_ID_FACTORY
+        "versionName" -> RES_ID_VERSION_NAME
+        "versionCode" -> RES_ID_VERSION_CODE
+        else -> 0
     }
 
     fun setIntAttribute(elementName: String, attrName: String, value: Int): ByteArray {
@@ -87,7 +337,7 @@ class AxmlEditor(private val source: ByteArray) {
         if (attr == null) {
             val nameIndex = pool.strings.indexOf(attrName).takeIf { it >= 0 }
                 ?: pool.append(attrName)
-            return injectAttribute(
+            val injected = injectAttribute(
                 pool,
                 elementName,
                 element,
@@ -96,6 +346,7 @@ class AxmlEditor(private val source: ByteArray) {
                 value,
                 pool.strings.indexOf(ANDROID_NS).takeIf { it >= 0 } ?: pool.append(ANDROID_NS),
             )
+            return ensureAttrResourceId(injected, nameIndex, androidResIdOf(attrName))
         }
 
         val bodyStart = 8 + pool.chunkSize
@@ -108,7 +359,7 @@ class AxmlEditor(private val source: ByteArray) {
         bb.put(offsetInBody + 15, TYPE_INT_DEC.toByte())
         bb.putInt(offsetInBody + 16, value)
 
-        return assemble(pool.build(), body)
+        return ensureAttrResourceId(assemble(pool.build(), body), u32(attr.offset + 4), androidResIdOf(attrName))
     }
 
     fun addProvider(className: String, authority: String): ByteArray {
@@ -681,6 +932,47 @@ class AxmlEditor(private val source: ByteArray) {
         buffer.putInt(offset + 16, value)
     }
 
+    private fun ensureAttrResourceId(manifest: ByteArray, nameIndex: Int, resId: Int): ByteArray {
+        if (nameIndex < 0 || resId == 0) return manifest
+        if (manifest.size < 16) return manifest
+        val buffer = ByteBuffer.wrap(manifest).order(ByteOrder.LITTLE_ENDIAN)
+        val poolType = buffer.getShort(8).toInt() and 0xFFFF
+        if (poolType != CHUNK_STRING_POOL) return manifest
+        val poolSize = buffer.getInt(12)
+        if (poolSize <= 0 || 8 + poolSize > manifest.size) return manifest
+        var head = manifest.copyOfRange(0, 8 + poolSize)
+        var rest = manifest.copyOfRange(8 + poolSize, manifest.size)
+        val hasMap = rest.size >= 8 && (ByteBuffer.wrap(rest).order(ByteOrder.LITTLE_ENDIAN)
+            .getShort(0).toInt() and 0xFFFF) == CHUNK_RESOURCE_MAP
+        val oldIds = ArrayList<Int>()
+        if (hasMap) {
+            val mapSize = ByteBuffer.wrap(rest).order(ByteOrder.LITTLE_ENDIAN).getInt(4)
+            if (mapSize < 8 || mapSize > rest.size) return manifest
+            var pos = 8
+            while (pos + 4 <= mapSize) {
+                oldIds.add(ByteBuffer.wrap(rest).order(ByteOrder.LITTLE_ENDIAN).getInt(pos))
+                pos += 4
+            }
+            rest = rest.copyOfRange(mapSize, rest.size)
+        }
+        val count = maxOf(oldIds.size, nameIndex + 1)
+        val ids = IntArray(count)
+        oldIds.forEachIndexed { index, value -> if (index < ids.size) ids[index] = value }
+        ids[nameIndex] = resId
+        val map = ByteBuffer.allocate(8 + ids.size * 4).order(ByteOrder.LITTLE_ENDIAN)
+        map.putShort(0, CHUNK_RESOURCE_MAP.toShort())
+        map.putShort(2, 8)
+        map.putInt(4, 8 + ids.size * 4)
+        ids.forEachIndexed { index, value -> map.putInt(8 + index * 4, value) }
+        val out = ByteArrayOutputStream()
+        out.write(head, 0, head.size)
+        out.write(map.array())
+        out.write(rest, 0, rest.size)
+        val merged = out.toByteArray()
+        ByteBuffer.wrap(merged).order(ByteOrder.LITTLE_ENDIAN).putInt(4, merged.size)
+        return merged
+    }
+
     private fun injectAttribute(
         pool: StringPool,
         elementName: String,
@@ -826,6 +1118,9 @@ class AxmlEditor(private val source: ByteArray) {
         private const val RES_ID_TASK_AFFINITY = 0x01010012
         private const val RES_ID_EXCLUDE_FROM_RECENTS = 0x01010017
         private const val RES_ID_NO_HISTORY = 0x0101022d
+        private const val RES_ID_FACTORY = 0x0101057a
+        private const val RES_ID_VERSION_NAME = 0x0101021c
+        private const val RES_ID_VERSION_CODE = 0x0101021b
 
         private fun putInt(array: ByteArray, offset: Int, value: Int) {
             array[offset] = (value and 0xFF).toByte()

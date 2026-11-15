@@ -9,7 +9,7 @@ public class SignBypass {
     private static final String TAG = "XpSignBypass";
 
     public static int normalizeType(int i) {
-        if (i == 0 || i == 1 || i == 2 || i == 3) {
+        if (i == 0 || i == 1 || i == 2 || i == 3 || i == 4) {
             return i;
         }
         return 1;
@@ -24,6 +24,8 @@ public class SignBypass {
             level = new LevelTwoSignBypass();
         } else if (type == 3) {
             level = new MixSignBypass();
+        } else if (type == 4) {
+            level = new LevelPltSignBypass();
         } else {
             XpHook.log0(TAG, "没有 native 层可启用（bypass=" + type + "），仅保留 Java 层");
             return false;

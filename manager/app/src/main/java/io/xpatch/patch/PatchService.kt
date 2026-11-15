@@ -22,9 +22,9 @@ data class PatchOptions(
     val embedSource: Boolean = false,
     val forceOverwrite: Boolean = false,
     val sigMode: String = "java",
-    val entryHook: Boolean = false,
     val obfuscate: Boolean = false,
     val obfuscateKeepCrashPermission: Boolean = false,
+    val logLevel: Int = PatchLog.LEVEL_NORMAL,
 )
 
 class PatchService(private val context: Context) {
@@ -36,7 +36,7 @@ class PatchService(private val context: Context) {
         val bootDex: String,
         val originalFactory: String?,
         val config: String,
-        
+
         val forceOverwrite: Boolean = false,
     )
 
@@ -46,9 +46,7 @@ class PatchService(private val context: Context) {
         onLog: (String) -> Unit = {},
         onProgress: (Int) -> Unit = {},
     ): Outcome = withContext(Dispatchers.IO) {
-        onLog("准备源安装包：${app.label}")
         onProgress(2)
-        onLog("定位已安装应用的 APK")
         onProgress(5)
         buildFrom(copyInstalledApk(app), app.packageName, app.label, options, onLog, onProgress)
     }
@@ -67,6 +65,52 @@ class PatchService(private val context: Context) {
         return File(path)
     }
 
+    private fun rejectIfNoArm64(source: File, log: PatchLog) {
+        val abis = runCatching {
+            java.util.zip.ZipFile(source).use { zip ->
+                val found = LinkedHashSet<String>()
+                val entries = zip.entries()
+                while (entries.hasMoreElements()) {
+                    val name = entries.nextElement().name
+                    if (!name.startsWith("lib/")) continue
+                    val rest = name.substring(4)
+                    val slash = rest.indexOf('/')
+                    if (slash <= 0) continue
+                    found.add(rest.substring(0, slash))
+                }
+                found
+            }
+        }.getOrNull() ?: return
+        if (abis.isEmpty()) return
+        if (abis.any { it == "arm64-v8a" || it == "x86_64" }) return
+        log.step("宿主只有 32 位原生库：${abis.joinToString("，")}")
+        error(
+            "不支持只有 32 位原生库的宿主：内核只提供 arm64-v8a 与 x86_64 两份 hook_core。" +
+                "在该宿主上打包会成功但 hook 全部失效（System.load 失败）。请改用 64 位版本的安装包。",
+        )
+    }
+
+    private fun rejectSplit(source: File, packageName: String, log: PatchLog) {
+        val info = runCatching {
+            @Suppress("DEPRECATION")
+            context.packageManager.getApplicationInfo(packageName, 0)
+        }.getOrNull() ?: return
+        val sourcePath = runCatching { info.sourceDir }.getOrNull()
+        if (sourcePath == null || File(sourcePath).canonicalPath != source.canonicalFile.path) {
+            return
+        }
+        val splits = runCatching {
+            if (android.os.Build.VERSION.SDK_INT >= 21) info.splitSourceDirs else null
+        }.getOrNull()
+        if (splits.isNullOrEmpty()) return
+        log.step("检测到 split 安装包（共 ${splits.size + 1} 个 APK）：${splits.take(3).joinToString("，")}")
+        error(
+            "不支持对 split 安装包打包：当前只处理单 APK 宿主。" +
+                "内嵌原包只有 base 会缺 ABI split 的原生库与密度/语言资源，装完必然 UnsatisfiedLinkError 或 ResourcesNotFoundException。" +
+                "请改用原始的完整 APK 文件（从安装包来源获取）后再试。",
+        )
+    }
+
     suspend fun buildFromFile(
         apk: File,
         label: String,
@@ -78,7 +122,6 @@ class PatchService(private val context: Context) {
             .getPackageArchiveInfo(apk.absolutePath, 0)
             ?.packageName
             ?: error("无法读取 APK 信息")
-        onLog("读取外部安装包：${apk.name}，${apk.length() / 1024 / 1024} MB")
         onProgress(5)
         return buildFrom(apk, packageName, label, options, onLog, onProgress)
     }
@@ -91,69 +134,58 @@ class PatchService(private val context: Context) {
         onLog: (String) -> Unit = {},
         onProgress: (Int) -> Unit = {},
     ): Outcome = withContext(Dispatchers.IO) {
+        val log = PatchLog.of(onLog, options.logLevel)
         require(source.exists()) { "找不到源 APK：${source.absolutePath}" }
-        onLog("源文件 ${source.name}，${source.length() / 1024 / 1024} MB")
+        log.debug("apk path: ${source.absolutePath}")
+        log.debug(
+            "过签模式：${SettingsStore.sigModeLabel(options.sigMode)} · " +
+                "档位：${BypassTier.of(options.sigMode, options.bypassLevel).label}",
+        )
+        rejectSplit(source, packageName, log)
+        rejectIfNoArm64(source, log)
+        log.milestone("源 ${source.name} · ${PatchLog.mb(source.length())}")
 
         val workDir = File(context.cacheDir, "patch").apply { mkdirs() }
         val unsigned = File(workDir, "$packageName-unsigned.apk")
         val signed = File(workDir, "$packageName-xpatch.apk")
         unsigned.delete()
         signed.delete()
-        onLog("过签模式：" + SettingsStore.sigModeLabel(options.sigMode))
-        val sigMode = options.sigMode.trim().lowercase()
-        val embedSource = options.embedSource ||
-            (sigMode != SettingsStore.SIG_MODE_JAVA && sigMode != SettingsStore.SIG_MODE_OFF) ||
-            (options.bypassLevel == 1 && sigMode != SettingsStore.SIG_MODE_OFF)
-        val dynamicMode = options.dynamicMode || embedSource
-        val effectiveEmbed = embedSource || dynamicMode
-        if (dynamicMode) {
-            onLog("动态加载已开启（FPA 方式）：产物只保留原包 + 运行层，避免体积翻倍")
-        }
+        val dynamicMode = options.dynamicMode
+        val tier = BypassTier.of(options.sigMode, options.bypassLevel)
+        val embedSource = options.embedSource || dynamicMode || tier.needsSource
+        val effectiveEmbed = embedSource
         if (effectiveEmbed) {
-            onLog(
-                if (options.embedSource || dynamicMode) {
-                    "已内嵌原始安装包（动态加载/按设置）"
-                } else {
-                    "已内嵌原始安装包（文件层需要）"
-                },
+            log.milestone(
+                "内嵌原包（嵌套链接，资源共享不翻倍）" +
+                    if (dynamicMode) " · 动态加载" else " · 宿主代码留外层",
             )
         }
-        if (options.entryHook && !dynamicMode) {
-            onLog("入口 Hook 已开启（实验）：额外插入 io.xpatch.stub.XpProvider 备用入口，工厂注入保持不变")
-        } else if (options.entryHook) {
-            onLog("动态加载：provider 备用入口已关闭（切换后 stub 不在原包里），仅保留工厂注入")
+        val result = try {
+            ApkPatcher(context).patch(
+                source,
+                unsigned,
+                ApkPatcher.Options(
+                    bypassLevel = options.bypassLevel,
+                    hookCore = options.hookCore.index,
+                    dynamicMode = dynamicMode,
+                    fileProvider = options.fileProvider,
+                    injectSignature = options.injectSignature,
+                    versionName = options.versionName,
+                    versionCode = options.versionCode,
+                    embedSource = effectiveEmbed,
+                    sigMode = options.sigMode,
+                    obfuscate = options.obfuscate,
+                    obfuscateKeepCrashPermission = options.obfuscateKeepCrashPermission,
+                ),
+                onProgress = onProgress,
+                onLog = log,
+            )
+        } catch (error: Throwable) {
+            unsigned.delete()
+            signed.delete()
+            throw error
         }
-        if (options.obfuscate) {
-            onLog("注入路径混淆已开启：条目名与清单类名随机化，产物里不再出现 xp/ 条目名与 io.xpatch.stub")
-            if (options.obfuscateKeepCrashPermission) {
-                onLog("保留模块熔断权限：清单里会留下 io.xpatch.permission.MODULE_CRASH")
-            } else {
-                onLog("熔断权限未注入（路径混淆默认丢弃 io.xpatch.permission.MODULE_CRASH）：模块崩溃时管理器收不到广播")
-            }
-        } else {
-            onLog("注入路径混淆已关闭：沿用 xp/ 固定条目名与 io.xpatch.stub 类名")
-        }
-        val result = ApkPatcher(context).patch(
-            source,
-            unsigned,
-            ApkPatcher.Options(
-                bypassLevel = options.bypassLevel,
-                hookCore = options.hookCore.index,
-                dynamicMode = dynamicMode,
-                fileProvider = options.fileProvider,
-                injectSignature = options.injectSignature,
-                versionName = options.versionName,
-                versionCode = options.versionCode,
-                embedSource = effectiveEmbed,
-                sigMode = options.sigMode,
-                entryHook = options.entryHook,
-                obfuscate = options.obfuscate,
-                obfuscateKeepCrashPermission = options.obfuscateKeepCrashPermission,
-            ),
-            onProgress = onProgress,
-            onLog = onLog,
-        )
-        result.layout?.let { layout -> onLog("产物布局：${layout.dir}（config ${layout.configEntry}）") }
+        result.layout?.let { layout -> log.step("布局 ${layout.dir} · config ${layout.configEntry}") }
 
         val profile = if (options.injectSignature) {
             options.signatureProfile ?: SignatureStore(context).defaultProfile()
@@ -161,26 +193,37 @@ class PatchService(private val context: Context) {
             null
         }
         if (profile != null && profile.kind != SignatureStore.Kind.BUILTIN) {
-            onLog("提示：非内置签名档下，模块保护通知可能无法送达管理器（signature 权限不跨证书授予）")
+            log.step("非内置签名档：模块保护通知可能无法送达管理器（signature 权限不跨证书授予）")
         }
-        if (profile != null) {
-            onLog("重打包完成，开始签名")
-            onProgress(85)
-            ApkSigner(context).sign(unsigned, signed, profile)
-            onLog("已用「${profile.name}」完成 V2+V3 签名")
-            onProgress(92)
-        } else {
-            onLog("未签名产物通常无法安装；如需安装请选择签名")
-            onProgress(92)
-            unsigned.copyTo(signed, overwrite = true)
+        try {
+            if (profile != null) {
+                onProgress(85)
+                val signStart = System.currentTimeMillis()
+                ApkSigner(context).sign(unsigned, signed, profile)
+                log.milestone(
+                    "签名 V2+V3（${profile.name}）· ${PatchLog.secs(System.currentTimeMillis() - signStart)}",
+                )
+                onProgress(92)
+            } else {
+                log.debug("未签名产物通常无法安装；如需安装请选择签名")
+                onProgress(92)
+                if (!unsigned.renameTo(signed)) {
+                    unsigned.copyTo(signed, overwrite = true)
+                    unsigned.delete()
+                }
+            }
+        } catch (error: Throwable) {
+            unsigned.delete()
+            signed.delete()
+            throw error
         }
         unsigned.delete()
 
         onProgress(95)
         val delivered = File(outputDir().apply { mkdirs() }, "$label-$packageName.apk")
         runCatching { signed.copyTo(delivered, overwrite = true) }
-            .onSuccess { onLog("产物已保存：${delivered.absolutePath}") }
-            .onFailure { onLog("产物另存失败，保留缓存：${signed.absolutePath}") }
+            .onSuccess { log.milestone("完成。输出 APK：${delivered.absolutePath}") }
+            .onFailure { log.step("产物另存失败，保留缓存：${signed.absolutePath}") }
 
         Outcome(
             apk = if (delivered.exists()) delivered else signed,

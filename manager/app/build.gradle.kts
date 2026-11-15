@@ -663,8 +663,382 @@ abstract class VerifyStubDexTask : DefaultTask() {
     }
 }
 
-object XpVersionGate {
+object XpNativeGate {
 
+    val EXPECTED_HOOK_CORE_EXPORTS: List<String> = listOf(
+        "JNI_OnLoad",
+        "Java_io_xpatch_core_NativeCalls_enable_1io_1redirect",
+        "Java_io_xpatch_core_NativeCalls_enable_1io_1redirect_1dobby",
+        "Java_io_xpatch_core_NativeCalls_enable_1io_1redirect_1mix",
+        "Java_io_xpatch_core_NativeCalls_enable_1io_1redirect_1plt",
+        "Java_io_xpatch_core_entry_NativeHookBridge_deopt",
+        "Java_io_xpatch_core_entry_NativeHookBridge_disableProfileSaver",
+        "Java_io_xpatch_core_entry_NativeHookBridge_hookMethod",
+        "Java_io_xpatch_core_entry_NativeHookBridge_nativeInvoke",
+    )
+
+    val REQUIRED_RUNTIME_DESCRIPTORS: List<String> = listOf(
+        "Lio/xpatch/core/CoreEntry;",
+        "Lio/xpatch/core/XpInit;",
+        "Lio/xpatch/core/NativeLoader;",
+        "Lio/xpatch/core/XpLayout;",
+        "Lio/xpatch/core/signbypass/LevelPltSignBypass;",
+        "Lio/xpatch/core/signbypass/PMSignBypass;",
+        "Lio/xpatch/core/signbypass/SignatureFacade;",
+        "Lio/xpatch/core/signbypass/FileLayerHooks;",
+        "Lio/xpatch/core/module/ModuleLoader;",
+        "Lio/xpatch/core/module/LocalStoreModuleProvider;",
+    )
+
+    val REQUIRED_STUB_DESCRIPTORS: List<String> = listOf(
+        "Lio/xpatch/stub/AppEntry;",
+        "Lio/xpatch/stub/XpProvider;",
+    )
+
+    fun isWindows(): Boolean =
+        System.getProperty("os.name").orEmpty().lowercase().contains("windows")
+
+    fun resolveNm(sdkDir: File?): File? {
+        if (sdkDir == null) return null
+        val executable = if (isWindows()) "llvm-nm.exe" else "llvm-nm"
+        val ndkRoot = File(sdkDir, "ndk")
+        if (ndkRoot.isDirectory) {
+            val found = ndkRoot.listFiles { file -> file.isDirectory }
+                ?.sortedWith(Comparator { a, b -> XpStubDex.compareVersion(b.name, a.name) })
+                ?.asSequence()
+                ?.map { ndk ->
+                    if (isWindows()) {
+                        File(ndk, "toolchains/llvm/prebuilt/windows-x86_64/bin/$executable")
+                    } else {
+                        File(ndk, "toolchains/llvm/prebuilt/linux-x86_64/bin/$executable")
+                    }
+                }
+                ?.firstOrNull { it.isFile }
+            if (found != null) return found
+        }
+        val pathDirs = System.getenv("PATH").orEmpty().split(File.pathSeparatorChar)
+        return pathDirs.asSequence()
+            .filter { it.isNotBlank() }
+            .map { File(it, executable) }
+            .firstOrNull { it.isFile }
+    }
+
+    fun readDefinedSymbols(nm: File, so: File, execOps: org.gradle.process.ExecOperations): List<String> {
+        val out = ByteArrayOutputStream()
+        val result = execOps.exec {
+            isIgnoreExitValue = true
+            commandLine(nm.absolutePath, "-D", "--defined-only", so.absolutePath)
+            standardOutput = out
+            errorOutput = out
+        }
+        if (result.exitValue != 0) {
+            throw GradleException(
+                "llvm-nm 读取失败（exit=${result.exitValue}）：${so.absolutePath}\n" +
+                    XpStubDex.tail(out.toString(Charsets.UTF_8.name()))
+            )
+        }
+        return out.toString(Charsets.UTF_8.name())
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotEmpty() }
+            .map { line -> line.split(Regex("""\s+""")).last() }
+            .distinct()
+            .sorted()
+            .toList()
+    }
+
+    private fun readU4(data: ByteArray, offset: Int): Long {
+        return (data[offset].toLong() and 0xff) or
+            ((data[offset + 1].toLong() and 0xff) shl 8) or
+            ((data[offset + 2].toLong() and 0xff) shl 16) or
+            ((data[offset + 3].toLong() and 0xff) shl 24)
+    }
+
+    private fun readDexString(data: ByteArray, offset: Int): String? {
+        var pos = offset
+        var utf16Size = 0L
+        var shift = 0
+        while (pos < data.size && shift <= 28) {
+            val byte = data[pos].toInt() and 0xff
+            pos++
+            utf16Size = utf16Size or ((byte and 0x7f).toLong() shl shift)
+            if (byte and 0x80 == 0) break
+            shift += 7
+        }
+        if (utf16Size <= 0L || utf16Size > 65535L) return null
+        val builder = StringBuilder()
+        var guard = 0
+        while (pos < data.size && guard < 4096) {
+            val byte = data[pos].toInt() and 0xff
+            pos++
+            if (byte == 0) break
+            when {
+                byte < 0x80 -> builder.append(byte.toChar())
+                byte and 0xe0 == 0xc0 -> {
+                    if (pos >= data.size) break
+                    val next = data[pos].toInt() and 0xff
+                    pos++
+                    builder.append((((byte and 0x1f) shl 6) or (next and 0x3f)).toChar())
+                }
+                byte and 0xf0 == 0xe0 -> {
+                    if (pos + 1 >= data.size) break
+                    val b2 = data[pos].toInt() and 0xff
+                    val b3 = data[pos + 1].toInt() and 0xff
+                    pos += 2
+                    builder.append((((byte and 0x0f) shl 12) or ((b2 and 0x3f) shl 6) or (b3 and 0x3f)).toChar())
+                }
+                else -> {
+                    pos += 3
+                    builder.append('\uFFFD')
+                }
+            }
+            guard++
+        }
+        return builder.toString()
+    }
+
+    fun readDexClassDescriptors(dex: File): List<String> {
+        val data = dex.readBytes()
+        if (data.size < 0x70) throw GradleException("dex 头长度不足：${dex.absolutePath}")
+        if (data[0] != 0x64.toByte() || data[1] != 0x65.toByte() ||
+            data[2] != 0x78.toByte() || data[3] != 0x0a.toByte()
+        ) {
+            throw GradleException("不是合法的 dex（magic 不是 dex\\n）：${dex.absolutePath}")
+        }
+        val stringIdsSize = readU4(data, 0x38)
+        val stringIdsOff = readU4(data, 0x3c).toInt()
+        val typeIdsSize = readU4(data, 0x40)
+        val typeIdsOff = readU4(data, 0x44).toInt()
+        val classDefsSize = readU4(data, 0x60)
+        val classDefsOff = readU4(data, 0x64).toInt()
+        if (classDefsOff + classDefsSize * 32 > data.size) {
+            throw GradleException("class_defs 越界：${dex.absolutePath}")
+        }
+        val result = LinkedHashSet<String>()
+        for (index in 0 until classDefsSize.toInt()) {
+            val defOff = classDefsOff + index * 32
+            val classIdx = readU4(data, defOff)
+            if (classIdx >= typeIdsSize) continue
+            val descriptorIdx = readU4(data, typeIdsOff + classIdx.toInt() * 4)
+            if (descriptorIdx >= stringIdsSize) continue
+            val stringOff = readU4(data, stringIdsOff + descriptorIdx.toInt() * 4).toInt()
+            if (stringOff <= 0 || stringOff >= data.size) continue
+            val descriptor = readDexString(data, stringOff) ?: continue
+            result.add(descriptor)
+        }
+        return result.toList()
+    }
+
+    private val packagePattern = Regex("""^\s*package\s+([\w.]+)\s*;""", RegexOption.MULTILINE)
+
+    fun expectedDescriptors(sourcesRoot: File): List<String> {
+        if (!sourcesRoot.isDirectory) return emptyList()
+        val stubRoot = File(sourcesRoot, "stubs").absolutePath
+        return sourcesRoot.walkTopDown()
+            .filter { it.isFile && it.name.endsWith(".java") }
+            .filter { !it.absolutePath.startsWith(stubRoot, ignoreCase = true) }
+            .map { file ->
+                val text = file.readText(Charsets.UTF_8)
+                val pkg = packagePattern.find(text)?.groupValues?.get(1).orEmpty()
+                val simpleName = file.name.removeSuffix(".java")
+                if (pkg.isEmpty()) "L$simpleName;" else "L${pkg.replace('.', '/')}/$simpleName;"
+            }
+            .distinct()
+            .sorted()
+            .toList()
+    }
+}
+
+@DisableCachingByDefault(because = "只做发布资产断言，没有可缓存的输出")
+abstract class CheckReleaseAssetsTask : DefaultTask() {
+
+    @get:Internal
+    abstract val assetsDir: DirectoryProperty
+
+    @get:InputDirectory
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val runtimeSourceDir: DirectoryProperty
+
+    @get:Internal
+    abstract val debugAssetsDir: DirectoryProperty
+
+    @get:Internal
+    abstract val fpaCoreBuildDir: DirectoryProperty
+
+    @get:Internal
+    abstract val hookCoreSo: RegularFileProperty
+
+    @get:Internal
+    abstract val hookCoreX86So: RegularFileProperty
+
+    @get:Internal
+    abstract val runtimeDex: RegularFileProperty
+
+    @get:Internal
+    abstract val stubDex: RegularFileProperty
+
+    @get:InputDirectory
+    @get:Optional
+    @get:PathSensitive(PathSensitivity.RELATIVE)
+    abstract val stubSourceDir: DirectoryProperty
+
+    @get:Internal
+    abstract val androidSdkDir: Property<File>
+
+    @get:Internal
+    abstract val nmPath: Property<String>
+
+    @get:Inject
+    abstract val execOps: ExecOperations
+
+    @TaskAction
+    fun check() {
+        val problems = mutableListOf<String>()
+        val notes = mutableListOf<String>()
+
+        val assets = assetsDir.get().asFile
+        if (!assets.isDirectory) {
+            throw GradleException("发布资产目录不存在：${assets.absolutePath}")
+        }
+
+        val nm = nmPath.orNull?.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isFile }
+        if (nm == null) {
+            problems += "找不到 llvm-nm（设置 ANDROID_SDK_ROOT 或 sdk.dir），无法校验 .so 导出符号"
+        } else {
+            notes += "llvm-nm = ${nm.absolutePath}"
+        }
+
+        val soCases = listOf(
+            hookCoreSo.get().asFile to File(fpaCoreBuildDir.get().asFile, "libhook_core.so"),
+            hookCoreX86So.get().asFile to File(fpaCoreBuildDir.get().asFile, "libhook_core.so"),
+        )
+        val x86BuildDir = File(fpaCoreBuildDir.get().asFile.parentFile, "build-x86").let { File(it, "libhook_core.so") }
+        val soSources = listOf(
+            hookCoreSo.get().asFile to File(fpaCoreBuildDir.get().asFile, "libhook_core.so"),
+            hookCoreX86So.get().asFile to x86BuildDir,
+        )
+
+        soCases.forEachIndexed { index, pair ->
+            if (index != 0) return@forEachIndexed
+            val so = pair.first
+            if (!so.isFile) {
+                problems += "缺少发布资产 ${so.name}：${so.absolutePath}"
+                return@forEachIndexed
+            }
+            val symbolHint = soSources[index].second
+            if (!symbolHint.isFile) {
+                problems += "找不到原生构建产物 ${symbolHint.absolutePath}，无法证明 ${so.name} 来源"
+            } else if (XpStubDex.sha256(symbolHint) != XpStubDex.sha256(so)) {
+                problems += "${so.name} 与 ${symbolHint.absolutePath} 不一致：" +
+                    "资产不是最近一次原生构建的产物（${XpStubDex.sha256(so).take(12)} ≠ " +
+                    "${XpStubDex.sha256(symbolHint).take(12)}）"
+            }
+            if (nm != null) {
+                val exports = XpNativeGate.readDefinedSymbols(nm, so, execOps)
+                val missing = XpNativeGate.EXPECTED_HOOK_CORE_EXPORTS.filter { it !in exports }
+                val extra = exports.filter { it !in XpNativeGate.EXPECTED_HOOK_CORE_EXPORTS }
+                if (missing.isNotEmpty()) {
+                    problems += "${so.name} 缺少导出：${missing.joinToString(", ")}"
+                }
+                if (extra.isNotEmpty()) {
+                    problems += "${so.name} 存在非白名单导出：${extra.joinToString(", ")}"
+                }
+                if (exports.size != XpNativeGate.EXPECTED_HOOK_CORE_EXPORTS.size) {
+                    problems += "${so.name} 导出数量 ${exports.size} ≠ 期望 " +
+                        "${XpNativeGate.EXPECTED_HOOK_CORE_EXPORTS.size}"
+                }
+                notes += "${so.name}: ${exports.size} 个导出（${XpStubDex.sha256(so).take(12)}）"
+            }
+        }
+
+        val x86 = hookCoreX86So.get().asFile
+        if (x86.isFile) {
+            if (!x86BuildDir.isFile) {
+                problems += "找不到原生构建产物 ${x86BuildDir.absolutePath}，无法证明 ${x86.name} 来源"
+            } else if (XpStubDex.sha256(x86BuildDir) != XpStubDex.sha256(x86)) {
+                problems += "${x86.name} 与 ${x86BuildDir.absolutePath} 不一致：" +
+                    "资产不是最近一次原生构建的产物"
+            }
+            if (nm != null) {
+                val exports = XpNativeGate.readDefinedSymbols(nm, x86, execOps)
+                val missing = XpNativeGate.EXPECTED_HOOK_CORE_EXPORTS.filter { it !in exports }
+                val extra = exports.filter { it !in XpNativeGate.EXPECTED_HOOK_CORE_EXPORTS }
+                if (missing.isNotEmpty()) {
+                    problems += "${x86.name} 缺少导出：${missing.joinToString(", ")}"
+                }
+                if (extra.isNotEmpty()) {
+                    problems += "${x86.name} 存在非白名单导出：${extra.joinToString(", ")}"
+                }
+                notes += "${x86.name}: ${exports.size} 个导出（${XpStubDex.sha256(x86).take(12)}）"
+            }
+        } else {
+            problems += "缺少发布资产 ${x86.name}"
+        }
+
+        val debugDir = debugAssetsDir.get().asFile
+        if (debugDir.isDirectory) {
+            val debugSo = File(debugDir, "hook_core_x86_64.so")
+            if (debugSo.isFile && x86.isFile && XpStubDex.sha256(debugSo) != XpStubDex.sha256(x86)) {
+                notes += "debug 变体存在不同的 hook_core_x86_64.so，release 使用 main 资产，未受影响"
+            }
+        }
+
+        val dex = runtimeDex.get().asFile
+        if (!dex.isFile) {
+            problems += "缺少发布资产 runtime.dex：${dex.absolutePath}"
+        } else {
+            val classes = XpNativeGate.readDexClassDescriptors(dex)
+            val sourcesRoot = runtimeSourceDir.orNull?.asFile
+            if (sourcesRoot == null || !sourcesRoot.isDirectory) {
+                problems += "找不到内核源码目录 runtime/java，无法校验 runtime.dex 类集合"
+            } else {
+                val expected = XpNativeGate.expectedDescriptors(sourcesRoot)
+                val missingClasses = expected.filter { it !in classes }
+                if (missingClasses.isNotEmpty()) {
+                    problems += "runtime.dex 缺少当前源码类（${missingClasses.size} 个）：" +
+                        missingClasses.take(20).joinToString(", ") +
+                        if (missingClasses.size > 20) " …" else ""
+                }
+                val required = XpNativeGate.REQUIRED_RUNTIME_DESCRIPTORS.filter { it !in classes }
+                if (required.isNotEmpty()) {
+                    problems += "runtime.dex 缺少必需类：${required.joinToString(", ")}"
+                }
+                notes += "runtime.dex: ${classes.size} 个 class_defs，" +
+                    "源码类 ${expected.size} 个（${XpStubDex.sha256(dex).take(12)}）"
+            }
+        }
+
+        val stub = stubDex.get().asFile
+        if (!stub.isFile) {
+            problems += "缺少发布资产 stub.dex：${stub.absolutePath}"
+        } else {
+            val stubClasses = XpNativeGate.readDexClassDescriptors(stub)
+            val missingStub = XpNativeGate.REQUIRED_STUB_DESCRIPTORS.filter { it !in stubClasses }
+            if (missingStub.isNotEmpty()) {
+                problems += "stub.dex 缺少引导桩：${missingStub.joinToString(", ")}"
+            }
+            val stubSources = stubSourceDir.orNull?.asFile
+            if (stubSources != null && stubSources.isDirectory) {
+                val missingStubs = XpStubDex.missingDescriptors(stub, stubSources)
+                if (missingStubs.isNotEmpty()) {
+                    problems += "stub.dex 缺少 manager/stub 源码类：" + missingStubs.joinToString(", ")
+                }
+            }
+            notes += "stub.dex: ${stubClasses.size} 个 class_defs（${XpStubDex.sha256(stub).take(12)}）"
+        }
+
+        notes.forEach { logger.lifecycle("checkReleaseAssets: $it") }
+        if (problems.isNotEmpty()) {
+            val message = problems.joinToString("\n")
+            logger.error("checkReleaseAssets 校验失败：\n$message")
+            throw GradleException("checkReleaseAssets 校验失败（${problems.size} 项）：\n$message")
+        }
+        logger.lifecycle("checkReleaseAssets: 发布资产与当前源码一致")
+    }
+}
+
+object XpVersionGate {
     val MANAGER_PATTERN = Regex("""const\s+val\s+RUNTIME_VERSION\s*(?::\s*Int\s*)?=\s*(\d+)""")
 
     val RUNTIME_PATTERN = Regex("""static\s+(?:final\s+)?int\s+RUNTIME_VERSION\s*=\s*(\d+)\s*;""")
@@ -758,7 +1132,37 @@ val checkRuntimeVersionTask = tasks.register<CheckRuntimeVersionTask>("checkRunt
     latestLabelFile.set(file("src/main/java/io/xpatch/ui/screens/ScopeScreens.kt"))
 }
 
+val xpAssetsDir: File = file("src/main/assets/xp")
+val xpDebugAssetsDir: File = file("src/debug/assets/xp")
+val xpRuntimeSourceDir: File = File(xpRepoRoot, "runtime/java")
+val xpFpaCoreDir: File = File(xpRepoRoot.parentFile ?: xpRepoRoot, "fpa-core")
+
+val checkReleaseAssetsTask = tasks.register<CheckReleaseAssetsTask>("checkReleaseAssets") {
+    group = "xp"
+    description = "校验发布资产（hook_core*.so 导出符号、runtime.dex 类集合、来源产物）与当前源码一致"
+    assetsDir.set(xpAssetsDir)
+    runtimeSourceDir.set(xpRuntimeSourceDir)
+    debugAssetsDir.set(xpDebugAssetsDir)
+    fpaCoreBuildDir.set(File(xpFpaCoreDir, "build"))
+    hookCoreSo.set(File(xpAssetsDir, "hook_core.so"))
+    hookCoreX86So.set(File(xpAssetsDir, "hook_core_x86_64.so"))
+    runtimeDex.set(File(xpAssetsDir, "runtime.dex"))
+    stubDex.set(File(xpAssetsDir, "stub.dex"))
+    stubSourceDir.set(File(rootProject.projectDir, "stub"))
+    androidSdkDir.set(providers.provider { xpStubSdkDir })
+    nmPath.set(providers.provider { XpNativeGate.resolveNm(xpStubSdkDir)?.absolutePath ?: "" })
+}
+
 tasks.matching { it.name == "check" || it.name == "assembleRelease" || it.name == "bundleRelease" }
     .configureEach {
         dependsOn(checkRuntimeVersionTask)
     }
+
+tasks.matching { it.name == "assembleRelease" || it.name == "bundleRelease" }
+    .configureEach {
+        dependsOn(checkReleaseAssetsTask)
+    }
+
+tasks.matching { it.name == "mergeReleaseAssets" }.configureEach {
+    dependsOn(checkReleaseAssetsTask)
+}

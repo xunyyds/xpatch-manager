@@ -214,8 +214,8 @@ fun SearchField(
         modifier
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
-            .height(42.dp)
-            .clip(RoundedCornerShape(if (miuix) 14.dp else 21.dp))
+            .height(48.dp)
+            .clip(RoundedCornerShape(if (miuix) 14.dp else 24.dp))
             .background(container)
             .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -249,8 +249,8 @@ fun SearchField(
         if (value.isNotEmpty()) {
             Box(
                 Modifier
-                    .size(34.dp)
-                    .clip(RoundedCornerShape(17.dp))
+                    .size(48.dp)
+                    .clip(RoundedCornerShape(24.dp))
                     .clickable { onValueChange("") },
                 contentAlignment = Alignment.Center,
             ) {
@@ -327,14 +327,19 @@ fun Chip(
 }
 
 @Composable
-fun RowDivider(startPadding: Dp = 82.dp) {
+fun RowDivider(startPadding: Dp = Dp.Unspecified) {
+    val resolved = if (startPadding == Dp.Unspecified) {
+        if (LocalMiuix.current) 72.dp else 82.dp
+    } else {
+        startPadding
+    }
     if (LocalMiuix.current) {
         MiuixDivider(
-            modifier = Modifier.padding(start = startPadding),
+            modifier = Modifier.padding(start = resolved),
         )
     } else {
         HorizontalDivider(
-            modifier = Modifier.padding(start = startPadding),
+            modifier = Modifier.padding(start = resolved),
             color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
         )
     }

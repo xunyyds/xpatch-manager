@@ -16,6 +16,7 @@ class EmbeddedSource(
     private val packageNameOf: (File) -> String?,
     private val outDir: File,
     private val score: (Entry) -> Int = { 0 },
+    private val strippedBootDex: Set<String> = emptySet(),
     private val onLog: (String) -> Unit = {},
 ) {
 
@@ -165,6 +166,7 @@ class EmbeddedSource(
         var hits = 0
         var missing = 0
         var skipped = 0
+        var dexHits = 0
         val samples = ArrayList<String>(3)
         for (entry in entries) {
             if (excluded(entry.name, candidate)) continue
@@ -180,17 +182,39 @@ class EmbeddedSource(
                 continue
             }
             if (size != entry.uncompressedSize || crc != entry.crc) {
+                if (isDexEntry(entry.name)) {
+                    skipped++
+                    continue
+                }
                 if (missing < 3) samples += entry.name
                 missing++
                 continue
             }
+            if (isDexEntry(entry.name)) dexHits++
             hits++
         }
         if (skipped > 0) {
-            onLog("内嵌来源：${candidate.name} 跳过内嵌包不存在的引导桩 $skipped 个（classes*.dex）")
+            onLog("内嵌来源：${candidate.name} 跳过 $skipped 个引导桩 dex（外层是框架桩或缺失、内嵌包是宿主代码，classes*.dex）")
+        }
+        val stubHits = countStrippedBootDex(sizes, crcs)
+        if (stubHits > 0) {
+            onLog("内嵌来源：${candidate.name} 命中 $stubHits 个已剥离引导桩（外层该路径是框架桩、内嵌包是宿主代码，互为原始包证据）")
+        }
+        if (missing == 0 && dexHits == 0 && stubHits == 0) {
+            return Verdict(hits, "内嵌包一个 dex 都没命中，无法证明它是同一份代码")
         }
         if (missing == 0) return Verdict(hits, null)
         return Verdict(hits, "与外层有 $missing 个条目不一致（如 ${samples.joinToString("，")}）")
+    }
+
+    private fun countStrippedBootDex(sizes: Map<String, Long>, crcs: Map<String, Long>): Int {
+        if (strippedBootDex.isEmpty()) return 0
+        var found = 0
+        for (name in strippedBootDex) {
+            if (sizes[name] == null || crcs[name] == null) continue
+            found++
+        }
+        return found
     }
 
     private fun choose(verified: List<Verified>, candidates: List<Entry>, rejected: List<String>): Outcome {

@@ -1,6 +1,7 @@
 package io.xpatch.data
 
 import android.content.Context
+import io.xpatch.patch.PatchLog
 
 enum class HookCore(val label: String, val index: Int) {
     XPLANT("LSPlant", 0),
@@ -41,9 +42,9 @@ data class ManagerSettings(
     val updateGoodSource: String = "",
     val forceOverwrite: Boolean = false,
     val sigMode: String = SettingsStore.SIG_MODE_DEFAULT,
-    val entryHook: Boolean = false,
     val injectObfuscate: Boolean = false,
     val injectKeepCrashPermission: Boolean = false,
+    val patchLogLevel: Int = SettingsStore.LOG_LEVEL_DEFAULT,
 )
 
 class SettingsStore(context: Context) {
@@ -75,9 +76,9 @@ class SettingsStore(context: Context) {
         updateGoodSource = prefs.getString(KEY_UPDATE_SOURCE, "").orEmpty(),
         forceOverwrite = prefs.getBoolean(KEY_FORCE_OVERWRITE, false),
         sigMode = normalizedSigMode(prefs.getString(KEY_SIG_MODE, "").orEmpty()),
-        entryHook = prefs.getBoolean(KEY_ENTRY_HOOK, false),
         injectObfuscate = prefs.getBoolean(KEY_INJECT_OBFUSCATE, false),
         injectKeepCrashPermission = prefs.getBoolean(KEY_INJECT_KEEP_CRASH_PERMISSION, false),
+        patchLogLevel = PatchLog.normalize(prefs.getInt(KEY_LOG_LEVEL, LOG_LEVEL_DEFAULT)),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -140,14 +141,14 @@ class SettingsStore(context: Context) {
     fun setSigMode(mode: String) =
         prefs.edit().putString(KEY_SIG_MODE, normalizedSigMode(mode)).apply()
 
-    fun setEntryHook(enabled: Boolean) =
-        prefs.edit().putBoolean(KEY_ENTRY_HOOK, enabled).apply()
-
     fun setInjectObfuscate(enabled: Boolean) =
         prefs.edit().putBoolean(KEY_INJECT_OBFUSCATE, enabled).apply()
 
     fun setInjectKeepCrashPermission(enabled: Boolean) =
         prefs.edit().putBoolean(KEY_INJECT_KEEP_CRASH_PERMISSION, enabled).apply()
+
+    fun setPatchLogLevel(level: Int) =
+        prefs.edit().putInt(KEY_LOG_LEVEL, PatchLog.normalize(level)).apply()
 
     companion object {
         const val THEME_SYSTEM = 0
@@ -204,10 +205,11 @@ class SettingsStore(context: Context) {
         private const val KEY_UPDATE_SOURCE = "update_good_source"
         private const val KEY_FORCE_OVERWRITE = "force_overwrite"
         private const val KEY_SIG_MODE = "sig_mode"
-        private const val KEY_ENTRY_HOOK = "entry_hook"
 
         private const val KEY_INJECT_OBFUSCATE = "inject_obfuscate"
         private const val KEY_INJECT_KEEP_CRASH_PERMISSION = "inject_keep_crash_permission"
+        private const val KEY_LOG_LEVEL = "patch_log_level"
+        const val LOG_LEVEL_DEFAULT = PatchLog.LEVEL_NORMAL
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
     }

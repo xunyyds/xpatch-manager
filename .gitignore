@@ -1,5 +1,6 @@
 # 构建产物
 build/
+build-*/
 *.apk
 *.idsig
 *.log
@@ -30,6 +31,10 @@ manager/local.properties
 
 # 本地工作区（构建缓存 / 审查产物，不入库）
 work/
+review/
+
+# 工作区约束文件只留在本地
+AGENTS.md
 
 # 实验性构建输出目录
 manager/app/build-alt/

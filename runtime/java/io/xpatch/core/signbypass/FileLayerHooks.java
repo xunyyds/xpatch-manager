@@ -51,7 +51,7 @@ public final class FileLayerHooks {
 
         int count = 0;
         count += installOn(CONTEXT_IMPL, true);
-        count += installOn(CONTEXT_WRAPPER, false);
+        count += installOn(CONTEXT_WRAPPER, true);
         hookedCount = count;
         if (count == 0) {
             installed = false;

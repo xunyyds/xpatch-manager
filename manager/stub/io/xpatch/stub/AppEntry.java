@@ -46,7 +46,10 @@ public class AppEntry extends AppComponentFactory {
 
     private static volatile boolean injected;
     private static volatile boolean injecting;
-    private static AppComponentFactory delegate;
+    private static volatile AppComponentFactory delegate;
+    private static volatile boolean delegateResolved;
+    private static volatile String delegateName;
+    private static volatile String delegateFailedFor;
     private static ApplicationInfo selfInfo;
     private static volatile ClassLoader dynamicLoader;
 
@@ -131,34 +134,63 @@ public class AppEntry extends AppComponentFactory {
         if (factory != null) {
             return factory;
         }
+        if (delegateResolved) {
+            return null;
+        }
         ApplicationInfo appInfo = info != null ? info : selfInfo;
         if (appInfo == null) {
             return null;
         }
-        String name = null;
-        try {
-            name = readFactoryName(appInfo.sourceDir);
-        } catch (Throwable t) {
-            Log.w(TAG, "读取原厂工厂名失败：" + t);
-        }
-        if (name == null || name.length() == 0 || isSelf(name)) {
-            if (name != null && name.length() > 0) {
+        String source = appInfo.sourceDir;
+        synchronized (AppEntry.class) {
+            if (delegate != null) {
+                return delegate;
+            }
+            if (delegateResolved) {
+                return null;
+            }
+            if (delegateFailedFor != null && delegateFailedFor.equals(source)) {
+                return null;
+            }
+            String name = delegateName;
+            if (name == null) {
+                try {
+                    name = readFactoryName(source);
+                } catch (Throwable t) {
+                    Log.w(TAG, "读取原厂工厂名失败：" + t);
+                    name = "";
+                }
+                delegateName = name == null ? "" : name;
+                name = delegateName;
+            }
+            if (name.length() == 0) {
+                delegateResolved = true;
+                return null;
+            }
+            if (isSelf(name)) {
                 Log.w(TAG, "忽略指回自身的工厂：" + name);
+                delegateResolved = true;
+                return null;
             }
-            return null;
-        }
-        try {
-            ClassLoader effective = effectiveLoader(cl);
-            Class<?> cls = Class.forName(name, true, effective);
-            Object instance = cls.newInstance();
-            if (instance instanceof AppComponentFactory) {
-                factory = (AppComponentFactory) instance;
-                delegate = factory;
+            try {
+                ClassLoader effective = effectiveLoader(cl);
+                Class<?> cls = Class.forName(name, true, effective);
+                Object instance = cls.newInstance();
+                if (instance instanceof AppComponentFactory) {
+                    factory = (AppComponentFactory) instance;
+                    delegate = factory;
+                    delegateResolved = true;
+                    return factory;
+                }
+                delegateFailedFor = source;
+                delegateResolved = true;
+            } catch (Throwable t) {
+                Log.w(TAG, "原厂工厂不可用：" + name + " -> " + t);
+                delegateFailedFor = source;
+                delegateResolved = true;
             }
-        } catch (Throwable t) {
-            Log.w(TAG, "原厂工厂不可用：" + name + " -> " + t);
+            return factory;
         }
-        return factory;
     }
 
     private static ClassLoader effectiveLoader(ClassLoader cl) {

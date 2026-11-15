@@ -49,6 +49,7 @@ import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.PermissionCenter
 import io.xpatch.data.UiStyle
 import io.xpatch.model.ModuleInfo
+import io.xpatch.patch.PatchLog
 import io.xpatch.patch.ShizukuBridge
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SettingChoiceRow
@@ -76,6 +77,7 @@ internal fun SettingsScreen(
     onUiStyleChange: (UiStyle) -> Unit,
     onShowSystemChange: (Boolean) -> Unit,
     onBottomBarChange: (Int) -> Unit,
+    onLogLevelChange: (Int) -> Unit,
     onPickExportDir: () -> Unit,
     onClearExportDir: () -> Unit,
     onExportConfig: () -> Unit,
@@ -150,6 +152,16 @@ internal fun SettingsScreen(
                         defaultSignatureName,
                         arrow = true,
                         onClick = onOpenSignatures,
+                    )
+                }
+            }
+            item {
+                SettingGroup("打包") {
+                    SettingChoiceRow(
+                        "打包日志",
+                        PatchLog.LEVEL_OPTIONS.map { it.second },
+                        settings.patchLogLevel,
+                        onLogLevelChange,
                     )
                 }
             }
@@ -254,6 +266,16 @@ internal fun SettingsScreen(
                         defaultSignatureName,
                         arrow = true,
                         onClick = onOpenSignatures,
+                    )
+                }
+            }
+            item {
+                SettingGroup("打包") {
+                    MiuixSpinnerRow(
+                        title = "打包日志",
+                        options = PatchLog.LEVEL_OPTIONS.map { it.second },
+                        selectedIndex = settings.patchLogLevel,
+                        onSelect = onLogLevelChange,
                     )
                 }
             }

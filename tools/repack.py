@@ -1,12 +1,3 @@
-"""把构建好的 dex 原位写回目标 APK。
-
-原位替换：只改动目标条目的压缩数据与头部 CRC/长度，不重建整个 zip。
-这样能保留原包中共享数据区（多个条目指向同一段数据）的布局，避免包体膨胀。
-
-用法：
-    python repack.py <目标.apk> <新dex> [--entry classes.dex] [--out 输出.apk]
-"""
-
 import argparse
 import struct
 import sys
@@ -25,7 +16,6 @@ def uleb(n: int) -> bytes:
             return bytes(out)
 
 def find_local_header(data: bytes, name: str):
-    """在中央目录里定位条目，返回 (cd_pos, lho, 字段字典)。"""
     eocd = data.rfind(b'PK\x05\x06')
     if eocd < 0:
         raise SystemExit('不是有效的 zip：找不到 EOCD')

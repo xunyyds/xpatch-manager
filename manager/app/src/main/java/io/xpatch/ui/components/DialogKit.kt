@@ -25,12 +25,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.LocalMiuix
 import kotlin.math.roundToInt
-import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal data class DialogAction(
     val label: String,
@@ -44,9 +44,17 @@ internal fun XPatchDialog(
     title: String,
     actions: List<DialogAction>,
     dismissible: Boolean = true,
+    fixedContentHeight: Dp? = null,
     miuix: Boolean = LocalMiuix.current,
     content: @Composable ColumnScope.() -> Unit,
 ) {
+    val configuration = LocalConfiguration.current
+    val miuixMaxContentHeight = (configuration.screenHeightDp * 0.5f).roundToInt().coerceAtLeast(240)
+    val contentHeightModifier = if (fixedContentHeight != null) {
+        Modifier.height(fixedContentHeight.coerceAtMost(miuixMaxContentHeight.dp))
+    } else {
+        Modifier.heightIn(max = miuixMaxContentHeight.dp)
+    }
     if (miuix) {
         top.yukonga.miuix.kmp.window.WindowDialog(
             show = true,
@@ -54,17 +62,34 @@ internal fun XPatchDialog(
             title = title,
         ) {
             Column {
-                content()
+                Column(
+                    contentHeightModifier
+                        .verticalScroll(rememberScrollState()),
+                ) {
+                    content()
+                }
                 if (actions.isNotEmpty()) {
                     Spacer(Modifier.height(20.dp))
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.End),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
                     ) {
                         actions.forEach { action ->
                             top.yukonga.miuix.kmp.basic.TextButton(
                                 text = action.label,
                                 onClick = action.onClick,
+                                colors = top.yukonga.miuix.kmp.basic.ButtonDefaults.textButtonColors(
+                                    color = if (action.destructive) {
+                                        MaterialTheme.colorScheme.errorContainer
+                                    } else {
+                                        MaterialTheme.colorScheme.primaryContainer
+                                    },
+                                    textColor = if (action.destructive) {
+                                        MaterialTheme.colorScheme.error
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                ),
                             )
                         }
                     }
@@ -75,7 +100,6 @@ internal fun XPatchDialog(
     }
     val primary = MaterialTheme.colorScheme.primary
     val error = MaterialTheme.colorScheme.error
-    val configuration = LocalConfiguration.current
     val dialogMaxWidth = (configuration.screenWidthDp * 0.92f).roundToInt().coerceAtMost(480)
     val dialogMaxContentHeight = (configuration.screenHeightDp * 0.6f).roundToInt()
 

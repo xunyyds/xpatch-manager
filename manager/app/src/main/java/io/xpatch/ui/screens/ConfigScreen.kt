@@ -22,6 +22,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -29,13 +30,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.HookCore
 import io.xpatch.data.PatchRecord
 import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
+import io.xpatch.patch.BypassTier
 import io.xpatch.patch.PatchOptions
 import io.xpatch.patch.ShizukuInstaller
 import io.xpatch.ui.components.AppIcon
@@ -45,11 +51,14 @@ import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
+import top.yukonga.miuix.kmp.basic.ButtonDefaults
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import top.yukonga.miuix.kmp.basic.TextField as MiuixTextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
+import java.io.File
 
 internal const val NO_SIGN_ID = "__no_sign__"
 
@@ -72,6 +81,13 @@ private val BYPASS_MODES = listOf(
         bypassLevel = 3,
     ),
     BypassMode(
+        key = "nosource",
+        name = "无 source（Java 过签）",
+        desc = "仅覆盖 Java 签名查询。",
+        sigMode = SettingsStore.SIG_MODE_JAVA,
+        bypassLevel = 0,
+    ),
+    BypassMode(
         key = "basic",
         name = "Basic（Java 层）",
         desc = "Java 层签名伪装：Signature 比较、PackageInfo、checkSignatures 都返回原证书，覆盖大多数应用（默认档）。",
@@ -86,23 +102,33 @@ private val BYPASS_MODES = listOf(
         bypassLevel = 2,
     ),
     BypassMode(
+        key = "plt",
+        name = "PLT（GOT 重定向，实验性）",
+        desc = "实验性档位：在 Java 层之外改写已加载库的 open/openat/fopen GOT 槽，" +
+            "把按路径读取签名指回原包。覆盖率随宿主实现浮动，部分宿主 patched=0 后仅剩 Java 层，" +
+            "排障请先看 _framework 日志里的「扫描 N 个库 / 改写 M 个槽」。" +
+            "本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
+        sigMode = SettingsStore.SIG_MODE_JAVA,
+        bypassLevel = 4,
+    ),
+    BypassMode(
         key = "file",
         name = "File（+ 文件层）",
-        desc = "在 Strict 之上把代码/资源路径重定向到内嵌的原始安装包，处理按 APK 文件路径读签名的校验；必须内嵌原包，产物更大。",
+        desc = "在 Strict 之上把代码/资源路径重定向到原始安装包，处理按 APK 文件路径读签名的校验。本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
         sigMode = SettingsStore.SIG_MODE_JAVA_FILE,
         bypassLevel = 2,
     ),
     BypassMode(
         key = "seccomp",
         name = "Seccomp（native 重定向）",
-        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件层；同样需要内嵌原包，但不含 hasSigningCertificate 严格校验。",
+        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件层；不含 hasSigningCertificate 严格校验。本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
         sigMode = SettingsStore.SIG_MODE_JAVA,
         bypassLevel = 1,
     ),
     BypassMode(
         key = "extreme",
         name = "Extreme（最高档）",
-        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件层路径重定向 + dobby/inline 混合 native 重定向三层叠加；必须内嵌原始安装包，产物最大。",
+        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件层路径重定向 + dobby/inline 混合 native 重定向三层叠加。本档自动内嵌原包（嵌套链接，不翻倍），不开动态也生效。",
         sigMode = SettingsStore.SIG_MODE_DEEP,
         bypassLevel = 3,
     ),
@@ -127,7 +153,7 @@ internal fun ConfigScreen(
     onStart: (PatchOptions) -> Unit,
     onPickSignature: (SignatureStore.Profile) -> Unit,
     onForceOverwriteChange: (Boolean) -> Unit,
-    onSignatureModeChange: (sigMode: String, bypassLevel: Int, entryHook: Boolean) -> Unit,
+    onSignatureModeChange: (sigMode: String, bypassLevel: Int) -> Unit,
     onObfuscateChange: (obfuscate: Boolean, keepCrash: Boolean) -> Unit,
     forceOverwriteReady: Boolean,
     forceOverwriteBlockReason: String,
@@ -141,7 +167,6 @@ internal fun ConfigScreen(
     var dynamicMode by remember { mutableStateOf(defaults.dynamicMode) }
     var forceOverwrite by remember { mutableStateOf(defaults.forceOverwrite) }
     var sigMode by remember { mutableStateOf(defaults.sigMode) }
-    var entryHook by remember { mutableStateOf(defaults.entryHook) }
     var injectObfuscate by remember { mutableStateOf(defaults.injectObfuscate) }
     var injectKeepCrashPermission by remember { mutableStateOf(defaults.injectKeepCrashPermission) }
     var forceOverwriteError by remember { mutableStateOf<String?>(null) }
@@ -180,6 +205,35 @@ internal fun ConfigScreen(
         is PatchTarget.FromFile -> target.icon
     }
 
+    val sourcePath = when (target) {
+        is PatchTarget.Installed -> target.app.apkPath
+        is PatchTarget.FromFile -> target.file.absolutePath
+    }
+    val sourceSize = when (target) {
+        is PatchTarget.Installed -> runCatching { File(target.app.apkPath).length() }.getOrDefault(0L)
+        is PatchTarget.FromFile -> runCatching { target.file.length() }.getOrDefault(0L)
+    }
+    val embedEstimate = dynamicMode || BypassTier.of(sigMode, bypass).needsSource
+    var estimatedSize by remember { mutableStateOf(0L) }
+    var estimating by remember { mutableStateOf(false) }
+    var estimateDots by remember { mutableStateOf(0) }
+    val context = LocalContext.current
+    LaunchedEffect(sourcePath, sourceSize, embedEstimate, dynamicMode, fileProvider, injectObfuscate, injectKeepCrashPermission) {
+        estimating = sourceSize > 0L && !busy
+        estimateDots = 0
+        estimatedSize = 0L
+        if (estimating) {
+            delay(2000)
+            estimatedSize = estimateApkSize(context, sourcePath, sourceSize, embedEstimate, dynamicMode)
+        }
+        estimating = false
+    }
+    LaunchedEffect(estimating) {
+        while (estimating) {
+            delay(400)
+            estimateDots = (estimateDots + 1) % 4
+        }
+    }
     val selectedProfile = if (forceOverwrite) {
         signatures.firstOrNull { it.id == SignatureStore.BUILTIN_XPATCH }
     } else if (injectSignature) {
@@ -198,7 +252,6 @@ internal fun ConfigScreen(
         versionName = versionName.trim().ifBlank { null },
         versionCode = versionCode.trim().toIntOrNull(),
         sigMode = sigMode,
-        entryHook = entryHook,
         obfuscate = injectObfuscate,
         obfuscateKeepCrashPermission = injectKeepCrashPermission,
     )
@@ -272,7 +325,7 @@ internal fun ConfigScreen(
                         )
                         SwitchLine(
                             title = "动态模式",
-                            subtitle = "内核动态接管类加载",
+                            subtitle = "决定宿主代码的加载方式：开启则外层省略宿主 dex，由内核从内嵌原包动态接管类加载；关闭则宿主 dex 留在外层正常加载。文件层 / native 重定向档位都会自动以嵌套链接内嵌原包（资源条目共享原包字节，产物不翻倍），开关动态都生效。",
                             checked = dynamicMode,
                             onChange = { dynamicMode = it },
                         )
@@ -281,17 +334,8 @@ internal fun ConfigScreen(
                 item {
                     SettingGroup("实验性") {
                         SwitchLine(
-                            title = "入口 Hook",
-                            subtitle = "实验：额外插入 ContentProvider 备用入口，仍保留工厂注入。",
-                            checked = entryHook,
-                            onChange = { on ->
-                                entryHook = on
-                                onSignatureModeChange(sigMode, bypass, on)
-                            },
-                        )
-                        SwitchLine(
                             title = "注入路径混淆",
-                            subtitle = "实验：抹掉产物里的 xp/* 条目名与清单里的类名，静态检查看不出修补痕迹；重新打包后生效",
+                            subtitle = "抹掉产物里的 xp/* 条目名与清单类名，静态检查看不出修补痕迹；重新打包后生效",
                             checked = injectObfuscate,
                             onChange = { on ->
                                 injectObfuscate = on
@@ -300,8 +344,8 @@ internal fun ConfigScreen(
                         )
                         if (injectObfuscate) {
                             SwitchLine(
-                                title = "保留模块熔断权限",
-                                subtitle = "会恢复模块崩溃通知，但清单里会留下 io.xpatch.permission.MODULE_CRASH",
+                                title = "保留模块崩溃通知权限",
+                                subtitle = "恢复模块崩溃通知，但清单里会留下 io.xpatch.permission.MODULE_CRASH 痕迹",
                                 checked = injectKeepCrashPermission,
                                 onChange = { on ->
                                     injectKeepCrashPermission = on
@@ -309,7 +353,7 @@ internal fun ConfigScreen(
                                 },
                             )
                         }
-                        NoteText("混淆会把注入条目改名为随机资产路径，并跳过熔断权限声明；模块崩溃时管理器只能看到日志。")
+                        NoteText("混淆会把注入条目改名为随机资产路径，并默认跳过崩溃通知权限声明；模块崩溃时管理器只能看到日志。")
                         SwitchLine(
                             title = "强行覆盖安装",
                             subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
@@ -361,6 +405,11 @@ internal fun ConfigScreen(
                 }
             }
         }
+        if (estimating) {
+            NoteText("预计产物大小：计算中" + ".".repeat(estimateDots))
+        } else if (estimatedSize > 0L) {
+            NoteText("预计产物大小：" + readableSize(estimatedSize) + "+")
+        }
         StartButton(busy) {
             if (reusable != null) {
                 reuseConfirm = reusable
@@ -384,12 +433,12 @@ internal fun ConfigScreen(
             title = "过签方案",
             options = BYPASS_MODES.map { Triple(it.key, it.name, it.desc) },
             selected = bypassKey ?: "",
+            fixedHeight = 360.dp,
             onSelect = { key ->
                 BYPASS_MODES.firstOrNull { it.key == key }?.let { mode ->
                     sigMode = mode.sigMode
                     bypass = mode.bypassLevel
-                    dynamicMode = mode.key == "file" || mode.key == "seccomp" || mode.key == "extreme"
-                    onSignatureModeChange(mode.sigMode, mode.bypassLevel, entryHook)
+                    onSignatureModeChange(mode.sigMode, mode.bypassLevel)
                 }
             },
             onDismiss = { showBypassDialog = false },
@@ -735,11 +784,13 @@ private fun <T> ChoiceDialog(
     selected: T,
     onSelect: (T) -> Unit,
     onDismiss: () -> Unit,
+    fixedHeight: Dp? = null,
 ) {
     XPatchDialog(
         onDismiss = onDismiss,
         title = title,
         actions = listOf(DialogAction("取消") { onDismiss() }),
+        fixedContentHeight = fixedHeight,
     ) {
         Column {
             options.forEach { (value, name, desc) ->
@@ -797,6 +848,9 @@ private fun NoteText(text: String) {
 @Composable
 private fun StartButton(busy: Boolean, onClick: () -> Unit) {
     if (LocalMiuix.current) {
+        val dark = MaterialTheme.colorScheme.background.luminance() < 0.5f
+        val container = if (dark) MiuixTheme.colorScheme.surfaceContainerHigh else Color.White
+        val content = MiuixTheme.colorScheme.onSurface
         MiuixButton(
             onClick = onClick,
             enabled = !busy,
@@ -804,6 +858,13 @@ private fun StartButton(busy: Boolean, onClick: () -> Unit) {
                 .fillMaxWidth()
                 .padding(horizontal = 12.dp, vertical = 12.dp)
                 .height(52.dp),
+            cornerRadius = 16.dp,
+            colors = ButtonDefaults.buttonColors(
+                color = container,
+                contentColor = content,
+                disabledColor = container,
+                disabledContentColor = content.copy(alpha = 0.32f),
+            ),
         ) {
             MiuixText(
                 if (busy) "正在打包…" else "开始 Patch",
@@ -824,3 +885,49 @@ private fun StartButton(busy: Boolean, onClick: () -> Unit) {
         Text(if (busy) "正在打包…" else "开始 Patch", style = MaterialTheme.typography.titleMedium)
     }
 }
+
+private fun estimateApkSize(
+    context: android.content.Context,
+    sourcePath: String,
+    sourceSize: Long,
+    embed: Boolean,
+    dynamic: Boolean,
+): Long {
+    if (sourceSize <= 0L) {
+        return 0L
+    }
+    val overhead = injectedAssetBytes(context)
+    if (!embed || dynamic) {
+        return sourceSize + overhead
+    }
+    var dexBytes = 0L
+    runCatching {
+        java.util.zip.ZipFile(File(sourcePath)).use { zip ->
+            zip.entries().asSequence().forEach { entry ->
+                if (entry.name.startsWith("classes") && entry.name.endsWith(".dex")) {
+                    dexBytes += entry.compressedSize
+                }
+            }
+        }
+    }
+    return sourceSize + dexBytes + overhead
+}
+
+private fun injectedAssetBytes(context: android.content.Context): Long {
+    val names = listOf(
+        "xp/runtime.dex",
+        "xp/hook_core.dex",
+        "xp/hook_core.so",
+        "xp/hook_core_x86_64.so",
+        "xp/stub.dex",
+        "xp/xp89.dex",
+        "xp/xp100.dex",
+        "xp/xp101.dex",
+        "xp/xp102.dex",
+        "xp/file_provider.dex",
+    )
+    return names.sumOf { name ->
+        runCatching { context.assets.open(name).use { it.available().toLong() } }.getOrDefault(0L)
+    }
+}
+

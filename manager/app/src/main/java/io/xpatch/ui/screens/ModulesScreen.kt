@@ -88,7 +88,7 @@ internal fun ModulesScreen(
             }
             item { GroupHeader("已安装 ${filtered.size} 个模块") }
             if (filtered.isEmpty()) {
-                item { EmptyState("没有找到模块") }
+                item { EmptyState(if (modules.isEmpty()) "还没有安装模块" else "没有匹配的模块") }
             }
             if (miuix && filtered.isNotEmpty()) {
                 item {

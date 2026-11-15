@@ -84,7 +84,6 @@ object EnvInfoCollector {
         appendLine("Hook 内核: " + settings.hookCore.label)
         appendLine("签名绕过等级: " + settings.signatureBypassLevel)
         appendLine("过签模式: " + describeSigMode(settings))
-        appendLine("入口 Hook: " + onOff(settings.entryHook))
         appendLine("强制覆盖产物: " + onOff(settings.forceOverwrite))
         appendLine("注入签名: " + onOff(settings.injectSignature))
         appendLine("动态模式: " + onOff(settings.dynamicMode))

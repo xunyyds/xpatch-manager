@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -103,6 +104,7 @@ fun JellySwitch(
                 enabled = enabled,
                 interactionSource = interaction,
                 indication = null,
+                role = Role.Switch,
                 onValueChange = {
                     animateOnSettle = true
                     onCheckedChange(it)

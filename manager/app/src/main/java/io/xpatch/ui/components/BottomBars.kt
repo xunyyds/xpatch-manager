@@ -97,6 +97,12 @@ internal fun LiquidBar(current: Tab, backdrop: Backdrop, onSelect: (Tab) -> Unit
             onTabSelected = { index -> Tab.entries.getOrNull(index)?.let(onSelect) },
             backdrop = backdrop,
             tabsCount = Tab.entries.size,
+            accentColor = primary,
+            containerColor = if (LocalMiuix.current) {
+                MiuixTheme.colorScheme.surface
+            } else {
+                MaterialTheme.colorScheme.surface
+            },
         ) {
             Tab.entries.forEach { entry ->
                 val selected = current == entry
@@ -104,12 +110,12 @@ internal fun LiquidBar(current: Tab, backdrop: Backdrop, onSelect: (Tab) -> Unit
                     MiuixIcon(
                         entry.icon,
                         contentDescription = entry.label,
-                        modifier = Modifier.size(if (selected) 23.dp else 20.dp),
+                        modifier = Modifier.size(22.dp),
                         tint = if (selected) primary else idle,
                     )
                     top.yukonga.miuix.kmp.basic.Text(
                         entry.label,
-                        fontSize = 10.sp,
+                        fontSize = 12.sp,
                         fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
                         color = if (selected) primary else idle,
                     )

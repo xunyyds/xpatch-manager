@@ -150,6 +150,8 @@ private fun ScopeAppRow(
 
 internal data class AppScopeMeta(val installTime: String, val apkSize: String)
 
+internal enum class ActionRunState { Idle, Running, Done }
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 internal fun AppScopeScreen(
@@ -193,7 +195,40 @@ internal fun AppScopeScreen(
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
     var scopeFilter by remember { mutableIntStateOf(0) }
+    var forceStopState by remember { mutableStateOf<ActionRunState>(ActionRunState.Idle) }
+    var dexoptState by remember { mutableStateOf<ActionRunState>(ActionRunState.Idle) }
     val settledEnabled = settledState.value
+
+    val onForceStopRun: () -> Unit = {
+        forceStopState = ActionRunState.Running
+        onForceStop()
+    }
+    val onDexoptRun: () -> Unit = {
+        dexoptState = ActionRunState.Running
+        onDexopt()
+    }
+    LaunchedEffect(forceStopState) {
+        if (forceStopState == ActionRunState.Running) {
+            delay(2000)
+            if (forceStopState == ActionRunState.Running) forceStopState = ActionRunState.Done
+        }
+    }
+    LaunchedEffect(dexoptState) {
+        if (dexoptState == ActionRunState.Running) {
+            delay(2000)
+            if (dexoptState == ActionRunState.Running) dexoptState = ActionRunState.Done
+        }
+    }
+    val forceStopSubtitle = when (forceStopState) {
+        ActionRunState.Running -> "正在停止…"
+        ActionRunState.Done -> "已停止"
+        ActionRunState.Idle -> null
+    }
+    val dexoptSubtitle = when (dexoptState) {
+        ActionRunState.Running -> "正在优化…"
+        ActionRunState.Done -> "已完成"
+        ActionRunState.Idle -> "重新编译应用（Dexopt）"
+    }
 
     val onSwitchSettled: (String) -> Unit = { pkg ->
         pendingPackage = pkg
@@ -250,17 +285,18 @@ internal fun AppScopeScreen(
                     DetailRow("安装时间", meta?.installTime ?: "未设置", Modifier.padding(horizontal = 16.dp))
                     DetailRow("大小", meta?.apkSize ?: "未设置", Modifier.padding(horizontal = 16.dp))
                     DetailRow("内核", runtimeLabel(app), Modifier.padding(horizontal = 16.dp))
+                    DetailRow("模块", "${app.enabledModules} 个生效", Modifier.padding(horizontal = 16.dp))
                     Spacer(Modifier.height(12.dp))
                     MiuixDivider()
                     ActionRow("启动应用", onLaunch)
                     MiuixDivider()
-                    ActionRow("强制停止", onForceStop, "正在停止 ")
+                    ActionRow("强制停止", onForceStopRun, forceStopSubtitle)
                     MiuixDivider()
                     ActionRow("重启应用", onRestart, "强制停止后重新拉起")
                     MiuixDivider()
-                    ActionRow("Dexopt 优化", onDexopt)
+                    ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle)
                     MiuixDivider()
-                    ActionRow("打开系统应用信息页", onAppInfo)
+                    ActionRow("应用信息", onAppInfo)
                     MiuixDivider()
                     ActionRow("查看日志", onViewLogs)
                     MiuixDivider()
@@ -272,12 +308,13 @@ internal fun AppScopeScreen(
                     DetailRow("安装时间", meta?.installTime ?: "未设置")
                     DetailRow("大小", meta?.apkSize ?: "未设置")
                     DetailRow("内核", runtimeLabel(app))
+                    DetailRow("模块", "${app.enabledModules} 个生效")
                 }
                 ActionRow("启动应用", onLaunch)
-                ActionRow("强制停止", onForceStop, "正在停止 ")
+                ActionRow("强制停止", onForceStopRun, forceStopSubtitle)
                 ActionRow("重启应用", onRestart, "强制停止后重新拉起")
-                ActionRow("Dexopt 优化", onDexopt)
-                ActionRow("打开系统应用信息页", onAppInfo)
+                ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle)
+                ActionRow("应用信息", onAppInfo)
                 ActionRow("查看日志", onViewLogs)
                 ActionRow("更新内核", onUpdateCore, "使用当前内核重新打包")
             }

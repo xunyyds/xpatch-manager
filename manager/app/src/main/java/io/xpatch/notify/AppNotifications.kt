@@ -154,10 +154,10 @@ object AppNotifications {
             "未能写入作用域文件，请到作用域页手动移除「$moduleLabel」"
         }
         val detail = if (scopeWritten) {
-            "发现模块「$moduleLabel」导致「$appLabel」频繁闪退，已自动将其从该应用的作用域移除，本次启动已跳过。" +
+            "发现模块「$moduleLabel」已连续 3 次导致「$appLabel」启动崩溃，已自动将其从该应用的作用域移除。" +
                 "如需恢复，可在模块作用域页重新勾选。"
         } else {
-            "发现模块「$moduleLabel」导致「$appLabel」频繁闪退，已把它从管理器的作用域设置中移除，" +
+            "发现模块「$moduleLabel」已连续 3 次导致「$appLabel」启动崩溃，已把它从管理器的作用域设置中移除，" +
                 "但作用域文件写入失败（通常是没给「所有文件访问」权限），下次启动仍可能加载该模块。" +
                 "请到模块作用域页手动确认，或授权后重试。"
         }

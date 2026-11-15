@@ -82,7 +82,7 @@ internal fun PickerScreen(
             }
             .let { filtered ->
                 when (sortId) {
-                    "letter" -> filtered.sortedBy { it.label.lowercase() }
+                    "letter" -> filtered.sortedBy { io.xpatch.ui.util.PinyinIndex.sortKey(it.label) }
                     "size" -> filtered.sortedBy { it.size }
                     else -> filtered
                 }
@@ -277,7 +277,4 @@ private fun PickerRow(app: AppInfo, sortId: String, onPick: () -> Unit) {
     )
 }
 
-internal fun letterOf(label: String): String {
-    val c = label.firstOrNull()?.uppercaseChar() ?: return "#"
-    return if (c in 'A'..'Z') c.toString() else "#"
-}
+internal fun letterOf(label: String): String = io.xpatch.ui.util.PinyinIndex.key(label)

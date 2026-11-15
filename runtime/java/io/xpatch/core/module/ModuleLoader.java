@@ -2,6 +2,8 @@ package io.xpatch.core.module;
 
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
+import android.os.Build;
+import android.os.Process;
 import android.text.TextUtils;
 import android.util.ArrayMap;
 import android.util.Log;
@@ -224,36 +226,87 @@ public class ModuleLoader {
     }
 
     private static ClassLoader createModuleClassLoader(String str, String[] wrapperNames) throws Exception {
-        int dexCount = 0;
-        ZipFile zipFile = new ZipFile(str);
-        int i = 1;
-        while (true) {
-            try {
-                ZipEntry entry = zipFile.getEntry(i == 1 ? "classes.dex" : "classes" + i + ".dex");
-                if (entry == null) {
-                    break;
-                }
-                dexCount++;
-                i++;
-            } catch (Throwable th3) {
-                try {
-                    zipFile.close();
-                } catch (Throwable th4) {
-                    th3.addSuppressed(th4);
-                }
-                throw th3;
-            }
-        }
-        zipFile.close();
-        if (dexCount == 0) {
-            throw new IllegalStateException("模块 APK 中没有 dex：" + str);
-        }
-        String str2 = str + "!/lib/arm64-v8a/";
         ByteBuffer[] wrapperBuffers = new ByteBuffer[wrapperNames.length];
         for (int w = 0; w < wrapperNames.length; w++) {
             wrapperBuffers[w] = ByteBuffer.wrap(getWrapperDexBytes(wrapperNames[w]));
         }
-        return new PathClassLoader(str, str2, new InMemoryDexClassLoader(wrapperBuffers, str2, ModuleLoader.class.getClassLoader()));
+        String nativeLibDir = resolveModuleNativeLibDir(str);
+        return new PathClassLoader(str, nativeLibDir,
+                new InMemoryDexClassLoader(wrapperBuffers, nativeLibDir, ModuleLoader.class.getClassLoader()));
+    }
+
+    private static int countModuleDex(ZipFile zipFile) {
+        int dexCount = 0;
+        int i = 1;
+        while (true) {
+            ZipEntry entry = zipFile.getEntry(i == 1 ? "classes.dex" : "classes" + i + ".dex");
+            if (entry == null) {
+                break;
+            }
+            dexCount++;
+            i++;
+        }
+        return dexCount;
+    }
+
+    private static String resolveModuleNativeLibDir(String apkPath) {
+        ZipFile zipFile = null;
+        try {
+            zipFile = new ZipFile(apkPath);
+            if (countModuleDex(zipFile) == 0) {
+                throw new IllegalStateException("模块 APK 中没有 dex：" + apkPath);
+            }
+            java.util.Set<String> present = new java.util.HashSet<String>();
+            java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (!name.startsWith("lib/") || !name.endsWith("/")) {
+                    continue;
+                }
+                String abi = name.substring(4, name.length() - 1);
+                if (abi.length() > 0 && abi.indexOf('/') < 0) {
+                    present.add(abi);
+                }
+            }
+            if (present.isEmpty()) {
+                XpHook.log0(TAG, "模块 " + apkPath + " 没有 lib/<abi>/ 目录：不提供 native 库路径");
+                return null;
+            }
+            boolean is64 = Process.is64Bit();
+            String[] candidates = is64 ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
+            String[] fallback = is64 ? Build.SUPPORTED_32_BIT_ABIS : Build.SUPPORTED_64_BIT_ABIS;
+            for (int i = 0; candidates != null && i < candidates.length; i++) {
+                String abi = candidates[i];
+                if (present.contains(abi)) {
+                    XpHook.log0(TAG, "模块 native 库目录：" + apkPath + "!/lib/" + abi
+                            + "/（进程位宽=" + (is64 ? "64" : "32") + "）");
+                    return apkPath + "!/lib/" + abi + "/";
+                }
+            }
+            for (int i = 0; fallback != null && i < fallback.length; i++) {
+                String abi = fallback[i];
+                if (present.contains(abi)) {
+                    XpHook.log0(TAG, "模块没有匹配进程位宽（" + (is64 ? "64" : "32")
+                            + "）的 lib/<abi>/，回退 " + abi + "：" + apkPath);
+                    return apkPath + "!/lib/" + abi + "/";
+                }
+            }
+            XpHook.log0(TAG, "模块 APK 的 lib 目录与设备 ABI 都不匹配（" + present
+                    + " / 设备=" + java.util.Arrays.toString(Build.SUPPORTED_ABIS)
+                    + "）：只丢 native 能力");
+            return null;
+        } catch (Exception e) {
+            XpHook.log0(TAG, "探测模块 native 库目录失败：" + apkPath + " -> " + e);
+            return null;
+        } finally {
+            if (zipFile != null) {
+                try {
+                    zipFile.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
     }
 
     private static byte[] readSelfEntryBytes(String str) throws Exception {

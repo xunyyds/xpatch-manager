@@ -21,6 +21,8 @@ public final class SignatureFacade {
 
     private static final String TAG = "XpSigFacade";
 
+    private static final String HEX_DIGITS = "0123456789abcdef";
+
     private static final boolean HOOK_WRITE_TO_PARCEL = true;
 
     private static volatile boolean attempted;
@@ -33,6 +35,8 @@ public final class SignatureFacade {
     private static volatile boolean hashCodeHooked;
     private static volatile boolean equalsHooked;
     private static volatile boolean writeToParcelHooked;
+    private static volatile boolean toCharsStringHooked;
+    private static volatile boolean toCharsHooked;
 
     private static volatile Mapping mapping = Mapping.EMPTY;
 
@@ -260,6 +264,22 @@ public final class SignatureFacade {
                 log("hook Signature.writeToParcel 失败：" + th);
             }
         }
+        if (!toCharsStringHooked) {
+            try {
+                Method method = Signature.class.getMethod("toCharsString", new Class[0]);
+                toCharsStringHooked = XpHook.doHook(method, 0, new ToCharsStringCallback()) != null;
+            } catch (Throwable th) {
+                log("hook Signature.toCharsString 失败：" + th);
+            }
+        }
+        if (!toCharsHooked) {
+            try {
+                Method method = Signature.class.getMethod("toChars", new Class[0]);
+                toCharsHooked = XpHook.doHook(method, 0, new ToCharsCallback()) != null;
+            } catch (Throwable th) {
+                log("hook Signature.toChars 失败：" + th);
+            }
+        }
         return toByteArrayHooked && hashCodeHooked && equalsHooked
                 && (!HOOK_WRITE_TO_PARCEL || writeToParcelHooked);
     }
@@ -405,6 +425,45 @@ public final class SignatureFacade {
             byte[] right = otherNormalized != null ? otherNormalized : other;
             param.setResult(Boolean.valueOf(Arrays.equals(left, right)));
         }
+    }
+
+    private static final class ToCharsStringCallback implements XpHook.XpCallback {
+        @Override
+        public void onHook(XpHook.XpParam param) throws Throwable {
+            byte[] original = SignatureFacade.normalize(SignatureFacade.bytesOf((Signature) param.this0));
+            if (original == null) {
+                param.proceed();
+                return;
+            }
+            param.setResult(SignatureFacade.charsStringOf(original));
+        }
+    }
+
+    private static final class ToCharsCallback implements XpHook.XpCallback {
+        @Override
+        public void onHook(XpHook.XpParam param) throws Throwable {
+            byte[] original = SignatureFacade.normalize(SignatureFacade.bytesOf((Signature) param.this0));
+            if (original == null) {
+                param.proceed();
+                return;
+            }
+            param.setResult(SignatureFacade.charsOf(original));
+        }
+    }
+
+    private static String charsStringOf(byte[] raw) {
+        return new String(charsOf(raw));
+    }
+
+    private static char[] charsOf(byte[] raw) {
+        int length = raw == null ? 0 : raw.length;
+        char[] chars = new char[length * 2];
+        for (int i = 0; i < length; i++) {
+            int value = raw[i] & 0xFF;
+            chars[i * 2] = HEX_DIGITS.charAt(value >>> 4);
+            chars[i * 2 + 1] = HEX_DIGITS.charAt(value & 0x0F);
+        }
+        return chars;
     }
 
     private static final class WriteToParcelCallback implements XpHook.XpCallback {

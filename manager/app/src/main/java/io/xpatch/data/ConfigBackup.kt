@@ -53,7 +53,6 @@ class ConfigBackup(private val context: Context) {
                 put("uiStyle", settings.uiStyle.index)
                 put("bottomBarStyle", settings.bottomBarStyle)
                 put("sigMode", settings.sigMode)
-                put("entryHook", settings.entryHook)
                 put("forceOverwrite", settings.forceOverwrite)
                 put("injectObfuscate", settings.injectObfuscate)
                 put("injectKeepCrashPermission", settings.injectKeepCrashPermission)
@@ -105,9 +104,6 @@ class ConfigBackup(private val context: Context) {
             settingsStore.setDynamicMode(settings.optBoolean("dynamicMode", false))
             if (settings.has("sigMode")) {
                 settingsStore.setSigMode(settings.optString("sigMode", SettingsStore.SIG_MODE_DEFAULT))
-            }
-            if (settings.has("entryHook")) {
-                settingsStore.setEntryHook(settings.optBoolean("entryHook", false))
             }
             if (settings.has("forceOverwrite")) {
                 settingsStore.setForceOverwrite(settings.optBoolean("forceOverwrite", false))

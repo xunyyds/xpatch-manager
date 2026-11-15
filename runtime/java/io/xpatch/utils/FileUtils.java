@@ -9,14 +9,32 @@ public class FileUtils {
     public static void write(String str, byte[] bArr) {
         File file = new File(str);
         File parentFile = file.getParentFile();
-        if (!parentFile.exists()) {
+        if (parentFile != null && !parentFile.exists()) {
             parentFile.mkdirs();
         }
+        File backup = new File(str + ".bak");
+        File tmp = new File(str + ".tmp");
         try {
-            FileOutputStream fileOutputStream = new FileOutputStream(file);
-            fileOutputStream.write(bArr);
-            fileOutputStream.close();
+            FileOutputStream fileOutputStream = new FileOutputStream(tmp);
+            try {
+                fileOutputStream.write(bArr);
+                fileOutputStream.flush();
+                fileOutputStream.getFD().sync();
+            } finally {
+                fileOutputStream.close();
+            }
+            if (file.isFile() && !backup.exists() && !file.renameTo(backup)) {
+                backup = null;
+            }
+            if (!tmp.renameTo(file)) {
+                if (!tmp.renameTo(file)) {
+                    throw new IOException("rename 到 " + file + " 失败");
+                }
+            }
         } catch (IOException e) {
+            if (tmp.exists()) {
+                tmp.delete();
+            }
             throw new RuntimeException(e);
         }
     }
@@ -26,23 +44,50 @@ public class FileUtils {
     }
 
     public static byte[] readBytes(String str) {
-        File file = new File(str);
-        if (!file.exists()) {
+        return readBytes(new File(str));
+    }
+
+    public static byte[] readBytes(File file) {
+        if (file == null || !file.exists()) {
             return null;
         }
         try {
             FileInputStream fileInputStream = new FileInputStream(file);
-            byte[] bArr = new byte[(int) file.length()];
-            fileInputStream.read(bArr);
-            fileInputStream.close();
-            return bArr;
+            try {
+                byte[] bArr = new byte[(int) file.length()];
+                int offset = 0;
+                while (offset < bArr.length) {
+                    int read = fileInputStream.read(bArr, offset, bArr.length - offset);
+                    if (read <= 0) {
+                        break;
+                    }
+                    offset += read;
+                }
+                if (offset < bArr.length) {
+                    byte[] shorter = new byte[offset];
+                    System.arraycopy(bArr, 0, shorter, 0, offset);
+                    return shorter;
+                }
+                return bArr;
+            } finally {
+                fileInputStream.close();
+            }
         } catch (IOException e) {
             throw new RuntimeException(e);
         }
     }
 
+    public static byte[] readWithFallback(String str) {
+        File primary = new File(str);
+        byte[] bytes = readBytes(primary);
+        if (bytes != null) {
+            return bytes;
+        }
+        return readBytes(new File(str + ".bak"));
+    }
+
     public static String readString(String str) {
-        byte[] bytes = readBytes(str);
+        byte[] bytes = readWithFallback(str);
         if (bytes == null) {
             return null;
         }

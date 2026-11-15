@@ -71,7 +71,7 @@ private val MiuixLight = lightColorScheme(
     surface = Color.White,
     onSurface = Color(0xFF0F1114),
     surfaceVariant = Color(0xFFEFF2F6),
-    onSurfaceVariant = Color(0xFF8C93B0),
+    onSurfaceVariant = Color(0xFF6B7290),
     surfaceContainerLowest = Color.White,
     surfaceContainerLow = Color(0xFFFAFAFC),
     surfaceContainer = Color.White,
@@ -101,7 +101,7 @@ private val MiuixDark = darkColorScheme(
     surface = Color(0xFF242424),
     onSurface = Color(0xFFEDEFF2),
     surfaceVariant = Color(0xFF24262A),
-    onSurfaceVariant = Color(0xFF787E96),
+    onSurfaceVariant = Color(0xFF949AB2),
     surfaceContainerLowest = Color(0xFF1B1B1B),
     surfaceContainerLow = Color(0xFF1F1F1F),
     surfaceContainer = Color(0xFF242424),
@@ -170,6 +170,7 @@ fun XPatchTheme(
                     surfaceContainer = Color(0xFF242424),
                     surfaceContainerHigh = Color(0xFF2D2D2D),
                     surfaceContainerHighest = Color(0xFF333333),
+                    onSurfaceVariantSummary = Color(0xFF949AB2),
                 )
             } else {
                 top.yukonga.miuix.kmp.theme.lightColorScheme(
@@ -179,6 +180,7 @@ fun XPatchTheme(
                     surfaceContainer = Color(0xFFFFFFFF),
                     surfaceContainerHigh = Color(0xFFF2F3F5),
                     surfaceContainerHighest = Color(0xFFE8E8E8),
+                    onSurfaceVariantSummary = Color(0xFF6B7290),
                 )
             }
         }

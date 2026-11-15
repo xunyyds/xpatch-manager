@@ -56,7 +56,8 @@ public final class NativeLoader {
         }
         if (AppEnv.nativeLoadedByHookCore) {
             loaded = true;
-            lastError = null;
+            loadedPath = loadedPath == null ? "hook_core.dex" : loadedPath;
+            loadedAsset = loadedAsset == null ? "hook_core.dex" : loadedAsset;
             XpHook.log0(TAG, "hook_core.so 已由 hook_core.dex 加载，跳过重复 System.load");
             return true;
         }
@@ -67,6 +68,14 @@ public final class NativeLoader {
             XpHook.log0(TAG, "hook_core.so 加载异常：" + Log.getStackTraceString(th));
             return false;
         }
+    }
+
+    public static synchronized void markLoadedByHookCore() {
+        AppEnv.nativeLoadedByHookCore = true;
+        loaded = true;
+        loadedPath = "hook_core.dex";
+        loadedAsset = "hook_core.dex";
+        lastError = null;
     }
 
     private static boolean loadInternal(Context context) {
@@ -229,8 +238,26 @@ public final class NativeLoader {
 
     private static String primaryAbi() {
         try {
-            if (Build.SUPPORTED_ABIS != null && Build.SUPPORTED_ABIS.length > 0) {
-                return Build.SUPPORTED_ABIS[0];
+            boolean is64 = Process.is64Bit();
+            String[] candidates = is64 ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
+            if (candidates != null) {
+                for (int i = 0; i < candidates.length; i++) {
+                    String abi = candidates[i];
+                    if (abi != null && abi.length() > 0) {
+                        return abi;
+                    }
+                }
+            }
+            String[] fallback = is64 ? Build.SUPPORTED_32_BIT_ABIS : Build.SUPPORTED_64_BIT_ABIS;
+            if (fallback != null) {
+                for (int i = 0; i < fallback.length; i++) {
+                    String abi = fallback[i];
+                    if (abi != null && abi.length() > 0) {
+                        XpHook.log0(TAG, "进程位宽=" + (is64 ? "64" : "32")
+                                + "，没有匹配的 ABI，回退 " + abi);
+                        return abi;
+                    }
+                }
             }
             if (Build.CPU_ABI != null && Build.CPU_ABI.length() > 0) {
                 return Build.CPU_ABI;

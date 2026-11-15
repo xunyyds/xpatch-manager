@@ -6,6 +6,8 @@ import android.app.LoadedApk;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
+import android.content.pm.PackageInfo;
+import android.content.pm.PackageManager;
 import android.content.pm.Signature;
 import android.os.Handler;
 import android.os.Looper;
@@ -19,6 +21,7 @@ import io.xpatch.core.module.ModuleLoader;
 import io.xpatch.core.module.RemoteModule;
 import io.xpatch.core.module.RemoteModuleProvider;
 import io.xpatch.core.remote.RemoteAccessBridge;
+import io.xpatch.core.signbypass.AppInfoHooks;
 import io.xpatch.core.signbypass.CheckSignaturesBypass;
 import io.xpatch.core.signbypass.DeferredSignHooks;
 import io.xpatch.core.signbypass.FileLayerHooks;
@@ -81,7 +84,7 @@ public class XpInit {
     private static final String MODULE_PENDING_PREFIX = "xpatch-module-pending-";
     private static final String MODULE_COUNTS_FILE = "xpatch-module-crash-counts.txt";
     private static final int MODULE_CRASH_THRESHOLD = 3;
-    private static final long MODULE_CRASH_WINDOW_MS = 24L * 60L * 60L * 1000L;
+    private static final long MODULE_PENDING_MAX_AGE_MILLIS = 24L * 60L * 60L * 1000L;
 
     static Object activityThread;
     static LoadedApk loadedApk;
@@ -89,11 +92,12 @@ public class XpInit {
 
     private static boolean signBypassInstalled = false;
     private static volatile boolean started = false;
+    private static volatile boolean succeeded = false;
     private static boolean deferredSignHooksScheduled = false;
     private static final List<Runnable> startupCallbacks = new ArrayList<Runnable>();
     private static boolean fallbackStartupHookInstalled = false;
-    private static final Set<String> startupLoadedPackages = new HashSet<String>();
     private static final List<File> startupPendingFiles = new ArrayList<File>();
+    private static final Set<String> startupLoadedPackages = new HashSet<String>();
     private static final Runnable STARTUP_COMMIT = new Runnable() {
         @Override
         public void run() {
@@ -107,50 +111,154 @@ public class XpInit {
             return;
         }
         started = true;
-        try {
-            AppUtils.removeProfileFiles(AppEnv.packageName);
-            AppUtils.remoteOATFiles(AppEnv.packageName);
-            new File(AppEnv.baseApp.dataDir + "/cache/android_id/").mkdirs();
-            performXpConfig();
-            initHookCore();
-            AppEnv.nativeLoadedByHookCore = true;
-            preDeopt();
-            preloadWrapperAssets();
-            installSignBypass();
-            if (AppEnv.dynamicMode) {
-                try {
-                    getApplicationInfo();
-                    initClassLoaderInject();
-                    XpHook.log0(TAG, "切换应用成功");
-                } catch (Throwable th) {
-                    XpHook.log0(TAG, "切换应用失败：" + Log.getStackTraceString(th));
+        List<String> failed = new ArrayList<String>();
+        runStep("removeProfileFiles", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                AppUtils.removeProfileFiles(AppEnv.packageName);
+            }
+        });
+        runStep("remoteOATFiles", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                AppUtils.remoteOATFiles(AppEnv.packageName);
+            }
+        });
+        runStep("prepareCacheDir", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                new File(AppEnv.baseApp.dataDir + "/cache/android_id/").mkdirs();
+            }
+        });
+        runStep("performXpConfig", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                performXpConfig();
+            }
+        });
+        runStep("initHookCore", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                if (initHookCore()) {
+                    NativeLoader.markLoadedByHookCore();
+                } else {
+                    XpHook.log0(TAG, "hook_core.dex 未能初始化：Java 层过签与文件层仍可用，native 特性降级");
                 }
             }
-            if (AppEnv.fileProvider) {
-                try {
-                    injectFileProviderDexFile();
-                } catch (Throwable th) {
-                    XpHook.log0(TAG, "注入文件提供器 dex 失败：" + Log.getStackTraceString(th));
-                }
+        });
+        runStep("preDeopt", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                preDeopt();
             }
-            if (AppEnv.appContext == null) {
+        });
+        runStep("preloadWrapperAssets", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                preloadWrapperAssets();
+            }
+        });
+        runStep("installSignBypass", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                installSignBypass();
+            }
+        });
+        runStep("switchClassLoader", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                if (!AppEnv.dynamicMode) {
+                    return;
+                }
+                getApplicationInfo();
+                initClassLoaderInject();
+                XpHook.log0(TAG, "切换应用成功");
+            }
+        });
+        runStep("injectFileProviderDex", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                if (!AppEnv.fileProvider) {
+                    return;
+                }
+                injectFileProviderDexFile();
+            }
+        });
+        runStep("createAppContext", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                if (AppEnv.appContext != null) {
+                    return;
+                }
                 createAppContext();
             }
-            if (AppEnv.appContext != null) {
+        });
+        runStep("remoteAccessBridge", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                if (AppEnv.appContext == null) {
+                    return;
+                }
                 RemoteAccessBridge.initialize(AppEnv.appContext);
             }
-            createFakeInstrumentation();
-            if (AppEnv.baseApp.appComponentFactory != null) {
-                try {
-                    AppEnv.appClassLoader.loadClass(AppEnv.baseApp.appComponentFactory);
-                } catch (Exception unused) {
-                }
+        });
+        runStep("createFakeInstrumentation", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                createFakeInstrumentation();
             }
-            ModuleLoader.preloadWrapperDexes();
-            refreshScopeModulePaths();
-            initModules();
-        } catch (Throwable th2) {
-            XpHook.log0(TAG, "创建应用失败：" + Log.getStackTraceString(th2));
+        });
+        runStep("preloadHostFactory", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                String factory = AppEnv.baseApp.appComponentFactory;
+                if (factory == null || factory.length() == 0) {
+                    return;
+                }
+                AppEnv.appClassLoader.loadClass(factory);
+            }
+        });
+        runStep("preloadWrapperDexes", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                ModuleLoader.preloadWrapperDexes();
+            }
+        });
+        runStep("refreshScopeModulePaths", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                refreshScopeModulePaths();
+            }
+        });
+        runStep("initModules", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                initModules();
+            }
+        });
+        if (failed.isEmpty()) {
+            succeeded = true;
+            XpHook.log0(TAG, "初始化完成：全部步骤成功（进程=" + AppEnv.processName
+                    + "，签名模式=" + AppEnv.sig_mode + "）");
+            return;
+        }
+        XpHook.log0(TAG, "init failed steps=" + failed);
+    }
+
+    public static boolean initSucceeded() {
+        return succeeded;
+    }
+
+    private interface Step {
+        void run() throws Throwable;
+    }
+
+    private static void runStep(String name, List<String> failed, Step step) {
+        try {
+            step.run();
+        } catch (Throwable th) {
+            failed.add(name + "(" + th.getClass().getSimpleName() + ": " + th.getMessage() + ")");
+            XpHook.log0(TAG, "步骤 " + name + " 失败：" + Log.getStackTraceString(th));
         }
     }
 
@@ -168,7 +276,6 @@ public class XpInit {
         if (signBypassInstalled) {
             return;
         }
-        signBypassInstalled = true;
 
         boolean nativeLoaded = false;
         try {
@@ -188,6 +295,7 @@ public class XpInit {
         boolean hasSourceApk = sourcePath != null && sourcePath.length() > 0;
 
         Signature[] signs = SignatureFacade.originals();
+        boolean installed = false;
         try {
             boolean primitive = SignatureFacade.install();
             boolean strict = AppEnv.sign_bypass_type == 2
@@ -200,6 +308,14 @@ public class XpInit {
                 XpHook.log0(TAG, "hasSigningCertificate 早期安装失败：" + Log.getStackTraceString(th));
             }
             installProviderStageHooks();
+            try {
+                if (!AppInfoHooks.install()) {
+                    XpHook.log0(TAG, "工厂还原未启用：" + AppInfoHooks.lastError()
+                            + "（宿主 pm.getApplicationInfo 会看到补丁工厂名）");
+                }
+            } catch (Throwable th) {
+                XpHook.log0(TAG, "工厂还原安装异常：" + Log.getStackTraceString(th));
+            }
             XpHook.log0(TAG, "签名严格校验开关=" + strict + "，bypass=" + AppEnv.sign_bypass_type
                     + "，hasSigningCertificate=" + (early ? "已安装" : "未安装"));
             try {
@@ -236,6 +352,8 @@ public class XpInit {
                 }
             }
             scheduleDeferredSignHooks();
+            probeSignatureBypass();
+            installed = true;
             XpHook.log0(TAG, "签名伪装已安装：模式=" + mode
                     + "，原语层=" + (primitive ? "开启" : "关闭")
                     + "，native=" + (nativeLoaded ? "已加载" : "未加载")
@@ -245,13 +363,35 @@ public class XpInit {
         } catch (Throwable th) {
             XpHook.log0(TAG, "签名伪装失败：" + Log.getStackTraceString(th)
                     + "\n  => 应用将看到重签证书，可能触发自校验闪退");
+        } finally {
+            signBypassInstalled = installed;
+        }
+    }
+
+    private static void probeSignatureBypass() {
+        if (!Log.isLoggable("XpSigProbe", Log.DEBUG)) {
+            return;
+        }
+        try {
+            PackageInfo info = AppEnv.appContext.getPackageManager()
+                    .getPackageInfo(AppEnv.packageName, PackageManager.GET_SIGNATURES);
+            Signature[] seen = info == null ? null : info.signatures;
+            Signature[] original = SignatureFacade.originals();
+            String seenHash = sha256Prefix(seen);
+            String originalHash = sha256Prefix(original);
+            Log.d("XpSigProbe", "package=" + AppEnv.packageName
+                    + " seen=" + seenHash + " original=" + originalHash
+                    + " match=" + (seenHash != null && seenHash.equals(originalHash)));
+        } catch (Throwable th) {
+            Log.d("XpSigProbe", "probe failed", th);
         }
     }
 
     private static boolean wantsFileLayer(String mode) {
         return AppEnv.SIG_MODE_JAVA_FILE.equals(mode)
                 || AppEnv.SIG_MODE_DEEP.equals(mode)
-                || AppEnv.sign_bypass_type == 1;
+                || AppEnv.sign_bypass_type == 1
+                || AppEnv.sign_bypass_type == 4;
     }
 
     private static void installProviderStageHooks() {
@@ -375,11 +515,17 @@ public class XpInit {
         }
     }
 
-    private static void preDeopt() {        for (Method method : Instrumentation.class.getDeclaredMethods()) {
-            if (method.getName().equals("newApplication")) {
-                XpHook.deopt0(method);
-                XpHook.log0(TAG, "置为解释执行：" + method);
+    private static void preDeopt() {
+        try {
+            for (Method method : Instrumentation.class.getDeclaredMethods()) {
+                if (method.getName().equals("newApplication")) {
+                    XpHook.deopt0(method);
+                    XpHook.log0(TAG, "置为解释执行：" + method);
+                }
             }
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "Instrumentation.newApplication 置解释执行失败（不阻塞后续初始化）："
+                    + Log.getStackTraceString(th));
         }
         try {
             for (Method method2 : LoadedApk.class.getDeclaredMethods()) {
@@ -484,45 +630,96 @@ public class XpInit {
             XpHook.log0(TAG, "动态模式跳过 classloader 切换：没有原包路径");
             return;
         }
-        Field fieldFindObjectField = findObjectField(Class.forName("android.app.ActivityThread"), "mBoundApplication");
-        fieldFindObjectField.setAccessible(true);
-        Object obj = fieldFindObjectField.get(activityThread);
+        Field boundApplicationField = findObjectField(
+                Class.forName("android.app.ActivityThread"), "mBoundApplication");
+        boundApplicationField.setAccessible(true);
+        Object boundApplication = boundApplicationField.get(activityThread);
+        Field packageInfoField = findObjectField(
+                Class.forName("android.app.ActivityThread$ActivityClientRecord"), "packageInfo");
+        packageInfoField.setAccessible(true);
+        ArrayMap activities = (ArrayMap) getObjectField(activityThread, "mActivities");
+        Map packages = (Map) getObjectField(activityThread, "mPackages");
         final String previousSourceDir = selfApplicationInfo.sourceDir;
         final String previousPublicSourceDir = selfApplicationInfo.publicSourceDir;
-        final Map packages = (Map) getObjectField(activityThread, "mPackages");
         final Object previousPackage = packages.get(selfApplicationInfo.packageName);
-        boolean switched = false;
+        final Context previousAppContext = AppEnv.appContext;
+        final ClassLoader previousAppClassLoader = AppEnv.appClassLoader;
+        final ClassLoader previousDynamicLoader = AppEnv.dynamicLoader;
+        final LoadedApk previousLoadedApk = loadedApk;
+        LoadedApk loadedApk2;
+        Context newAppContext;
+        ClassLoader newAppClassLoader;
         try {
             selfApplicationInfo.sourceDir = redirect;
             selfApplicationInfo.publicSourceDir = redirect;
             packages.remove(selfApplicationInfo.packageName);
-            final LoadedApk loadedApk2 = (LoadedApk) HiddenApiBypass.invoke(Class.forName("android.app.ActivityThread"), activityThread, "getPackageInfoNoCheck", selfApplicationInfo, getObjectField(obj, "compatInfo"));
+            loadedApk2 = (LoadedApk) HiddenApiBypass.invoke(Class.forName("android.app.ActivityThread"),
+                    activityThread, "getPackageInfoNoCheck", selfApplicationInfo,
+                    getObjectField(boundApplication, "compatInfo"));
+            if (loadedApk2 == null) {
+                throw new IllegalStateException("getPackageInfoNoCheck 返回 null（原包=" + redirect + "）");
+            }
+            newAppClassLoader = (ClassLoader) getObjectField(loadedApk2, "mClassLoader");
+            if (newAppClassLoader == null) {
+                newAppClassLoader = forceClassLoader(loadedApk2);
+            }
+            if (newAppClassLoader == null) {
+                throw new IllegalStateException("新 LoadedApk.mClassLoader 为 null（原包=" + redirect + "）");
+            }
+            verifyLoaderCanLoadHost(newAppClassLoader, redirect);
+            newAppContext = (Context) HiddenApiBypass.invoke(Class.forName("android.app.ContextImpl"),
+                    null, "createAppContext", activityThread, loadedApk2);
+            if (newAppContext == null) {
+                throw new IllegalStateException("ContextImpl.createAppContext 返回 null（原包=" + redirect + "）");
+            }
             XpHook.log0(TAG, "从以下路径加载：" + selfApplicationInfo.sourceDir);
-            ArrayMap arrayMap = (ArrayMap) getObjectField(activityThread, "mActivities");
-            final Field fieldFindObjectField2 = findObjectField(Class.forName("android.app.ActivityThread$ActivityClientRecord"), "packageInfo");
-            fieldFindObjectField2.setAccessible(true);
-            arrayMap.forEach(new BiConsumer() {
+        } catch (Throwable th) {
+            selfApplicationInfo.sourceDir = previousSourceDir;
+            selfApplicationInfo.publicSourceDir = previousPublicSourceDir;
+            if (previousPackage != null) {
+                packages.put(selfApplicationInfo.packageName, previousPackage);
+            } else {
+                packages.remove(selfApplicationInfo.packageName);
+            }
+            throw th instanceof Exception ? (Exception) th : new RuntimeException(th);
+        }
+        final LoadedApk targetLoadedApk = loadedApk2;
+        boolean switched = false;
+        try {
+            activities.forEach(new BiConsumer() {
                 @Override
                 public final void accept(Object obj2, Object obj3) {
-                    XpInit.lambda$initClassLoaderInject$0(fieldFindObjectField2, loadedApk2, obj2, obj3);
+                    XpInit.lambda$initClassLoaderInject$0(packageInfoField, targetLoadedApk, obj2, obj3);
                 }
             });
-            AppEnv.appContext = (Context) HiddenApiBypass.invoke(Class.forName("android.app.ContextImpl"), null, "createAppContext", activityThread, loadedApk2);
-            switchField(loadedApk2, loadedApk, "mBaseClassLoader");
-            switchField(loadedApk2, loadedApk, "mClassLoader");
-            switchField(loadedApk2, loadedApk, "mDefaultClassLoader");
-            setFieldValue(obj, "info", loadedApk2);
-            AppEnv.appClassLoader = (ClassLoader) getObjectField(loadedApk2, "mClassLoader");
-            AppEnv.dynamicLoader = AppEnv.appClassLoader;
+            if (loadedApk != null) {
+                switchField(loadedApk2, loadedApk, "mBaseClassLoader");
+                switchField(loadedApk2, loadedApk, "mClassLoader");
+                switchField(loadedApk2, loadedApk, "mDefaultClassLoader");
+            }
+            setFieldValue(boundApplication, "info", loadedApk2);
+            AppEnv.appContext = newAppContext;
+            AppEnv.appClassLoader = newAppClassLoader;
+            AppEnv.dynamicLoader = newAppClassLoader;
+            loadedApk = loadedApk2;
             switched = true;
         } finally {
             selfApplicationInfo.sourceDir = previousSourceDir;
             selfApplicationInfo.publicSourceDir = previousPublicSourceDir;
             if (!switched) {
+                AppEnv.appContext = previousAppContext;
+                AppEnv.appClassLoader = previousAppClassLoader;
+                AppEnv.dynamicLoader = previousDynamicLoader;
+                loadedApk = previousLoadedApk;
                 if (previousPackage != null) {
                     packages.put(selfApplicationInfo.packageName, previousPackage);
                 } else {
                     packages.remove(selfApplicationInfo.packageName);
+                }
+                try {
+                    setFieldValue(boundApplication, "info", previousLoadedApk);
+                } catch (Throwable th) {
+                    XpHook.log0(TAG, "回滚 mBoundApplication.info 失败：" + Log.getStackTraceString(th));
                 }
             }
         }
@@ -569,6 +766,46 @@ public class XpInit {
         }
     }
 
+    private static void verifyLoaderCanLoadHost(ClassLoader loader, String redirect) {
+        String className = null;
+        try {
+            className = AppEnv.baseApp == null ? null : AppEnv.baseApp.className;
+        } catch (Throwable ignored) {
+        }
+        if (className == null || className.length() == 0) {
+            XpHook.log0(TAG, "宿主未声明 Application 类，跳过切换前的加载校验");
+            return;
+        }
+        try {
+            Class.forName(className, false, loader);
+            XpHook.log0(TAG, "切换前校验通过：新 classloader 能加载宿主 Application " + className);
+        } catch (Throwable th) {
+            throw new IllegalStateException("新 classloader 加载不了宿主 Application " + className
+                    + "（原包=" + redirect + "，可能不是完整原始包）", th);
+        }
+    }
+
+    private static ClassLoader forceClassLoader(LoadedApk loadedApk) {
+        try {
+            Object loader = HiddenApiBypass.invoke(LoadedApk.class, loadedApk, "getClassLoader", new Class[0]);
+            if (loader instanceof ClassLoader) {
+                return (ClassLoader) loader;
+            }
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "LoadedApk.getClassLoader 调用失败：" + Log.getStackTraceString(th));
+        }
+        try {
+            java.lang.reflect.Method method = LoadedApk.class.getMethod("getClassLoader", new Class[0]);
+            Object loader = method.invoke(loadedApk, new Object[0]);
+            if (loader instanceof ClassLoader) {
+                return (ClassLoader) loader;
+            }
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "反射 getClassLoader 失败：" + Log.getStackTraceString(th));
+        }
+        return null;
+    }
+
     private static void switchField(Object obj, Object obj2, String str) {
         try {
             Field fieldFindObjectField = findObjectField(obj.getClass(), str);
@@ -607,104 +844,190 @@ public class XpInit {
     }
 
     private static Field findObjectField(Class<?> cls, String str) {
-        for (Field field : HiddenApiBypass.getInstanceFields(cls)) {
-            if (field.getName().equals(str)) {
-                return field;
-            }
-        }
-        return null;
-    }
-
-    private static void performXpConfig() throws IOException {
-        XpLayout.ensureInstalled();
-        String configEntry = configPath();
-        ZipFile zipFile = new ZipFile(AppEnv.selfApk);
-        try {
-            InputStream inputStream = zipFile.getInputStream(zipFile.getEntry(configEntry));
+        List<String> tried = new ArrayList<String>();
+        Class<?> current = cls;
+        while (current != null) {
+            tried.add(current.getName() + "#" + str);
             try {
-                JSONObject jSONObject = new JSONObject(new String(DataUtils.readAllBytes(inputStream)));
-                AppEnv.baseApp.appComponentFactory = jSONObject.getString("app_component_name");
-                AppEnv.sign_bypass_type = SignBypass.normalizeType(jSONObject.optInt("bypass_sign_type"));
-                AppEnv.core_ver = jSONObject.optInt("ver");
-                AppEnv.dynamicMode = jSONObject.optBoolean("dynamic_mode");
-                AppEnv.read_version_code = jSONObject.optLong("real_version_code", -1L);
-                AppEnv.fileProvider = jSONObject.optBoolean("file_provider");
-                AppEnv.buildNonce = jSONObject.optString("build_nonce", "");
-                AppEnv.managerPackage = normalizeManagerPackage(
-                        jSONObject.optString("manager_package", ""), AppEnv.managerPackage);
-                String rawMode = jSONObject.optString("sig_mode", "");
-                AppEnv.sig_mode_explicit = rawMode != null && rawMode.trim().length() > 0;
-                AppEnv.sig_mode = AppEnv.sig_mode_explicit
-                        ? normalizeSigMode(rawMode) : AppEnv.SIG_MODE_JAVA;
-                AppEnv.signing_details = jSONObject.optString("signing_details", null);
-                if (jSONObject.has("ver") && AppEnv.core_ver != CoreEntry.RUNTIME_VERSION) {
-                    XpHook.log0(TAG, "运行时版本不一致：" + configEntry + " ver=" + AppEnv.core_ver
-                            + "，内核 RUNTIME_VERSION=" + CoreEntry.RUNTIME_VERSION
-                            + "（建议用当前版本管理器重新打包）");
-                }
-                if (!AppEnv.SIG_MODE_OFF.equals(AppEnv.sig_mode)) {
-                    parseLegacySignatures(jSONObject);
-                }
-                SigningDetailsData.init(AppEnv.signing_details, AppEnv.signatures);
-                if (inputStream != null) {
-                    inputStream.close();
+                for (Field field : HiddenApiBypass.getInstanceFields(current)) {
+                    if (field.getName().equals(str)) {
+                        return field;
+                    }
                 }
             } catch (Throwable th) {
+                tried.add(current.getName() + " 枚举失败：" + th);
+            }
+            current = current.getSuperclass();
+        }
+        throw new IllegalStateException("找不到字段 " + str + "（尝试过：" + tried + "）");
+    }
+
+    private static void performXpConfig() {
+        XpLayout.ensureInstalled();
+        String configEntry = configPath();
+        ZipFile zipFile = null;
+        try {
+            zipFile = new ZipFile(AppEnv.selfApk);
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "无法打开安装包读取配置：" + AppEnv.selfApk + "（" + configEntry + "）\n"
+                    + Log.getStackTraceString(th));
+            return;
+        }
+        try {
+            ZipEntry configZipEntry = zipFile.getEntry(configEntry);
+            if (configZipEntry == null) {
+                XpHook.log0(TAG, "产物缺配置条目 " + configEntry
+                        + "：签名伪装与模块加载都会降级");
+            } else {
+                try {
+                    applyConfig(configEntry, readEntryBytes(zipFile, configZipEntry));
+                } catch (Throwable th) {
+                    XpHook.log0(TAG, "无法读取配置：" + configEntry + "\n" + Log.getStackTraceString(th));
+                }
+            }
+            releaseEmbeddedApk(zipFile, originPath(), true);
+            releaseEmbeddedApk(zipFile, oOriginPath(), false);
+        } finally {
+            try {
+                zipFile.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static byte[] readEntryBytes(ZipFile zipFile, ZipEntry entry) throws IOException {
+        InputStream inputStream = zipFile.getInputStream(entry);
+        try {
+            return DataUtils.readAllBytes(inputStream);
+        } finally {
+            try {
+                inputStream.close();
+            } catch (Throwable ignored) {
+            }
+        }
+    }
+
+    private static void applyConfig(String configEntry, byte[] raw) throws Exception {
+        JSONObject jSONObject = new JSONObject(new String(raw));
+        String appComponentName = jSONObject.has("app_component_name")
+                ? jSONObject.optString("app_component_name", "") : "";
+        int bypassType = SignBypass.normalizeType(jSONObject.optInt("bypass_sign_type"));
+        int coreVer = jSONObject.optInt("ver");
+        boolean dynamicMode = jSONObject.optBoolean("dynamic_mode");
+        long realVersionCode = jSONObject.optLong("real_version_code", -1L);
+        boolean fileProvider = jSONObject.optBoolean("file_provider");
+        String buildNonce = jSONObject.optString("build_nonce", "");
+        String managerPackage = normalizeManagerPackage(
+                jSONObject.optString("manager_package", ""), AppEnv.managerPackage);
+        String rawMode = jSONObject.optString("sig_mode", "");
+        boolean sigModeExplicit = rawMode != null && rawMode.trim().length() > 0;
+        String sigMode = sigModeExplicit
+                ? normalizeSigMode(rawMode)
+                : (bypassType > 0 ? AppEnv.SIG_MODE_JAVA : AppEnv.SIG_MODE_JAVA);
+        String signingDetails = jSONObject.optString("signing_details", null);
+        Signature[] legacySignatures = null;
+        if (!AppEnv.SIG_MODE_OFF.equals(sigMode)) {
+            legacySignatures = parseLegacySignatures(jSONObject);
+        }
+
+        AppEnv.baseApp.appComponentFactory = appComponentName;
+        AppEnv.sign_bypass_type = bypassType;
+        AppEnv.core_ver = coreVer;
+        AppEnv.dynamicMode = dynamicMode;
+        AppEnv.read_version_code = realVersionCode;
+        AppEnv.fileProvider = fileProvider;
+        AppEnv.buildNonce = buildNonce;
+        AppEnv.managerPackage = managerPackage;
+        AppEnv.sig_mode_explicit = sigModeExplicit;
+        AppEnv.sig_mode = sigMode;
+        AppEnv.signing_details = signingDetails;
+        AppEnv.signatures = legacySignatures;
+        if (jSONObject.has("ver") && AppEnv.core_ver != CoreEntry.RUNTIME_VERSION) {
+            XpHook.log0(TAG, "运行时版本不一致：" + configEntry + " ver=" + AppEnv.core_ver
+                    + "，内核 RUNTIME_VERSION=" + CoreEntry.RUNTIME_VERSION
+                    + "（建议用当前版本管理器重新打包）");
+        }
+        SigningDetailsData.init(AppEnv.signing_details, AppEnv.signatures);
+    }
+
+    private static void releaseEmbeddedApk(ZipFile zipFile, String entryName, boolean isSource) {
+        if (entryName == null || entryName.length() == 0) {
+            return;
+        }
+        ZipEntry entry = zipFile.getEntry(entryName);
+        if (entry == null) {
+            XpHook.log0(TAG, entryName + " 不存在，跳过原包释放");
+            return;
+        }
+        File cacheDir = new File(AppEnv.baseApp.dataDir + "/cache/android_id/");
+        String finalName = entry.getCrc() + ".apk";
+        File target = new File(cacheDir, finalName);
+        if (target.isFile() && target.length() == entry.getSize()) {
+            markEmbeddedApk(entryName, target, isSource);
+            return;
+        }
+        File unique = new File(cacheDir, entry.getCrc() + "-" + Process.myPid()
+                + "-" + System.currentTimeMillis() + ".apk");
+        boolean written = false;
+        try {
+            cacheDir.mkdirs();
+            InputStream inputStream = null;
+            FileOutputStream outputStream = null;
+            try {
+                inputStream = zipFile.getInputStream(entry);
+                outputStream = new FileOutputStream(unique);
+                DataUtils.copyStream(inputStream, outputStream);
+                outputStream.flush();
+            } finally {
                 if (inputStream != null) {
                     try {
                         inputStream.close();
-                    } catch (Throwable th2) {
-                        th.addSuppressed(th2);
+                    } catch (Throwable ignored) {
                     }
                 }
-                throw th;
-            }
-        } catch (Exception unused) {
-            XpHook.log0(TAG, "无法读取配置：" + configEntry);
-        }
-        boolean signBypassEnabled = !AppEnv.SIG_MODE_OFF.equals(AppEnv.sig_mode);
-        if ((signBypassEnabled && AppEnv.sign_bypass_type > 0) || AppEnv.dynamicMode) {
-            String originEntry = originPath();
-            ZipEntry entry = zipFile.getEntry(originEntry);
-            if (entry == null) {
-                XpHook.log0(TAG, originEntry + " 不存在，跳过原包释放");
-            } else {
-                String str = AppEnv.baseApp.dataDir + "/cache/android_id/" + entry.getCrc() + ".apk";
-                File file = new File(str);
-                if (!file.getParentFile().exists() || file.length() != entry.getSize()) {
-                    file.getParentFile().mkdirs();
-                    FileOutputStream fileOutputStream = new FileOutputStream(file);
-                    InputStream inputStream2 = zipFile.getInputStream(entry);
-                    DataUtils.copyStream(inputStream2, fileOutputStream);
-                    inputStream2.close();
-                    fileOutputStream.close();
+                if (outputStream != null) {
+                    try {
+                        outputStream.close();
+                    } catch (Throwable ignored) {
+                    }
                 }
-                AppEnv.source_apk_path = str;
-                new File(str).setWritable(false);
             }
-        }
-        try {
-            String oOriginEntry = oOriginPath();
-            ZipEntry entry2 = zipFile.getEntry(oOriginEntry);
-            if (entry2 == null) {
-                XpHook.log0(TAG, oOriginEntry + " 不存在，跳过");
-            } else {
-                String str2 = AppEnv.baseApp.dataDir + "/cache/android_id/" + entry2.getCrc() + ".apk";
-                File file2 = new File(str2);
-                if (!file2.getParentFile().exists() || file2.length() != entry2.getSize()) {
-                    file2.getParentFile().mkdirs();
-                    FileOutputStream fileOutputStream2 = new FileOutputStream(file2);
-                    InputStream inputStream3 = zipFile.getInputStream(entry2);
-                    DataUtils.copyStream(inputStream3, fileOutputStream2);
-                    inputStream3.close();
-                    fileOutputStream2.close();
+            if (unique.length() != entry.getSize()) {
+                XpHook.log0(TAG, "原包释放不完整（" + unique.length() + " / " + entry.getSize()
+                        + "）：放弃该原包，过签改用纯 Java 路径");
+                return;
+            }
+            if (!unique.renameTo(target)) {
+                deleteQuietly(target);
+                if (!unique.renameTo(target)) {
+                    XpHook.log0(TAG, "原包释放落位失败：放弃该原包，过签改用纯 Java 路径（" + target + "）");
+                    return;
                 }
-                AppEnv.o_apk_path = str2;
-                new File(str2).setWritable(false);
             }
-        } catch (Exception unused2) {
+            written = true;
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "原包释放失败：" + entryName + "\n" + Log.getStackTraceString(th));
+            return;
+        } finally {
+            if (!written) {
+                deleteQuietly(unique);
+            }
         }
-        zipFile.close();
+        markEmbeddedApk(entryName, target, isSource);
+    }
+
+    private static void markEmbeddedApk(String entryName, File target, boolean isSource) {
+        if (isSource) {
+            AppEnv.source_apk_path = target.getAbsolutePath();
+        } else {
+            AppEnv.o_apk_path = target.getAbsolutePath();
+        }
+        XpHook.log0(TAG, (isSource ? "原包" : "o_app") + "已就绪：" + target.getAbsolutePath()
+                + "（条目 " + entryName + "）");
+        if (target.setWritable(false)) {
+            return;
+        }
+        XpHook.log0(TAG, "原包只读化失败（后续仍可读）：" + target);
     }
 
     private static String normalizeManagerPackage(String raw, String fallback) {
@@ -728,26 +1051,56 @@ public class XpInit {
         return AppEnv.SIG_MODE_JAVA;
     }
 
-    private static void parseLegacySignatures(JSONObject config) {
+    private static Signature[] parseLegacySignatures(JSONObject config) {
         try {
             JSONArray array = new JSONArray(config.optString("sign", "[]"));
             Signature[] signatures = new Signature[array.length()];
             for (int i = 0; i < array.length(); i++) {
                 signatures[i] = new Signature(DataUtils.hexToByteArray(array.getString(i)));
             }
-            AppEnv.signatures = signatures;
+            return signatures;
         } catch (Throwable th) {
             XpHook.log0(TAG, "解析 legacy sign（原证书）失败：" + Log.getStackTraceString(th));
+            return null;
         }
     }
 
-    private static void initHookCore() throws Exception {
+    private static boolean initHookCore() {
         String hookCoreEntry = hookCorePath();
-        ZipFile zipFile = new ZipFile(AppEnv.selfApk);
-        byte[] allBytes = DataUtils.readAllBytes(zipFile.getInputStream(zipFile.getEntry(hookCoreEntry)));
-        zipFile.close();
-        AppEnv.hook_core_cl = SimpleClassLoader.loadDex(new ByteBuffer[]{ByteBuffer.wrap(allBytes)}, XpInit.class.getClassLoader());
-        AppEnv.hook_core_cl.loadClass("io.xpatch.core.entry.CoreEntry").getMethod("InitHookCore", new Class[0]).invoke(null, new Object[0]);
+        ZipFile zipFile = null;
+        try {
+            zipFile = new ZipFile(AppEnv.selfApk);
+            ZipEntry entry = zipFile.getEntry(hookCoreEntry);
+            if (entry == null) {
+                XpHook.log0(TAG, hookCoreEntry + " 不存在：产物缺 hook_core.dex，native 特性全部降级");
+                return false;
+            }
+            byte[] allBytes = DataUtils.readAllBytes(zipFile.getInputStream(entry));
+            if (allBytes == null || allBytes.length == 0) {
+                XpHook.log0(TAG, hookCoreEntry + " 为空：native 特性全部降级");
+                return false;
+            }
+            AppEnv.hook_core_cl = SimpleClassLoader.loadDex(
+                    new ByteBuffer[]{ByteBuffer.wrap(allBytes)}, XpInit.class.getClassLoader());
+            if (AppEnv.hook_core_cl == null) {
+                XpHook.log0(TAG, hookCoreEntry + " 载入 ClassLoader 失败：native 特性全部降级");
+                return false;
+            }
+            AppEnv.hook_core_cl.loadClass("io.xpatch.core.entry.CoreEntry")
+                    .getMethod("InitHookCore", new Class[0]).invoke(null, new Object[0]);
+            return true;
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "hook_core 初始化失败：" + hookCoreEntry + "\n" + Log.getStackTraceString(th));
+            AppEnv.hook_core_cl = null;
+            return false;
+        } finally {
+            if (zipFile != null) {
+                try {
+                    zipFile.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
     }
 
     private static void refreshScopeModulePaths() {
@@ -763,18 +1116,11 @@ public class XpInit {
 
     private static void initModules() throws Exception {
         AppEnv.modules = new RemoteModuleProvider(AppEnv.appContext).getModules();
-        Set<String> disabled = loadModuleCrashCounts(AppEnv.modules);
+        handleModuleStartupCrashes(AppEnv.modules);
         boolean changedPath = false;
         int loadedCount = 0;
-        int skippedCount = 0;
         for (RemoteModule remoteModule : AppEnv.modules) {
             if (remoteModule == null || remoteModule.packageName == null) {
-                continue;
-            }
-            if (disabled.contains(remoteModule.packageName)) {
-                skippedCount++;
-                XpHook.log0(TAG, "本次启动跳过模块 " + remoteModule.packageName
-                        + "：已判定它连续导致启动崩溃（熔断已持久化，恢复需在管理器里确认）");
                 continue;
             }
             if (remoteModule.apkPath == null || remoteModule.apkPath.length() == 0
@@ -814,7 +1160,7 @@ public class XpInit {
                 }
             });
         }
-        XpHook.log0(TAG, "模块初始化完成：生效 " + loadedCount + " 个，熔断跳过 " + skippedCount
+        XpHook.log0(TAG, "模块初始化完成：生效 " + loadedCount
                 + " 个，候选 " + AppEnv.modules.size() + " 个：" + AppEnv.modules);
     }
 
@@ -859,24 +1205,50 @@ public class XpInit {
             if (fallbackStartupHookInstalled) {
                 return;
             }
-            fallbackStartupHookInstalled = true;
         }
+        boolean installed = false;
         try {
-            Method target = Instrumentation.class.getMethod("callApplicationOnCreate", Application.class);
-            boolean hooked = XpHook.doHook(target, 0, new XpHook.XpCallback() {
+            Class<?> activityThreadClass = Class.forName("android.app.ActivityThread");
+            Class<?> bindDataClass = Class.forName("android.app.ActivityThread$AppBindData");
+            Method target = activityThreadClass.getDeclaredMethod("handleBindApplication", bindDataClass);
+            installed = XpHook.doHook(target, 0, new XpHook.XpCallback() {
                 @Override
                 public void onHook(XpHook.XpParam param) throws Throwable {
                     param.proceed();
                     runStartupCallbacks();
                 }
             }) != null;
-            if (hooked) {
-                XpHook.log0(TAG, "启动完成兜底钩子已安装：pending 将在 Application.onCreate 返回之后删除");
-            } else {
-                XpHook.log0(TAG, "启动完成兜底钩子安装失败：pending 可能被下次启动误判为崩溃");
+            if (!installed) {
+                XpHook.log0(TAG, "启动完成兜底钩子（handleBindApplication 尾部）安装失败，改投主线程 Handler.post");
             }
         } catch (Throwable th) {
-            XpHook.log0(TAG, "启动完成兜底钩子安装失败：" + Log.getStackTraceString(th));
+            XpHook.log0(TAG, "启动完成兜底钩子（handleBindApplication）不可用：" + Log.getStackTraceString(th));
+        }
+        if (!installed) {
+            installed = postStartupCallbacksToMainLooper();
+        }
+        if (installed) {
+            synchronized (startupCallbacks) {
+                fallbackStartupHookInstalled = true;
+            }
+            XpHook.log0(TAG, "启动完成兜底钩子已安装：pending 将在启动完成后删除");
+            return;
+        }
+        XpHook.log0(TAG, "启动完成兜底钩子安装失败：pending 可能被下次启动误判为崩溃");
+    }
+
+    private static boolean postStartupCallbacksToMainLooper() {
+        try {
+            Handler handler = new Handler(Looper.getMainLooper());
+            return handler.post(new Runnable() {
+                @Override
+                public void run() {
+                    runStartupCallbacks();
+                }
+            });
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "主线程 Handler.post 兜底失败：" + Log.getStackTraceString(th));
+            return false;
         }
     }
 
@@ -1003,24 +1375,35 @@ public class XpInit {
         }
     }
 
-    private static Set<String> loadModuleCrashCounts(List<RemoteModule> modules) {
-        Set<String> disabled = new HashSet<String>();
+    private static void handleModuleStartupCrashes(List<RemoteModule> modules) {
         File dir = moduleStateDir();
         if (dir == null) {
-            return disabled;
+            return;
         }
-        Map<String, CrashCount> counts = readModuleCounts();
-        Map<String, String> currentSignatures = currentModuleSignatures(modules);
-        java.util.Iterator<Map.Entry<String, CrashCount>> iterator = counts.entrySet().iterator();
-        while (iterator.hasNext()) {
-            Map.Entry<String, CrashCount> entry = iterator.next();
-            CrashCount count = entry.getValue();
-            String current = currentSignatures.get(entry.getKey());
-            if (count.signature != null && current != null && !count.signature.equals(current)) {
-                iterator.remove();
-                XpHook.log0(TAG, "模块 " + entry.getKey() + " 的 apk 已变化（更新/替换），清零崩溃计数");
+        Map<String, CrashCount> counts;
+        CountLock lockHandle = acquireCountLock();
+        try {
+            counts = readModuleCounts();
+            Map<String, String> currentSignatures = currentModuleSignatures(modules);
+            Set<String> active = new HashSet<String>(currentSignatures.keySet());
+            java.util.Iterator<Map.Entry<String, CrashCount>> iterator = counts.entrySet().iterator();
+            while (iterator.hasNext()) {
+                Map.Entry<String, CrashCount> entry = iterator.next();
+                if (!active.contains(entry.getKey())) {
+                    iterator.remove();
+                }
+            }
+            collectStartupCrashes(dir, counts, currentSignatures);
+            writeModuleCounts(counts);
+        } finally {
+            if (lockHandle != null) {
+                lockHandle.close();
             }
         }
+    }
+
+    private static void collectStartupCrashes(File dir, Map<String, CrashCount> counts,
+                                              Map<String, String> currentSignatures) {
         String processPrefix = MODULE_PENDING_PREFIX + stableHash(processNameForHash()) + "-";
         File[] files = dir.listFiles();
         if (files != null) {
@@ -1036,11 +1419,16 @@ public class XpInit {
                 if (entry == null || entry[0].length() == 0) {
                     continue;
                 }
+                long age = System.currentTimeMillis() - file.lastModified();
+                if (file.lastModified() > 0 && age > MODULE_PENDING_MAX_AGE_MILLIS) {
+                    XpHook.log0(TAG, "pending 已超龄（" + (age / 1000L) + " s），视为非崩溃：" + entry[0]);
+                    continue;
+                }
                 String pkg = entry[0];
                 String current = currentSignatures.get(pkg);
                 if (entry[1].length() > 0 && current != null && !entry[1].equals(current)) {
                     counts.remove(pkg);
-                    XpHook.log0(TAG, "模块 " + pkg + " 上次启动崩溃后 apk 已变化，不计入熔断");
+                    XpHook.log0(TAG, "模块 " + pkg + " 上次启动崩溃后 apk 已变化，计数清零");
                     continue;
                 }
                 CrashCount count = counts.get(pkg);
@@ -1048,33 +1436,19 @@ public class XpInit {
                     count = new CrashCount();
                     counts.put(pkg, count);
                 }
-                boolean alreadyDisabled = count.count >= MODULE_CRASH_THRESHOLD;
                 count.count = count.count + 1;
                 count.timestamp = System.currentTimeMillis();
-                if (current != null) {
-                    count.signature = current;
-                }
                 if (count.count >= MODULE_CRASH_THRESHOLD) {
                     count.count = MODULE_CRASH_THRESHOLD;
-                    if (!alreadyDisabled) {
-                        XpHook.log0(TAG, "模块 " + pkg + " 已连续 " + count.count
-                                + " 次导致启动崩溃：本进程持久跳过它并通知管理器"
-                                + "（移除动作由用户在管理器确认）");
-                        notifyModuleCrash(pkg);
-                    }
+                    XpHook.log0(TAG, "模块 " + pkg + " 已连续 " + MODULE_CRASH_THRESHOLD
+                            + " 次导致启动崩溃：移除作用域并通知用户");
+                    notifyModuleCrash(pkg);
                 } else {
                     XpHook.log0(TAG, "模块 " + pkg + " 上次启动崩溃（" + count.count + "/"
                             + MODULE_CRASH_THRESHOLD + "），本次继续重试");
                 }
             }
         }
-        for (Map.Entry<String, CrashCount> entry : counts.entrySet()) {
-            if (entry.getValue().count >= MODULE_CRASH_THRESHOLD) {
-                disabled.add(entry.getKey());
-            }
-        }
-        writeModuleCounts(counts);
-        return disabled;
     }
 
     private static Map<String, String> currentModuleSignatures(List<RemoteModule> modules) {
@@ -1117,10 +1491,49 @@ public class XpInit {
         }
     }
 
+
     private static final class CrashCount {
         int count;
         long timestamp;
-        String signature;
+    }
+
+    private static final class CountLock {
+        java.io.RandomAccessFile file;
+        java.nio.channels.FileLock lock;
+
+        void close() {
+            if (lock != null) {
+                try {
+                    lock.release();
+                } catch (Throwable ignored) {
+                }
+                lock = null;
+            }
+            if (file != null) {
+                try {
+                    file.close();
+                } catch (Throwable ignored) {
+                }
+                file = null;
+            }
+        }
+    }
+
+    private static CountLock acquireCountLock() {
+        File dir = moduleStateDir();
+        if (dir == null) {
+            return null;
+        }
+        CountLock handle = new CountLock();
+        try {
+            handle.file = new java.io.RandomAccessFile(new File(dir, MODULE_COUNTS_FILE + ".lock"), "rw");
+            handle.lock = handle.file.getChannel().lock();
+            return handle;
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "模块崩溃计数跨进程加锁失败（降级为无锁读写）：" + Log.getStackTraceString(th));
+            handle.close();
+            return null;
+        }
     }
 
     private static Map<String, CrashCount> readModuleCounts() {
@@ -1133,7 +1546,6 @@ public class XpInit {
         if (!file.isFile()) {
             return counts;
         }
-        long now = System.currentTimeMillis();
         BufferedReader reader = null;
         try {
             reader = new BufferedReader(new FileReader(file));
@@ -1148,13 +1560,9 @@ public class XpInit {
                     continue;
                 }
                 CrashCount entry = parseCrashCount(line.substring(eq + 1));
-                if (entry == null) {
-                    continue;
+                if (entry != null) {
+                    counts.put(pkg, entry);
                 }
-                if (entry.timestamp > 0 && now - entry.timestamp > MODULE_CRASH_WINDOW_MS) {
-                    continue;
-                }
-                counts.put(pkg, entry);
             }
         } catch (Throwable th) {
             XpHook.log0(TAG, "读取模块崩溃计数失败：" + Log.getStackTraceString(th));
@@ -1180,8 +1588,6 @@ public class XpInit {
             entry.count = Integer.parseInt(parts[0].trim());
             entry.timestamp = parts.length > 1 && parts[1].trim().length() > 0
                     ? Long.parseLong(parts[1].trim()) : 0L;
-            entry.signature = parts.length > 2 && parts[2].trim().length() > 0
-                    ? parts[2].trim() : null;
             return entry;
         } catch (Throwable th) {
             return null;
@@ -1200,9 +1606,6 @@ public class XpInit {
             for (Map.Entry<String, CrashCount> entry : counts.entrySet()) {
                 sb.append(entry.getKey()).append('=').append(entry.getValue().count);
                 sb.append('@').append(entry.getValue().timestamp);
-                if (entry.getValue().signature != null) {
-                    sb.append('@').append(entry.getValue().signature);
-                }
                 sb.append('\n');
             }
             FileOutputStream out = new FileOutputStream(tmp, false);
@@ -1216,7 +1619,6 @@ public class XpInit {
             if (!tmp.renameTo(target)) {
                 deleteQuietly(target);
                 if (!tmp.renameTo(target)) {
-                    XpHook.log0(TAG, "模块崩溃计数写盘失败（rename 未生效）：" + target);
                     deleteQuietly(tmp);
                 }
             }
@@ -1230,6 +1632,7 @@ public class XpInit {
         if (packages == null || packages.isEmpty()) {
             return;
         }
+        CountLock lockHandle = acquireCountLock();
         try {
             Map<String, CrashCount> counts = readModuleCounts();
             boolean changed = false;
@@ -1243,6 +1646,10 @@ public class XpInit {
             }
         } catch (Throwable th) {
             XpHook.log0(TAG, "清除模块崩溃计数失败：" + Log.getStackTraceString(th));
+        } finally {
+            if (lockHandle != null) {
+                lockHandle.close();
+            }
         }
     }
 
