@@ -37,6 +37,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.xpatch.BuildConfig
 import io.xpatch.data.DownloadCenter
+import io.xpatch.data.SettingsStore
 import io.xpatch.data.UpdateChecker
 import io.xpatch.patch.InstallHelper
 import io.xpatch.ui.components.AppIcon
@@ -44,6 +45,7 @@ import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.SettingItem
+import io.xpatch.ui.components.SettingSwitchItem
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.components.MarkdownView
 import io.xpatch.ui.components.rememberMarkdownBlocks
@@ -63,6 +65,8 @@ internal fun AboutScreen(
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
+    val settingsStore = remember { SettingsStore(context) }
+    var receiveBeta by remember { mutableStateOf(settingsStore.load().receiveBeta) }
     var checking by remember { mutableStateOf(false) }
     var updateState by remember { mutableStateOf<UpdateChecker.CheckResult?>(null) }
     var downloadTaskId by remember { mutableStateOf<Long?>(null) }
@@ -123,6 +127,17 @@ internal fun AboutScreen(
                     value = updateShortStatus(checking, updateState),
                     arrow = !checking,
                     onClick = { checkUpdate() },
+                )
+                RowDivider(startPadding = 16.dp)
+                SettingSwitchItem(
+                    title = "接收测试版",
+                    subtitle = "开启后检查更新会包含预发布（Beta）版本",
+                    checked = receiveBeta,
+                    onCheckedChange = { enabled ->
+                        receiveBeta = enabled
+                        settingsStore.setReceiveBeta(enabled)
+                        updateState = null
+                    },
                 )
                 (updateState as? UpdateChecker.CheckResult.Available)?.let { available ->
                     RowDivider(startPadding = 16.dp)

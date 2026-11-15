@@ -21,6 +21,7 @@ object UpdateChecker {
 
     const val REPO_URL = "https://github.com/xunyyds/xpatch-manager"
     private const val GITHUB_API = "https://api.github.com/repos/xunyyds/xpatch-manager/releases/latest"
+    private const val GITHUB_API_LIST = "https://api.github.com/repos/xunyyds/xpatch-manager/releases?per_page=20"
 
     data class ReleaseInfo(
         val tagName: String,
@@ -30,6 +31,7 @@ object UpdateChecker {
         val apkUrl: String,
         val apkSize: Long,
         val htmlUrl: String,
+        val prerelease: Boolean = false,
     )
 
     sealed interface CheckResult {
@@ -57,20 +59,21 @@ object UpdateChecker {
         val store = SettingsStore(context)
         val settings = store.load()
         val now = System.currentTimeMillis()
+        val beta = settings.receiveBeta
         if (!force && settings.updateCheckCache.isNotBlank() &&
             now - settings.lastUpdateCheckAt < CHECK_INTERVAL_MS
         ) {
-            parseRelease(settings.updateCheckCache)?.let { return@withContext judge(it) }
+            parseBest(settings.updateCheckCache, beta)?.let { return@withContext judge(it) }
         }
 
-        val body = fetchLatest(store)
+        val body = fetchLatest(store, beta)
         if (body == null) {
             if (settings.updateCheckCache.isNotBlank()) {
-                parseRelease(settings.updateCheckCache)?.let { return@withContext judge(it) }
+                parseBest(settings.updateCheckCache, beta)?.let { return@withContext judge(it) }
             }
             return@withContext CheckResult.Failed("网络不可用，或所有检查源均失败，请稍后重试")
         }
-        val release = parseRelease(body)
+        val release = parseBest(body, beta)
             ?: return@withContext CheckResult.Failed("更新信息解析失败")
         store.setUpdateCheckCache(now, body)
         judge(release)
@@ -120,12 +123,13 @@ object UpdateChecker {
             CheckResult.UpToDate
         }
 
-    private suspend fun fetchLatest(store: SettingsStore): String? {
+    private suspend fun fetchLatest(store: SettingsStore, beta: Boolean): String? {
         val preferred = store.load().updateGoodSource
+        val api = if (beta) GITHUB_API_LIST else GITHUB_API
         val urls = buildList {
-            if (preferred.isNotBlank()) add(preferred + GITHUB_API)
-            add(GITHUB_API)
-            MIRROR_PREFIXES.forEach { add(it + GITHUB_API) }
+            if (preferred.isNotBlank()) add(preferred + api)
+            add(api)
+            MIRROR_PREFIXES.forEach { add(it + api) }
         }.distinct()
         val jobScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
         val hit = Channel<String>(1)
@@ -136,8 +140,8 @@ object UpdateChecker {
                 if (stop.get()) return@launch
                 val body = runCatching { httpGet(url) }.getOrNull() ?: return@launch
                 if (stop.get()) return@launch
-                if (parseRelease(body) != null && stop.compareAndSet(false, true)) {
-                    store.setUpdateGoodSource(url.removeSuffix(GITHUB_API))
+                if (parseBest(body, beta) != null && stop.compareAndSet(false, true)) {
+                    store.setUpdateGoodSource(url.removeSuffix(api))
                     hit.trySend(body)
                 }
             }
@@ -164,8 +168,29 @@ object UpdateChecker {
         }
     }
 
-    private fun parseRelease(body: String): ReleaseInfo? = runCatching {
-        val root = JSONObject(body)
+    private fun parseBest(body: String, beta: Boolean): ReleaseInfo? {
+        val single = parseReleaseObject(body)
+        if (single != null) {
+            if (single.prerelease && !beta) return null
+            return single
+        }
+        val list = runCatching {
+            val array = org.json.JSONArray(body)
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.let { parseReleaseObject(it) }
+            }
+        }.getOrNull() ?: return null
+        val usable = list.filter { beta || !it.prerelease }
+        return usable.maxWithOrNull { a, b -> compareVersion(a.version, b.version) }
+    }
+
+    private fun parseRelease(body: String): ReleaseInfo? = parseReleaseObject(body)
+
+    private fun parseReleaseObject(body: String): ReleaseInfo? = runCatching {
+        org.json.JSONObject(body).let { parseReleaseObject(it) }
+    }.getOrNull()
+
+    private fun parseReleaseObject(root: JSONObject): ReleaseInfo? = runCatching {
         val assets = root.optJSONArray("assets") ?: return@runCatching null
         var apkName = ""
         var apkUrl = ""
@@ -190,6 +215,7 @@ object UpdateChecker {
             apkUrl = apkUrl,
             apkSize = apkSize,
             htmlUrl = root.optString("html_url"),
+            prerelease = root.optBoolean("prerelease", false),
         )
     }.getOrNull()
 

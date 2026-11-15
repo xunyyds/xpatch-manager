@@ -40,6 +40,7 @@ data class ManagerSettings(
     val lastUpdateCheckAt: Long = 0,
     val updateCheckCache: String = "",
     val updateGoodSource: String = "",
+    val receiveBeta: Boolean = false,
     val forceOverwrite: Boolean = false,
     val sigMode: String = SettingsStore.SIG_MODE_DEFAULT,
     val injectObfuscate: Boolean = false,
@@ -74,6 +75,7 @@ class SettingsStore(context: Context) {
         lastUpdateCheckAt = prefs.getLong(KEY_UPDATE_CHECK_AT, 0),
         updateCheckCache = prefs.getString(KEY_UPDATE_CACHE, "").orEmpty(),
         updateGoodSource = prefs.getString(KEY_UPDATE_SOURCE, "").orEmpty(),
+        receiveBeta = prefs.getBoolean(KEY_RECEIVE_BETA, false),
         forceOverwrite = prefs.getBoolean(KEY_FORCE_OVERWRITE, false),
         sigMode = normalizedSigMode(prefs.getString(KEY_SIG_MODE, "").orEmpty()),
         injectObfuscate = prefs.getBoolean(KEY_INJECT_OBFUSCATE, false),
@@ -134,6 +136,9 @@ class SettingsStore(context: Context) {
 
     fun setUpdateGoodSource(prefix: String) =
         prefs.edit().putString(KEY_UPDATE_SOURCE, prefix).apply()
+
+    fun setReceiveBeta(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_RECEIVE_BETA, enabled).apply()
 
     fun setForceOverwrite(enabled: Boolean) =
         prefs.edit().putBoolean(KEY_FORCE_OVERWRITE, enabled).apply()
@@ -203,6 +208,7 @@ class SettingsStore(context: Context) {
         private const val KEY_UPDATE_CHECK_AT = "update_check_at"
         private const val KEY_UPDATE_CACHE = "update_check_cache"
         private const val KEY_UPDATE_SOURCE = "update_good_source"
+        private const val KEY_RECEIVE_BETA = "receive_beta"
         private const val KEY_FORCE_OVERWRITE = "force_overwrite"
         private const val KEY_SIG_MODE = "sig_mode"
 
