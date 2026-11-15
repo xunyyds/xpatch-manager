@@ -20,6 +20,10 @@ class ModuleApiStore(context: Context) {
         }.apply()
     }
 
+    fun clearAll() {
+        prefs.edit().clear().apply()
+    }
+
     fun exportAll(): Map<String, Int> =
         prefs.all.entries
             .filter { it.value is Int }

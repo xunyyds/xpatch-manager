@@ -23,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Icon
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
@@ -31,6 +32,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +46,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.xpatch.BuildConfig
+import io.xpatch.data.BackupArchive
 import io.xpatch.data.ManagerSettings
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.PermissionCenter
@@ -57,7 +60,10 @@ import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.SettingItem
 import io.xpatch.ui.components.SettingSwitchItem
 import io.xpatch.ui.components.XPatchDialog
+import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.DropdownItem
 import top.yukonga.miuix.kmp.basic.TextField as MiuixTextField
 import top.yukonga.miuix.kmp.preference.WindowSpinnerPreference
@@ -81,8 +87,8 @@ internal fun SettingsScreen(
     onLogLevelChange: (Int) -> Unit,
     onPickExportDir: () -> Unit,
     onClearExportDir: () -> Unit,
-    onExportConfig: () -> Unit,
-    onImportConfig: () -> Unit,
+    onBackup: (Set<BackupArchive.Scope>) -> Unit,
+    onRestoreBackup: () -> Unit,
     onHistoryLimitChange: (Int) -> Unit,
     onDeleteArtifactChange: (Boolean) -> Unit,
     onSkipDeletePromptChange: (Boolean) -> Unit,
@@ -92,6 +98,7 @@ internal fun SettingsScreen(
     val miuix = LocalMiuix.current
     var showLimitDialog by remember { mutableStateOf(false) }
     var showPermissionDialog by remember { mutableStateOf(false) }
+    var showBackupDialog by remember { mutableStateOf(false) }
     if (showPermissionDialog) {
         PermissionCenterDialog(onDismiss = { showPermissionDialog = false })
     }
@@ -102,6 +109,15 @@ internal fun SettingsScreen(
             onConfirm = { limit ->
                 showLimitDialog = false
                 onHistoryLimitChange(limit)
+            },
+        )
+    }
+    if (showBackupDialog) {
+        BackupScopeDialog(
+            onDismiss = { showBackupDialog = false },
+            onConfirm = { scopes ->
+                showBackupDialog = false
+                onBackup(scopes)
             },
         )
     }
@@ -201,12 +217,12 @@ internal fun SettingsScreen(
             }
             item {
                 SettingGroup("备份与恢复") {
-                    SettingItem("导出配置", "作用域、签名与设置保存为 JSON", "JSON", arrow = true) {
-                        onExportConfig()
-                    }
-                    SettingItem("导入配置", "从 JSON 恢复全部配置", "JSON", arrow = true) {
-                        onImportConfig()
-                    }
+                    SettingItem("备份数据", "自选范围，全部数据打包为一个 ZIP", arrow = true, onClick = {
+                        showBackupDialog = true
+                    })
+                    SettingItem("从备份恢复", "从 ZIP 恢复，兼容旧版配置文件", arrow = true, onClick = {
+                        onRestoreBackup()
+                    })
                     SettingItem(
                         "导出目录",
                         if (exportLost) {
@@ -317,8 +333,12 @@ internal fun SettingsScreen(
             }
             item {
                 SettingGroup("备份与恢复") {
-                    SettingItem("导出配置", "作用域、签名与设置保存为 JSON", onClick = onExportConfig)
-                    SettingItem("导入配置", "从 JSON 恢复全部配置", onClick = onImportConfig)
+                    SettingItem("备份数据", "自选范围，全部数据打包为一个 ZIP", onClick = {
+                        showBackupDialog = true
+                    })
+                    SettingItem("从备份恢复", "从 ZIP 恢复，兼容旧版配置文件", onClick = {
+                        onRestoreBackup()
+                    })
                     SettingItem(
                         "导出目录",
                         if (exportLost) {
@@ -584,6 +604,118 @@ private fun HistoryLimitDialog(
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+    }
+}
+
+@Composable
+private fun BackupScopeDialog(
+    onDismiss: () -> Unit,
+    onConfirm: (Set<BackupArchive.Scope>) -> Unit,
+) {
+    val context = LocalContext.current
+    val archive = remember { BackupArchive(context) }
+    var selected by remember { mutableStateOf(BackupArchive.Scope.default) }
+    var usage by remember { mutableStateOf(emptyMap<BackupArchive.Scope, BackupArchive.Usage>()) }
+    var scanning by remember { mutableStateOf(true) }
+    LaunchedEffect(selected) {
+        scanning = true
+        usage = withContext(Dispatchers.IO) { archive.usage(selected) }
+        scanning = false
+    }
+    val total = selected.sumOf { usage[it]?.bytes ?: 0L }
+    val secondary = MaterialTheme.colorScheme.onSurfaceVariant
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = "备份范围",
+        actions = listOf(
+            DialogAction("取消", onClick = onDismiss),
+            DialogAction("开始备份") { if (selected.isNotEmpty()) onConfirm(selected) },
+        ),
+    ) {
+        Text(
+            "备份会写入一个 ZIP 文件，恢复时覆盖对应的当前数据。",
+            style = MaterialTheme.typography.bodySmall,
+            color = secondary,
+        )
+        Text(
+            "打包产物与运行日志体积较大，默认不勾选。",
+            style = MaterialTheme.typography.labelSmall,
+            color = secondary,
+        )
+        Spacer(Modifier.height(4.dp))
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { selected = BackupArchive.Scope.entries.toSet() }) {
+                Text("全选", style = MaterialTheme.typography.labelLarge)
+            }
+            TextButton(onClick = { selected = emptySet() }) {
+                Text("全不选", style = MaterialTheme.typography.labelLarge)
+            }
+            Spacer(Modifier.weight(1f))
+            Text(
+                if (scanning) "统计中…" else readableSize(total),
+                style = MaterialTheme.typography.labelMedium,
+                color = secondary,
+            )
+        }
+        BackupArchive.Scope.entries.forEach { scope ->
+            val checked = scope in selected
+            val info = usage[scope]
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable {
+                        selected = toggleBackupScope(selected, scope)
+                    }
+                    .padding(vertical = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Checkbox(checked = checked, onCheckedChange = null)
+                Spacer(Modifier.width(4.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(scope.title, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        buildString {
+                            append(scope.detail)
+                            if (info != null && info.files > 0) {
+                                append(" · ")
+                                append(readableSize(info.bytes))
+                                append(" · ")
+                                append(info.files)
+                                append(" 个文件")
+                            }
+                        },
+                        style = MaterialTheme.typography.labelSmall,
+                        color = secondary,
+                    )
+                }
+            }
+        }
+        Spacer(Modifier.height(6.dp))
+        Text(
+            if (selected.isEmpty()) {
+                "至少选择一项才能备份"
+            } else {
+                "已选 " + selected.size + " 项 · 预计 " + readableSize(total)
+            },
+            style = MaterialTheme.typography.labelMedium,
+            color = if (selected.isEmpty()) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+        )
+    }
+}
+
+private fun toggleBackupScope(
+    current: Set<BackupArchive.Scope>,
+    scope: BackupArchive.Scope,
+): Set<BackupArchive.Scope> {
+    if (scope in current) {
+        val next = current - scope
+        return if (scope == BackupArchive.Scope.HISTORY) next - BackupArchive.Scope.ARTIFACTS else next
+    }
+    return if (scope == BackupArchive.Scope.ARTIFACTS) {
+        current + scope + BackupArchive.Scope.HISTORY
+    } else {
+        current + scope
     }
 }
 

@@ -144,6 +144,22 @@ class PatchHistoryStore(private val context: Context) {
         }
     }
 
+    fun snapshot(): String = synchronized(lock) {
+        runCatching { if (historyFile.isFile) historyFile.readText() else "" }.getOrDefault("")
+    }
+
+    fun invalidate() {
+        synchronized(lock) { cache = null }
+    }
+
+    fun restoreFrom(text: String, remap: (PatchRecord) -> PatchRecord = { it }): Int = synchronized(lock) {
+        val parsed = parse(text)
+        val mapped = parsed.map(remap).sortedByDescending { it.time }.toMutableList()
+        saveLocked(mapped)
+        check(historyFile.isFile) { "无法写入打包历史" }
+        mapped.size
+    }
+
     private fun loadLocked(): MutableList<PatchRecord> {
         cache?.let { return it }
         val parsed = runCatching {
@@ -161,8 +177,12 @@ class PatchHistoryStore(private val context: Context) {
             val temp = File(historyFile.parentFile, historyFile.name + ".tmp")
             temp.writeText(json.toString())
             if (historyFile.exists()) historyFile.delete()
-            temp.renameTo(historyFile)
-        }.isSuccess
+            if (!temp.renameTo(historyFile)) {
+                temp.copyTo(historyFile, overwrite = true)
+                temp.delete()
+            }
+            historyFile.isFile
+        }.getOrDefault(false)
         cache = if (ok) records.sortedByDescending { it.time }.toMutableList() else null
     }
 

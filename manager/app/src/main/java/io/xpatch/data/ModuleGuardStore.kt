@@ -93,6 +93,15 @@ object ModuleGuardStore {
         synchronized(LOCK) { publish(app, emptyList()) }
     }
 
+    fun exportJson(context: Context): JSONArray = toJson(list(context))
+
+    fun restoreJson(context: Context, items: JSONArray) {
+        val app = context.applicationContext
+        init(app)
+        val events = fromJson(items)
+        synchronized(LOCK) { publish(app, events.take(MAX)) }
+    }
+
     private fun publish(context: Context, events: List<Event>) {
         _events.value = events
         save(context, events)
@@ -103,30 +112,29 @@ object ModuleGuardStore {
 
     private fun read(context: Context): List<Event> {
         val raw = runCatching { prefs(context).getString(KEY, null) }.getOrNull() ?: return emptyList()
-        return runCatching {
-            val array = JSONArray(raw)
-            buildList {
-                for (i in 0 until array.length()) {
-                    val item = array.getJSONObject(i)
-                    val app = item.optString("app")
-                    val module = item.optString("module")
-                    if (app.isEmpty() || module.isEmpty()) continue
-                    add(
-                        Event(
-                            appPackage = app,
-                            appLabel = item.optString("appLabel").ifEmpty { app },
-                            modulePackage = module,
-                            moduleLabel = item.optString("moduleLabel").ifEmpty { module },
-                            time = item.optLong("time", 0L),
-                            scopeWritten = item.optBoolean("scopeWritten", true),
-                        ),
-                    )
-                }
-            }
-        }.getOrDefault(emptyList())
+        return runCatching { fromJson(JSONArray(raw)) }.getOrDefault(emptyList())
     }
 
-    private fun save(context: Context, events: List<Event>) {
+    private fun fromJson(array: JSONArray): List<Event> = buildList {
+        for (i in 0 until array.length()) {
+            val item = array.optJSONObject(i) ?: continue
+            val app = item.optString("app")
+            val module = item.optString("module")
+            if (app.isEmpty() || module.isEmpty()) continue
+            add(
+                Event(
+                    appPackage = app,
+                    appLabel = item.optString("appLabel").ifEmpty { app },
+                    modulePackage = module,
+                    moduleLabel = item.optString("moduleLabel").ifEmpty { module },
+                    time = item.optLong("time", 0L),
+                    scopeWritten = item.optBoolean("scopeWritten", true),
+                ),
+            )
+        }
+    }
+
+    private fun toJson(events: List<Event>): JSONArray {
         val array = JSONArray()
         events.forEach { event ->
             array.put(
@@ -139,6 +147,10 @@ object ModuleGuardStore {
                     .put("scopeWritten", event.scopeWritten),
             )
         }
-        runCatching { prefs(context).edit().putString(KEY, array.toString()).commit() }
+        return array
+    }
+
+    private fun save(context: Context, events: List<Event>) {
+        runCatching { prefs(context).edit().putString(KEY, toJson(events).toString()).commit() }
     }
 }

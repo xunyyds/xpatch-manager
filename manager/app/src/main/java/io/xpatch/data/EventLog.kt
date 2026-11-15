@@ -41,6 +41,20 @@ class EventLog(context: Context) {
         }
     }
 
+    fun snapshot(): String = synchronized(LOCK) {
+        runCatching {
+            if (file.isFile) file.readText(Charsets.UTF_8) else ""
+        }.getOrDefault("")
+    }
+
+    fun restore(text: String): Boolean = synchronized(LOCK) {
+        runCatching {
+            dir.mkdirs()
+            file.writeText(text, Charsets.UTF_8)
+            migratedMarker.writeText(MARKER_CONTENT, Charsets.UTF_8)
+        }.isSuccess
+    }
+
     fun clear(): Boolean = synchronized(LOCK) {
         val removedDir = runCatching {
             if (!dir.exists()) true else dir.deleteRecursively()

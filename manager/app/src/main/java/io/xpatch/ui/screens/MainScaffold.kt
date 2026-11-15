@@ -60,6 +60,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
@@ -76,7 +77,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
-import io.xpatch.data.ConfigBackup
+import io.xpatch.data.BackupArchive
 import io.xpatch.data.DownloadCenter
 import io.xpatch.data.EnvInfoCollector
 import io.xpatch.data.EventLog
@@ -91,6 +92,7 @@ import io.xpatch.data.RepoStore
 import io.xpatch.data.RestartCenter
 import io.xpatch.data.RuntimeLogStore
 import io.xpatch.data.ScopeFileWriter
+import io.xpatch.data.ScopeStore
 import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
 import io.xpatch.data.UpdateChecker
@@ -109,6 +111,7 @@ import io.xpatch.ui.components.PatchProgress
 import io.xpatch.ui.components.PatchProgressDialog
 import io.xpatch.ui.components.StandardBottomBar
 import io.xpatch.ui.components.XPatchDialog
+import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.util.AdaptiveWidth
@@ -142,7 +145,7 @@ fun MainScaffold(
     val eventLog = remember { EventLog(context) }
     val logStore = remember { RuntimeLogStore() }
     val repoStore = remember { RepoStore(context) }
-    val configBackup = remember { ConfigBackup(context) }
+    val backupArchive = remember { BackupArchive(context) }
     val exportStore = remember { ExportStore(context) }
     val patchService = remember { PatchService(context) }
     val signatureStore = remember { SignatureStore(context) }
@@ -438,51 +441,219 @@ fun MainScaffold(
         }
     }
 
-    val exportConfigLauncher = rememberLauncherForActivityResult(
-        ActivityResultContracts.CreateDocument("application/json"),
+    var pendingBackupScopeKeys by rememberSaveable { mutableStateOf(arrayListOf<String>()) }
+    var pendingRestorePath by rememberSaveable { mutableStateOf<String?>(null) }
+    var pendingRestorePreview by remember { mutableStateOf<BackupArchive.Preview?>(null) }
+    LaunchedEffect(pendingRestorePath) {
+        val path = pendingRestorePath ?: return@LaunchedEffect
+        if (pendingRestorePreview != null) return@LaunchedEffect
+        val preview = withContext(Dispatchers.IO) {
+            val file = File(path)
+            if (file.isFile) backupArchive.inspect(file) else null
+        }
+        if (preview == null) {
+            pendingRestorePath = null
+            withContext(Dispatchers.IO) { runCatching { File(path).delete() } }
+            failure = "无法识别该备份文件"
+        } else {
+            pendingRestorePreview = preview
+        }
+    }
+
+    val backupLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(ExportStore.MIME_ZIP),
     ) { uri ->
+        val scopes = BackupArchive.Scope.ofKeys(pendingBackupScopeKeys)
+        pendingBackupScopeKeys = arrayListOf()
         if (uri == null) return@rememberLauncherForActivityResult
+        if (scopes.isEmpty()) {
+            scope.launch(Dispatchers.IO) { exportStore.delete(uri.toString()) }
+            return@rememberLauncherForActivityResult
+        }
         scope.launch {
-            runCatching {
-                withContext(Dispatchers.IO) {
+            busyText = "正在备份数据…"
+            val outcome = withContext(Dispatchers.IO) {
+                runCatching {
                     context.contentResolver.openOutputStream(uri)?.use { output ->
-                        output.write(configBackup.export().toByteArray())
-                    }
+                        backupArchive.write(output, scopes)
+                    } ?: error("无法写入备份文件")
                 }
-            }.onSuccess {
-                eventLog.add("配置已导出")
+            }
+            busyText = null
+            outcome.onSuccess { written ->
+                eventLog.add(
+                    "已备份 " + scopes.size + " 类数据 · " + readableSize(written.bytes) +
+                        if (written.skipped.isEmpty()) "" else " · 跳过 " + written.skipped.size + " 个文件",
+                )
                 logs = eventLog.entries()
             }.onFailure {
-                failure = it.message
+                withContext(Dispatchers.IO) { exportStore.delete(uri.toString()) }
+                eventLog.add("备份失败 " + (it.message ?: ""))
+                logs = eventLog.entries()
+                failure = "备份失败：" + (it.message ?: "未知错误")
             }
         }
     }
 
-    val importConfigLauncher = rememberLauncherForActivityResult(
+    val restoreLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.OpenDocument(),
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            busyText = "正在导入配置…"
-            val text = withContext(Dispatchers.IO) {
-                context.contentResolver.openInputStream(uri)?.use {
-                    it.readBytes().toString(Charsets.UTF_8)
+            busyText = "正在读取备份…"
+            val staged = withContext(Dispatchers.IO) {
+                runCatching {
+                    val dir = File(context.cacheDir, "restore").apply {
+                        deleteRecursively()
+                        mkdirs()
+                    }
+                    val target = File(dir, "picked-backup")
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        target.outputStream().use { output -> input.copyTo(output) }
+                    } ?: error("无法读取所选文件")
+                    target
                 }
             }
             busyText = null
-            if (text != null) {
-                val outcome = configBackup.import(text)
-                eventLog.add(outcome.message)
-                logs = eventLog.entries()
-                val reloaded = settingsStore.load()
-                settings = reloaded
-                onThemeModeChange(reloaded.themeMode)
-                onUiStyleChange(reloaded.uiStyle)
-                token++
-            } else {
-                eventLog.add("读取文件失败")
-                logs = eventLog.entries()
+            staged.onSuccess { file -> pendingRestorePath = file.absolutePath }
+                .onFailure { failure = "读取备份失败：" + (it.message ?: "未知错误") }
+        }
+    }
+
+    pendingRestorePreview?.let { preview ->
+        val dismissRestore: () -> Unit = {
+            pendingRestorePreview = null
+            pendingRestorePath?.let { path -> scope.launch(Dispatchers.IO) { runCatching { File(path).delete() } } }
+            pendingRestorePath = null
+        }
+        XPatchDialog(
+            miuix = miuix,
+            onDismiss = dismissRestore,
+            title = "从备份恢复",
+            actions = listOf(
+                DialogAction("取消", onClick = dismissRestore),
+                DialogAction("恢复", destructive = true) {
+                    val path = pendingRestorePath
+                    val scopeRestored = preview.scopes.contains(BackupArchive.Scope.SCOPE)
+                    pendingRestorePreview = null
+                    pendingRestorePath = null
+                    if (path != null) {
+                        scope.launch {
+                            busyText = "正在恢复备份…"
+                            val previousTargets = withContext(Dispatchers.IO) {
+                                runCatching {
+                                    ScopeStore(context).exportAll().values.flatten().toSet()
+                                }.getOrDefault(emptySet())
+                            }
+                            val outcome = withContext(Dispatchers.IO) {
+                                runCatching { backupArchive.restore(File(path)) }
+                            }
+                            outcome.onSuccess { restored ->
+                                eventLog.add(
+                                    if (restored.ok) {
+                                        "已恢复备份：" + restored.summary
+                                    } else {
+                                        "恢复未完成：" + restored.summary
+                                    },
+                                )
+                                restored.warnings.forEach { warning ->
+                                    eventLog.add("恢复告警 " + warning)
+                                }
+                                val reloaded = settingsStore.load()
+                                settings = reloaded
+                                onThemeModeChange(reloaded.themeMode)
+                                onUiStyleChange(reloaded.uiStyle)
+                                signatures = signatureStore.allProfiles()
+                                defaultSignatureId = signatureStore.defaultProfileId()
+                                repository.invalidate()
+                                repoStore.invalidate()
+                                historyStore.invalidate()
+                                historyTick++
+                                token++
+                                logs = eventLog.entries()
+                                if (scopeRestored) {
+                                    busyText = "正在同步作用域…"
+                                    val synced = withContext(Dispatchers.IO) {
+                                        runCatching {
+                                            val current = ScopeStore(context).exportAll()
+                                                .values.flatten().toSet()
+                                            val targets = previousTargets + current
+                                            val failed = ScopeFileWriter(context).syncAll(targets) { message ->
+                                                runCatching { eventLog.add(message) }
+                                            }
+                                            targets.size to failed
+                                        }
+                                    }
+                                    synced.onSuccess { (total, failed) ->
+                                        eventLog.add(
+                                            if (failed > 0) {
+                                                "作用域同步完成，失败 " + failed + " 个应用"
+                                            } else {
+                                                "已重新同步 " + total + " 个应用的作用域文件"
+                                            },
+                                        )
+                                    }.onFailure {
+                                        eventLog.add("作用域同步失败 " + (it.message ?: ""))
+                                    }
+                                    busyText = null
+                                } else {
+                                    busyText = null
+                                }
+                                if (!restored.ok) {
+                                    failure = "恢复未完全成功：" + (
+                                        restored.warnings.firstOrNull() ?: restored.summary
+                                        )
+                                }
+                            }.onFailure {
+                                busyText = null
+                                eventLog.add("恢复失败 " + (it.message ?: ""))
+                                logs = eventLog.entries()
+                                failure = "恢复失败：" + (it.message ?: "未知错误")
+                            }
+                            logs = eventLog.entries()
+                            runCatching { File(path).delete() }
+                        }
+                    }
+                },
+            ),
+        ) {
+            Text(
+                if (preview.legacy) {
+                    "旧版配置文件"
+                } else {
+                    "ZIP 备份 · XPatch " + preview.versionName
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+            )
+            if (preview.createdAt > 0) {
+                Text(
+                    "创建于 " + formatDateTime(preview.createdAt),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
+            Spacer(Modifier.height(8.dp))
+            if (preview.legacy) {
+                Text(
+                    "包含作用域、模块 API 与默认签名。",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            } else {
+                preview.scopes.forEach { item ->
+                    val count = preview.counts[item.key] ?: 0
+                    Text(
+                        "· " + item.title + (if (count > 0) " " + count + " 项" else ""),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+            Text(
+                "恢复会覆盖当前对应数据且无法撤销。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+            )
         }
     }
 
@@ -1332,8 +1503,13 @@ fun MainScaffold(
                             token++
                             scope.launch(Dispatchers.IO) { exportStore.release(previous) }
                         },
-                        onExportConfig = { exportConfigLauncher.launch("xpatch-backup.json") },
-                        onImportConfig = { importConfigLauncher.launch(arrayOf("application/json", "*/*")) },
+                        onBackup = { scopes ->
+                            pendingBackupScopeKeys = ArrayList(scopes.map { it.key })
+                            backupLauncher.launch(backupArchive.defaultFileName())
+                        },
+                        onRestoreBackup = {
+                            restoreLauncher.launch(arrayOf("application/zip", "application/json", "*/*"))
+                        },
                         onHistoryLimitChange = { limit ->
                             settingsStore.setPatchHistoryLimit(limit)
                             settings = settings.copy(patchHistoryLimit = limit)

@@ -97,6 +97,59 @@ class SignatureStore(private val context: Context) {
     fun defaultProfile(): Profile =
         allProfiles().firstOrNull { it.id == defaultProfileId() } ?: builtinProfiles().first()
 
+    fun exportCustomProfiles(): JSONArray {
+        val array = JSONArray()
+        customProfiles().forEach { profile ->
+            array.put(
+                JSONObject().apply {
+                    put("id", profile.id)
+                    put("name", profile.name)
+                    put("password", profile.password)
+                    put("algorithm", profile.algorithm)
+                    put("file", profile.customFile?.let { File(it).name }.orEmpty())
+                },
+            )
+        }
+        return array
+    }
+
+    fun customBinFiles(): Map<String, File> = customProfiles()
+        .mapNotNull { profile -> profile.customFile?.let { File(it) } }
+        .filter { it.isFile }
+        .associateBy { it.name }
+
+    fun restoreCustom(profiles: JSONArray, bins: Map<String, ByteArray>): Int {
+        val dir = File(context.filesDir, "signatures").apply { mkdirs() }
+        val restored = ArrayList<Profile>()
+        for (index in 0 until profiles.length()) {
+            val item = profiles.optJSONObject(index) ?: continue
+            val id = item.optString("id")
+            if (id.isBlank()) continue
+            val target = File(dir, "$id.bin")
+            val fileField = item.optString("file").substringAfterLast('/').removeSuffix(BIN_SUFFIX)
+            val bin = bins[id] ?: bins[fileField]
+            if (bin != null) {
+                runCatching { target.writeBytes(bin) }.getOrElse { continue }
+            } else if (!target.isFile) {
+                continue
+            }
+            restored.add(
+                Profile(
+                    id = id,
+                    name = item.optString("name").ifBlank { id },
+                    kind = Kind.CUSTOM,
+                    customFile = target.absolutePath,
+                    password = item.optString("password"),
+                    algorithm = item.optString("algorithm").ifBlank { "RSA" },
+                ),
+            )
+        }
+        persist(restored)
+        val keep = restored.mapNotNullTo(HashSet()) { it.customFile?.let { path -> File(path).name } }
+        dir.listFiles { file -> file.isFile && file.name !in keep }?.forEach { it.delete() }
+        return restored.size
+    }
+
     fun addCustom(name: String, source: File, password: String, algorithm: String): Profile {
         val dir = File(context.filesDir, "signatures").apply { mkdirs() }
         val id = "custom_" + System.currentTimeMillis()
@@ -148,6 +201,7 @@ class SignatureStore(private val context: Context) {
     companion object {
         private const val KEY_PROFILES = "profiles"
         private const val KEY_DEFAULT = "default"
+        private const val BIN_SUFFIX = ".bin"
 
         const val BUILTIN_XPATCH = "xpatch"
     }

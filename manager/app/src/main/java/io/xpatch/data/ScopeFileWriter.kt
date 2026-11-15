@@ -38,12 +38,13 @@ class ScopeFileWriter(private val context: Context) {
             }
     }
 
-    fun syncAll(onEvent: (String) -> Unit = {}) {
+    fun syncAll(targets: Collection<String> = emptyList(), onEvent: (String) -> Unit = {}): Int {
         val scopeStore = ScopeStore(context)
-        val targets = LinkedHashSet<String>()
-        scopeStore.exportAll().values.forEach { targets.addAll(it) }
-        val results = targets.map { target -> sync(target, scopeStore) }.toMutableList()
+        val all = LinkedHashSet(targets)
+        scopeStore.exportAll().values.forEach { all.addAll(it) }
+        val results = all.map { target -> sync(target, scopeStore) }.toMutableList()
         runCatching { sweepLegacyScopes(results, onEvent) }
+        return results.count { !it.ok }
     }
 
     private fun sweepLegacyScopes(results: MutableList<Result>, onEvent: (String) -> Unit) {

@@ -60,6 +60,11 @@ class ScopeStore(context: Context) {
         reverseCache = null
     }
 
+    fun clearAll() = synchronized(LOCK) {
+        runCatching { prefs.edit().clear().apply() }
+        invalidate()
+    }
+
     private fun enabled(): MutableSet<String> {
         enabledCache?.let { return it }
         val raw = runCatching { prefs.getString(KEY_ENABLED, null) }.getOrNull()

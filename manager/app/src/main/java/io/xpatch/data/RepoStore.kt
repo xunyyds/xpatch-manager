@@ -228,6 +228,22 @@ class RepoStore(private val context: Context) {
         File(context.cacheDir, "repo").walkTopDown().filter { it.isFile }.sumOf { it.length() }
     }.getOrDefault(0L)
 
+    fun snapshotIndex(): String = runCatching {
+        if (indexFile.isFile) indexFile.readText() else ""
+    }.getOrDefault("")
+
+    fun restoreIndex(text: String): Boolean {
+        val ok = runCatching { indexFile.writeText(text) }.isSuccess
+        if (ok) invalidate()
+        return ok
+    }
+
+    fun readmeDirectory(): File = readmeDir
+
+    fun invalidate() {
+        synchronized(indexLock) { indexCache = null }
+    }
+
     private fun recordDownload(
         packageName: String,
         version: String,

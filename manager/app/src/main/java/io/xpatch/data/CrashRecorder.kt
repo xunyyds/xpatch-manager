@@ -43,6 +43,24 @@ object CrashRecorder {
         }.getOrNull()
     }
 
+    fun snapshot(context: Context): List<File> = synchronized(LOCK) {
+        val dir = crashDir(context)
+        dir.listFiles { file -> file.isFile }?.sortedBy { it.name } ?: emptyList()
+    }
+
+    fun restore(context: Context, entries: Map<String, ByteArray>): Int = synchronized(LOCK) {
+        val dir = crashDir(context).apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        var restored = 0
+        entries.forEach { (name, bytes) ->
+            if (name.isBlank() || name.contains('/') || name.contains('\\')) return@forEach
+            if (runCatching { File(dir, name).writeBytes(bytes) }.isSuccess) restored++
+        }
+        restored
+    }
+
     fun clear(context: Context) {
         synchronized(LOCK) {
             runCatching { crashDir(context).deleteRecursively() }
