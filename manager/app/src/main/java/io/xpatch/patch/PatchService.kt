@@ -1,6 +1,7 @@
 package io.xpatch.patch
 
 import android.content.Context
+import io.xpatch.data.ExportStore
 import io.xpatch.data.HookCore
 import io.xpatch.data.PatchRecord
 import io.xpatch.data.SettingsStore
@@ -38,7 +39,10 @@ class PatchService(private val context: Context) {
         val config: String,
 
         val forceOverwrite: Boolean = false,
+        val exported: ExportStore.Saved? = null,
     )
+
+    data class ExportResult(val path: String, val name: String, val uri: String, val size: Long)
 
     suspend fun build(
         app: AppInfo,
@@ -221,9 +225,14 @@ class PatchService(private val context: Context) {
 
         onProgress(95)
         val delivered = File(outputDir().apply { mkdirs() }, "$label-$packageName.apk")
-        runCatching { signed.copyTo(delivered, overwrite = true) }
-            .onSuccess { log.milestone("完成。输出 APK：${delivered.absolutePath}") }
-            .onFailure { log.step("产物另存失败，保留缓存：${signed.absolutePath}") }
+        val copied = runCatching { signed.copyTo(delivered, overwrite = true) }
+        val exported = if (copied.isSuccess) {
+            log.milestone("完成。输出 APK：${delivered.absolutePath}")
+            deliverToChosenDir(delivered, log)
+        } else {
+            log.step("产物另存失败，保留缓存：${signed.absolutePath}")
+            null
+        }
 
         Outcome(
             apk = if (delivered.exists()) delivered else signed,
@@ -233,6 +242,7 @@ class PatchService(private val context: Context) {
             originalFactory = result.originalFactory,
             config = result.config,
             forceOverwrite = options.forceOverwrite,
+            exported = exported,
         )
     }
 
@@ -242,13 +252,39 @@ class PatchService(private val context: Context) {
     fun installFromFile(apk: File, packageName: String): Int =
         PatchInstaller(context).install(apk, packageName)
 
-    fun export(outcome: Outcome): File {
+    suspend fun export(outcome: Outcome): ExportResult = withContext(Dispatchers.IO) {
+        val fileName = "${outcome.label}-${outcome.packageName}.apk"
+        val chosen = ExportStore(context).savedTarget()
+        if (chosen != null) {
+            val saved = runCatching {
+                ExportStore(context).save(outcome.apk, fileName, chosen.uri)
+            }.getOrNull()
+            if (saved != null) {
+                return@withContext ExportResult(
+                    path = saved.path + "/" + saved.name,
+                    name = saved.name,
+                    uri = saved.uri,
+                    size = saved.size,
+                )
+            }
+        }
         val dir = outputDir().apply { mkdirs() }
-        val target = uniqueTarget(dir, "${outcome.label}-${outcome.packageName}.apk")
+        val target = uniqueTarget(dir, fileName)
         if (target.absolutePath != outcome.apk.absolutePath) {
             outcome.apk.copyTo(target, overwrite = false)
         }
-        return target
+        ExportResult(path = target.absolutePath, name = target.name, uri = "", size = target.length())
+    }
+
+    private suspend fun deliverToChosenDir(source: File, log: PatchLog): ExportStore.Saved? {
+        val chosen = ExportStore(context).savedTarget() ?: return null
+        return runCatching {
+            ExportStore(context).save(source, source.name, chosen.uri)
+        }.onSuccess {
+            log.milestone("已放入导出目录 " + it.path + "/" + it.name)
+        }.onFailure {
+            log.step("放入导出目录失败：" + (it.message ?: "无法写入所选目录"))
+        }.getOrNull()
     }
 
     fun outcomeOf(record: PatchRecord): Outcome = Outcome(

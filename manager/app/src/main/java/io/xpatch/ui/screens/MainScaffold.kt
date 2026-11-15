@@ -80,6 +80,7 @@ import io.xpatch.data.ConfigBackup
 import io.xpatch.data.DownloadCenter
 import io.xpatch.data.EnvInfoCollector
 import io.xpatch.data.EventLog
+import io.xpatch.data.ExportStore
 import io.xpatch.data.ManagerRepository
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.ModuleUpdate
@@ -142,6 +143,7 @@ fun MainScaffold(
     val logStore = remember { RuntimeLogStore() }
     val repoStore = remember { RepoStore(context) }
     val configBackup = remember { ConfigBackup(context) }
+    val exportStore = remember { ExportStore(context) }
     val patchService = remember { PatchService(context) }
     val signatureStore = remember { SignatureStore(context) }
     val moduleApiStore = remember { ModuleApiStore(context) }
@@ -257,6 +259,14 @@ fun MainScaffold(
     var repoDownloadTaskId by remember { mutableStateOf<Long?>(null) }
     var repoError by remember { mutableStateOf<String?>(null) }
     var token by remember { mutableIntStateOf(0) }
+    var exportTarget by remember { mutableStateOf<ExportStore.Target?>(null) }
+    var exportChecked by remember { mutableStateOf(false) }
+    LaunchedEffect(settings.exportTreeUri, token) {
+        exportTarget = withContext(Dispatchers.IO) {
+            if (settings.exportTreeUri.isBlank()) null else exportStore.savedTarget()
+        }
+        exportChecked = true
+    }
     val scopeSyncLocks = remember { HashMap<String, Mutex>() }
     val syncScopeFile: (String) -> Unit = { appPackage ->
         val lock = synchronized(scopeSyncLocks) {
@@ -349,7 +359,21 @@ fun MainScaffold(
                 config = outcome.config,
                 forceOverwrite = outcome.forceOverwrite,
             )
-            withContext(Dispatchers.IO) { historyStore.record(record) }
+            withContext(Dispatchers.IO) {
+                historyStore.record(record)
+                outcome.exported?.let { saved ->
+                    historyStore.addExport(
+                        record.id,
+                        PatchExportRef(
+                            path = saved.path + "/" + saved.name,
+                            name = saved.name,
+                            time = System.currentTimeMillis(),
+                            uri = saved.uri,
+                            size = saved.size,
+                        ),
+                    )
+                }
+            }
             currentRecordId = record.id
             historyTick++
             token++
@@ -467,24 +491,15 @@ fun MainScaffold(
     ) { uri ->
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
-            val granted = withContext(Dispatchers.IO) {
-                runCatching {
-                    context.contentResolver.takePersistableUriPermission(
-                        uri,
-                        android.content.Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                            android.content.Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-                    )
-                }.isSuccess
-            }
-            if (!granted) {
-                eventLog.add("导出失败 无法写入所选目录")
+            val target = withContext(Dispatchers.IO) { exportStore.saveTarget(uri.toString()) }
+            if (target == null) {
+                eventLog.add("导出目录不可写，请重新选择")
                 logs = eventLog.entries()
+                failure = "无法写入所选目录，请换一个目录"
                 return@launch
             }
-            val label = uri.lastPathSegment?.substringAfterLast('/') ?: "已选择目录"
-            settingsStore.setExportTree(uri.toString(), label)
             settings = settingsStore.load()
-            eventLog.add("导出目录已设为 " + label)
+            eventLog.add("导出目录已设为 " + target.label)
             logs = eventLog.entries()
             token++
         }
@@ -1248,7 +1263,8 @@ fun MainScaffold(
                     Tab.Settings -> SettingsScreen(
                         settings = settings,
                         defaultSignatureName = signatures.firstOrNull { it.id == defaultSignatureId }?.name ?: "XPatch",
-                        exportLabel = settings.exportTreeLabel,
+                        exportLabel = exportTarget?.label ?: settings.exportTreeLabel,
+                        exportLost = exportChecked && settings.exportTreeUri.isNotBlank() && exportTarget == null,
                         shizukuReady = shizukuReady,
                         shizukuAvailable = shizukuAvailable,
                         onRequestShizuku = {
@@ -1310,8 +1326,11 @@ fun MainScaffold(
 
                         onPickExportDir = { exportDirLauncher.launch(null) },
                         onClearExportDir = {
+                            val previous = settings.exportTreeUri
                             settingsStore.clearExportTree()
                             settings = settings.copy(exportTreeUri = "", exportTreeLabel = "")
+                            token++
+                            scope.launch(Dispatchers.IO) { exportStore.release(previous) }
                         },
                         onExportConfig = { exportConfigLauncher.launch("xpatch-backup.json") },
                         onImportConfig = { importConfigLauncher.launch(arrayOf("application/json", "*/*")) },
@@ -1572,17 +1591,23 @@ fun MainScaffold(
                         scope.launch {
                             val outcome = patchService.outcomeOf(record)
                             val saved = withContext(Dispatchers.IO) {
-                                runCatching { patchService.export(outcome).absolutePath }
+                                runCatching { patchService.export(outcome) }
                             }
-                            saved.onSuccess { path ->
+                            saved.onSuccess { exported ->
                                 withContext(Dispatchers.IO) {
                                     historyStore.addExport(
                                         record.id,
-                                        PatchExportRef(path = path, name = File(path).name, time = System.currentTimeMillis()),
+                                        PatchExportRef(
+                                            path = exported.path,
+                                            name = exported.name,
+                                            time = System.currentTimeMillis(),
+                                            uri = exported.uri,
+                                            size = exported.size,
+                                        ),
                                     )
                                 }
                                 historyTick++
-                                showToast("已导出 " + File(path).name)
+                                showToast("已导出 " + exported.name)
                             }.onFailure {
                                 showToast("导出失败：" + (it.message ?: "未知错误"))
                             }
@@ -1590,9 +1615,17 @@ fun MainScaffold(
                     },
                     onDeleteExport = { record, ref ->
                         scope.launch {
-                            withContext(Dispatchers.IO) { historyStore.removeExport(record.id, ref.path, true) }
+                            val removed = withContext(Dispatchers.IO) {
+                                historyStore.removeExport(record.id, ref.path, ref.uri, true)
+                            }
                             historyTick++
-                            showToast("已删除导出文件")
+                            showToast(
+                                when (removed) {
+                                    null -> "导出记录已不存在"
+                                    true -> "已删除导出文件"
+                                    false -> "记录已删除，文件未删除"
+                                },
+                            )
                         }
                     },
                     onDelete = { record, deleteArtifact, rememberChoice ->
@@ -1901,22 +1934,28 @@ fun MainScaffold(
                 val outcome = result ?: return@PatchProgressDialog
                 scope.launch {
                     val saved = withContext(Dispatchers.IO) {
-                        runCatching { patchService.export(outcome).absolutePath }
+                        runCatching { patchService.export(outcome) }
                     }
-                    saved.onSuccess { path ->
+                    saved.onSuccess { exported ->
                         val recordId = currentRecordId
                         if (recordId != null) {
                             withContext(Dispatchers.IO) {
                                 historyStore.addExport(
                                     recordId,
-                                    PatchExportRef(path = path, name = File(path).name, time = System.currentTimeMillis()),
+                                    PatchExportRef(
+                                        path = exported.path,
+                                        name = exported.name,
+                                        time = System.currentTimeMillis(),
+                                        uri = exported.uri,
+                                        size = exported.size,
+                                    ),
                                 )
                             }
                             historyTick++
                         }
-                        appendLog("已导出到 " + path)
-                        eventLog.add("已导出到 " + path)
-                        showToast("已导出 " + path.substringAfterLast('/'))
+                        appendLog("已导出到 " + exported.path)
+                        eventLog.add("已导出到 " + exported.path)
+                        showToast("已导出 " + exported.name)
                     }.onFailure {
                         val msg = "导出失败：" + (it.message ?: "未知错误")
                         appendLog(msg)

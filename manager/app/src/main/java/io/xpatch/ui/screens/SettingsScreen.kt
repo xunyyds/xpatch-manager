@@ -68,6 +68,7 @@ internal fun SettingsScreen(
     settings: ManagerSettings,
     defaultSignatureName: String,
     exportLabel: String,
+    exportLost: Boolean,
     shizukuReady: Boolean,
     shizukuAvailable: Boolean,
     onRequestShizuku: () -> Unit,
@@ -208,10 +209,12 @@ internal fun SettingsScreen(
                     }
                     SettingItem(
                         "导出目录",
-                        if (exportLabel.isBlank()) {
-                            "打包产物的默认保存位置"
+                        if (exportLost) {
+                            "权限已失效，请重新选择"
+                        } else if (exportLabel.isBlank()) {
+                            "打包产物与导出文件的保存位置"
                         } else {
-                            "打包产物的默认保存位置 长按可清除"
+                            "打包产物与导出文件的保存位置 长按可清除"
                         },
                         if (exportLabel.isBlank()) "未设置" else exportLabel,
                         arrow = true,
@@ -318,10 +321,12 @@ internal fun SettingsScreen(
                     SettingItem("导入配置", "从 JSON 恢复全部配置", onClick = onImportConfig)
                     SettingItem(
                         "导出目录",
-                        if (exportLabel.isBlank()) {
-                            "打包产物的默认保存位置"
+                        if (exportLost) {
+                            "权限已失效，请重新选择"
+                        } else if (exportLabel.isBlank()) {
+                            "打包产物与导出文件的保存位置"
                         } else {
-                            "打包产物的默认保存位置 长按可清除"
+                            "打包产物与导出文件的保存位置 长按可清除"
                         },
                         if (exportLabel.isBlank()) "未设置" else exportLabel,
                         arrow = true,

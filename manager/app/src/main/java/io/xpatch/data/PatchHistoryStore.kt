@@ -10,6 +10,8 @@ data class PatchExportRef(
     val path: String,
     val name: String,
     val time: Long,
+    val uri: String = "",
+    val size: Long = 0,
 )
 
 data class PatchRecord(
@@ -37,7 +39,8 @@ data class PatchRecord(
         file.isFile && file.length() == apkSize && file.lastModified() == apkModified
     }
 
-    fun exportExists(ref: PatchExportRef): Boolean = File(ref.path).isFile
+    fun exportExists(ref: PatchExportRef): Boolean =
+        ref.uri.isNotBlank() || File(ref.path).isFile
 }
 
 class PatchHistoryStore(private val context: Context) {
@@ -77,21 +80,33 @@ class PatchHistoryStore(private val context: Context) {
         val index = current.indexOfFirst { it.id == id }
         if (index < 0) return@synchronized false
         val record = current[index]
-        val exports = record.exports.filterNot { it.path == ref.path } + ref
+        val key = ref.uri.ifBlank { ref.path }
+        val exports = record.exports.filterNot { (it.uri.ifBlank { it.path }) == key } + ref
         current[index] = record.copy(exports = exports)
         saveLocked(current)
         true
     }
 
-    fun removeExport(recordId: String, path: String, deleteFile: Boolean): Boolean = synchronized(lock) {
+    fun removeExport(recordId: String, path: String, uri: String, deleteFile: Boolean): Boolean? = synchronized(lock) {
         val current = loadLocked().toMutableList()
         val index = current.indexOfFirst { it.id == recordId }
-        if (index < 0) return@synchronized false
+        if (index < 0) return@synchronized null
         val record = current[index]
-        if (deleteFile) runCatching { File(path).delete() }
-        current[index] = record.copy(exports = record.exports.filterNot { it.path == path })
+        val key = uri.ifBlank { path }
+        var deleted = true
+        if (deleteFile) {
+            deleted = if (uri.isNotBlank()) {
+                ExportStore(context).delete(uri)
+            } else {
+                val file = File(path)
+                runCatching { file.delete() }.getOrDefault(false) || !file.exists()
+            }
+        }
+        current[index] = record.copy(
+            exports = record.exports.filterNot { (it.uri.ifBlank { it.path }) == key },
+        )
         saveLocked(current)
-        true
+        deleted
     }
 
     fun remove(id: String, deleteArtifact: Boolean): Boolean = synchronized(lock) {
@@ -99,7 +114,13 @@ class PatchHistoryStore(private val context: Context) {
         val record = current.firstOrNull { it.id == id } ?: return@synchronized false
         if (deleteArtifact) {
             runCatching { record.artifactFile().delete() }
-            record.exports.forEach { runCatching { File(it.path).delete() } }
+            record.exports.forEach { ref ->
+                if (ref.uri.isNotBlank()) {
+                    ExportStore(context).delete(ref.uri)
+                } else {
+                    runCatching { File(ref.path).delete() }
+                }
+            }
         }
         current.removeAll { it.id == id }
         saveLocked(current)
@@ -117,7 +138,9 @@ class PatchHistoryStore(private val context: Context) {
     fun totalSize(): Long = synchronized(lock) {
         loadLocked().sumOf { record ->
             val artifact = if (record.hasArtifact()) record.apkSize else 0L
-            artifact + record.exports.sumOf { ref -> File(ref.path).takeIf { it.isFile }?.length() ?: 0L }
+            artifact + record.exports.sumOf { ref ->
+                ref.size.takeIf { it > 0 } ?: File(ref.path).takeIf { it.isFile }?.length() ?: 0L
+            }
         }
     }
 
@@ -158,6 +181,8 @@ class PatchHistoryStore(private val context: Context) {
                         path = ref.optString("path"),
                         name = ref.optString("name"),
                         time = ref.optLong("time"),
+                        uri = ref.optString("uri"),
+                        size = ref.optLong("size"),
                     ),
                 )
             }
@@ -210,6 +235,8 @@ class PatchHistoryStore(private val context: Context) {
                     put("path", ref.path)
                     put("name", ref.name)
                     put("time", ref.time)
+                    put("uri", ref.uri)
+                    put("size", ref.size)
                 },
             )
         }
