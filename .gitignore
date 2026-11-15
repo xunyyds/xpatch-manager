@@ -12,6 +12,7 @@ local.properties
 .idea/
 .vscode/
 manager/.gradle/
+manager/buildSrc/.gradle/
 manager/app/build/
 manager/local.properties
 

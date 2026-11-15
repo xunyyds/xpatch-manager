@@ -77,6 +77,11 @@ Get-Item manager\build\reports\problems\problems-report.html -ErrorAction Silent
 
 ## 与引导桩构建链相关的两个行为
 
+四个 `xp` 门禁任务（`buildStubDex` / `verifyStubDex` / `checkReleaseAssets` / `checkRuntimeVersion`）
+的任务类与工具对象在 `manager/buildSrc/src/main/kotlin/io/xpatch/gradle/` 下，
+由 `app/build.gradle.kts` 末尾的 `registerXpTasks` 注册并挂到构建生命周期；改门禁逻辑改 buildSrc，
+改资产路径与挂载点改 `XpTasks.kt`。
+
 - `:app:buildStubDex` 会重写 `manager/app/src/main/assets/xp/stub.dex`。构建机没有 SDK `d8`、
   没有 `javac` 或找不到 `android.jar` 时，它只打印警告并沿用已入库的 dex，**不会**让
   `assembleRelease` 失败；确认产物稳定后可以用 `-Pxp.stub.autoBuild=false` 关掉，回到手工维护。
