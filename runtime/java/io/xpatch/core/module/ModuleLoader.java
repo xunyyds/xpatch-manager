@@ -1,5 +1,6 @@
 package io.xpatch.core.module;
 
+import android.content.Context;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.os.Build;
@@ -15,6 +16,8 @@ import io.xpatch.hook.AppEnv;
 import io.xpatch.hook.XpHelper;
 import io.xpatch.hook.XpHook;
 import io.xpatch.utils.DataUtils;
+import java.io.File;
+import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -257,40 +260,49 @@ public class ModuleLoader {
                 throw new IllegalStateException("模块 APK 中没有 dex：" + apkPath);
             }
             java.util.Set<String> present = new java.util.HashSet<String>();
+            java.util.Set<String> compressed = new java.util.HashSet<String>();
             java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
             while (entries.hasMoreElements()) {
                 ZipEntry entry = entries.nextElement();
                 String name = entry.getName();
-                if (!name.startsWith("lib/") || !name.endsWith("/")) {
+                if (!name.startsWith("lib/") || name.length() <= 4) {
                     continue;
                 }
-                String abi = name.substring(4, name.length() - 1);
-                if (abi.length() > 0 && abi.indexOf('/') < 0) {
+                int split = name.indexOf('/', 4);
+                if (split < 0) {
+                    continue;
+                }
+                String abi = name.substring(4, split);
+                if (abi.length() == 0) {
+                    continue;
+                }
+                if (split == name.length() - 1) {
                     present.add(abi);
+                    continue;
+                }
+                String fileName = name.substring(split + 1);
+                if (fileName.indexOf('/') >= 0 || !fileName.endsWith(".so")) {
+                    continue;
+                }
+                present.add(abi);
+                if (entry.getMethod() != ZipEntry.STORED) {
+                    compressed.add(abi);
                 }
             }
             if (present.isEmpty()) {
-                XpHook.log0(TAG, "模块 " + apkPath + " 没有 lib/<abi>/ 目录：不提供 native 库路径");
+                XpHook.log0(TAG, "模块 " + apkPath + " 没有 lib/<abi>/ 目录或 lib/<abi>/*.so 条目：不提供 native 库路径");
                 return null;
             }
             boolean is64 = Process.is64Bit();
-            String[] candidates = is64 ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS;
-            String[] fallback = is64 ? Build.SUPPORTED_32_BIT_ABIS : Build.SUPPORTED_64_BIT_ABIS;
-            for (int i = 0; candidates != null && i < candidates.length; i++) {
-                String abi = candidates[i];
-                if (present.contains(abi)) {
-                    XpHook.log0(TAG, "模块 native 库目录：" + apkPath + "!/lib/" + abi
-                            + "/（进程位宽=" + (is64 ? "64" : "32") + "）");
-                    return apkPath + "!/lib/" + abi + "/";
-                }
+            String abi = pickAbi(present, is64, true);
+            if (abi != null) {
+                return moduleNativeDir(zipFile, apkPath, abi, compressed, is64);
             }
-            for (int i = 0; fallback != null && i < fallback.length; i++) {
-                String abi = fallback[i];
-                if (present.contains(abi)) {
-                    XpHook.log0(TAG, "模块没有匹配进程位宽（" + (is64 ? "64" : "32")
-                            + "）的 lib/<abi>/，回退 " + abi + "：" + apkPath);
-                    return apkPath + "!/lib/" + abi + "/";
-                }
+            abi = pickAbi(present, is64, false);
+            if (abi != null) {
+                XpHook.log0(TAG, "模块没有匹配进程位宽（" + (is64 ? "64" : "32")
+                        + "）的 lib/<abi>/，回退 " + abi + "：" + apkPath);
+                return moduleNativeDir(zipFile, apkPath, abi, compressed, is64);
             }
             XpHook.log0(TAG, "模块 APK 的 lib 目录与设备 ABI 都不匹配（" + present
                     + " / 设备=" + java.util.Arrays.toString(Build.SUPPORTED_ABIS)
@@ -306,6 +318,91 @@ public class ModuleLoader {
                 } catch (Throwable ignored) {
                 }
             }
+        }
+    }
+
+    private static String moduleNativeDir(ZipFile zipFile, String apkPath, String abi,
+            java.util.Set<String> compressed, boolean is64) {
+        if (compressed.contains(abi)) {
+            String dir = extractModuleNativeLibs(zipFile, apkPath, abi);
+            if (dir != null) {
+                XpHook.log0(TAG, "模块 native 库目录（压缩条目已解压）：" + dir);
+                return dir;
+            }
+            XpHook.log0(TAG, "模块 " + abi + " 的 native 库为压缩存储且解压失败，仍回退 zip 路径：" + apkPath);
+        }
+        XpHook.log0(TAG, "模块 native 库目录：" + apkPath + "!/lib/" + abi
+                + "/（进程位宽=" + (is64 ? "64" : "32") + "）");
+        return apkPath + "!/lib/" + abi + "/";
+    }
+
+    private static String pickAbi(java.util.Set<String> present, boolean is64, boolean sameWidth) {
+        String[] abis = sameWidth
+                ? (is64 ? Build.SUPPORTED_64_BIT_ABIS : Build.SUPPORTED_32_BIT_ABIS)
+                : (is64 ? Build.SUPPORTED_32_BIT_ABIS : Build.SUPPORTED_64_BIT_ABIS);
+        for (int i = 0; abis != null && i < abis.length; i++) {
+            if (present.contains(abis[i])) {
+                return abis[i];
+            }
+        }
+        return null;
+    }
+
+    private static String extractModuleNativeLibs(ZipFile zipFile, String apkPath, String abi) {
+        try {
+            Context context = AppEnv.appContext;
+            if (context == null) {
+                return null;
+            }
+            File source = new File(apkPath);
+            String tag = Integer.toHexString(apkPath.hashCode()) + "_"
+                    + Long.toHexString(source.length()) + "_"
+                    + Long.toHexString(source.lastModified());
+            File abiDir = new File(new File(new File(context.getCacheDir(), "xp_module_libs"), tag), abi);
+            String prefix = "lib/" + abi + "/";
+            java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
+            int extracted = 0;
+            while (entries.hasMoreElements()) {
+                ZipEntry entry = entries.nextElement();
+                String name = entry.getName();
+                if (!name.startsWith(prefix)) {
+                    continue;
+                }
+                String fileName = name.substring(prefix.length());
+                if (fileName.length() == 0 || fileName.indexOf('/') >= 0 || !fileName.endsWith(".so")) {
+                    continue;
+                }
+                if (fileName.startsWith("!")) {
+                    fileName = fileName.substring(1);
+                    if (fileName.length() == 0) {
+                        continue;
+                    }
+                }
+                File target = new File(abiDir, fileName);
+                File parent = target.getParentFile();
+                if (parent != null) {
+                    parent.mkdirs();
+                }
+                InputStream input = zipFile.getInputStream(entry);
+                try {
+                    FileOutputStream output = new FileOutputStream(target);
+                    try {
+                        output.write(DataUtils.readAllBytes(input));
+                    } finally {
+                        output.close();
+                    }
+                } finally {
+                    input.close();
+                }
+                extracted++;
+            }
+            if (extracted == 0) {
+                return null;
+            }
+            return abiDir.getAbsolutePath();
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "解压模块 native 库失败：" + apkPath + "（" + abi + "）-> " + th);
+            return null;
         }
     }
 
