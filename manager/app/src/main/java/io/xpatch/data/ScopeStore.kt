@@ -1,7 +1,9 @@
 package io.xpatch.data
 
 import android.content.Context
+import android.content.SharedPreferences
 import org.json.JSONArray
+import java.util.UUID
 
 class ScopeStore(context: Context) {
 
@@ -33,12 +35,15 @@ class ScopeStore(context: Context) {
         val changed = if (inScope) current.add(appPackage) else current.remove(appPackage)
         if (changed) {
             reverseCache = null
+            val editor = prefs.edit()
             if (current.isEmpty()) {
                 all.remove(modulePackage)
-                prefs.edit().remove(prefix(modulePackage)).apply()
+                editor.remove(prefix(modulePackage))
             } else {
-                prefs.edit().putString(prefix(modulePackage), JSONArray(current.toList()).toString()).apply()
+                editor.putString(prefix(modulePackage), JSONArray(current.toList()).toString())
             }
+            enqueueScopeSync(setOf(appPackage), editor)
+            editor.apply()
         }
     }
 
@@ -54,15 +59,88 @@ class ScopeStore(context: Context) {
         scope().mapValues { it.value.toSet() }
     }
 
+    fun knownModulePackages(): Set<String> = synchronized(LOCK) { moduleStamps().keys.toSet() }
+
+    fun pendingScopeSyncApps(): Set<String> = synchronized(LOCK) { pendingSync().toSet() }
+
+    fun scopeSyncVersion(appPackage: String): String = synchronized(LOCK) {
+        prefs.getString(syncVersionPrefix(appPackage), null).orEmpty()
+    }
+
+    fun requestScopeSync(apps: Collection<String>) = synchronized(LOCK) {
+        if (apps.isNotEmpty()) {
+            val editor = prefs.edit()
+            enqueueScopeSync(apps, editor)
+            editor.apply()
+        }
+    }
+
+    fun acknowledgeScopeSync(appPackage: String, version: String): Boolean = synchronized(LOCK) {
+        if (scopeSyncVersion(appPackage) != version) return@synchronized false
+        val pending = pendingSync()
+        if (pending.remove(appPackage)) {
+            prefs.edit().putString(KEY_PENDING_SYNC, JSONArray(pending.toList()).toString()).apply()
+        }
+        true
+    }
+
+    fun reconcileModules(stamps: Map<String, String>, removed: Set<String>): Set<String> = synchronized(LOCK) {
+        val all = scope()
+        val known = moduleStamps()
+        val affectedApps = HashSet<String>()
+        val editor = prefs.edit()
+        var changed = false
+        stamps.forEach { (module, stamp) ->
+            if (module !in removed && known[module] != stamp) {
+                known[module] = stamp
+                affectedApps.addAll(all[module].orEmpty())
+                editor.putString(stampPrefix(module), stamp)
+                changed = true
+            }
+        }
+        val enabled = enabled()
+        var enabledChanged = false
+        removed.forEach { module ->
+            affectedApps.addAll(all.remove(module).orEmpty())
+            known.remove(module)
+            enabledChanged = enabled.remove(module) || enabledChanged
+            editor.remove(prefix(module)).remove(stampPrefix(module))
+            changed = true
+        }
+        if (changed) {
+            reverseCache = null
+            if (enabledChanged) {
+                editor.putString(KEY_ENABLED, JSONArray(enabled.toList()).toString())
+            }
+            enqueueScopeSync(affectedApps, editor)
+            editor.apply()
+        }
+        pendingSync().toSet()
+    }
+
     fun invalidate() = synchronized(LOCK) {
         enabledCache = null
         scopeCache = null
         reverseCache = null
+        moduleStampCache = null
+        pendingSyncCache = null
     }
 
     fun clearAll() = synchronized(LOCK) {
-        runCatching { prefs.edit().clear().apply() }
+        val affectedApps = scope().values.flatten().toSet() + pendingSync()
+        val editor = prefs.edit().clear()
+        enqueueScopeSync(affectedApps, editor)
+        runCatching { editor.apply() }
         invalidate()
+    }
+
+    private fun enqueueScopeSync(apps: Collection<String>, editor: SharedPreferences.Editor) {
+        val pending = pendingSync()
+        apps.toSet().forEach { appPackage ->
+            pending.add(appPackage)
+            editor.putString(syncVersionPrefix(appPackage), UUID.randomUUID().toString())
+        }
+        editor.putString(KEY_PENDING_SYNC, JSONArray(pending.toList()).toString())
     }
 
     private fun enabled(): MutableSet<String> {
@@ -88,6 +166,25 @@ class ScopeStore(context: Context) {
         return loaded
     }
 
+    private fun moduleStamps(): MutableMap<String, String> {
+        moduleStampCache?.let { return it }
+        val loaded = HashMap<String, String>()
+        prefs.all.forEach { (key, value) ->
+            if (key.startsWith(STAMP_PREFIX) && value is String) {
+                loaded[key.removePrefix(STAMP_PREFIX)] = value
+            }
+        }
+        moduleStampCache = loaded
+        return loaded
+    }
+
+    private fun pendingSync(): MutableSet<String> {
+        pendingSyncCache?.let { return it }
+        val loaded = parse(prefs.getString(KEY_PENDING_SYNC, null)).toMutableSet()
+        pendingSyncCache = loaded
+        return loaded
+    }
+
     private fun reverse(): Map<String, Set<String>> {
         reverseCache?.let { return it }
         val built = HashMap<String, MutableSet<String>>()
@@ -109,13 +206,22 @@ class ScopeStore(context: Context) {
 
     private fun prefix(modulePackage: String) = "$SCOPE_PREFIX$modulePackage"
 
+    private fun stampPrefix(modulePackage: String) = "$STAMP_PREFIX$modulePackage"
+
+    private fun syncVersionPrefix(appPackage: String) = "$SYNC_VERSION_PREFIX$appPackage"
+
     private companion object {
         const val KEY_ENABLED = "enabled_modules"
+        const val KEY_PENDING_SYNC = "pending_sync_apps"
         const val SCOPE_PREFIX = "scope_"
+        const val STAMP_PREFIX = "module_stamp_"
+        const val SYNC_VERSION_PREFIX = "sync_version_"
 
         val LOCK = Any()
         var enabledCache: MutableSet<String>? = null
         var scopeCache: MutableMap<String, MutableSet<String>>? = null
         var reverseCache: Map<String, Set<String>>? = null
+        var moduleStampCache: MutableMap<String, String>? = null
+        var pendingSyncCache: MutableSet<String>? = null
     }
 }

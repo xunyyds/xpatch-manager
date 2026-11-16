@@ -191,7 +191,9 @@ internal fun AppScopeScreen(
     val enabledFlags = modules.associate { it.packageName to inScope(it) }
     val recommendedFlags = modules.associate { it.packageName to (app.packageName in it.recommendedApps) }
 
-    val settledState = remember { mutableStateOf(enabledFlags) }
+    val modulePackages = remember(modules) { modules.map { it.packageName }.toSet() }
+    val settledState = remember(app.packageName, modulePackages) { mutableStateOf(enabledFlags) }
+    val settlingPackages = remember(app.packageName, modulePackages) { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
     var scopeFilter by remember { mutableIntStateOf(0) }
@@ -230,14 +232,24 @@ internal fun AppScopeScreen(
         ActionRunState.Idle -> "重新编译应用（Dexopt）"
     }
 
+    val onModuleToggle: (ModuleInfo, Boolean) -> Unit = { module, enabled ->
+        settlingPackages[module.packageName] = enabled
+        onToggle(module, enabled)
+    }
     val onSwitchSettled: (String) -> Unit = { pkg ->
         pendingPackage = pkg
+    }
+    LaunchedEffect(enabledFlags) {
+        settledState.value = enabledFlags.mapValues { (pkg, enabled) ->
+            if (pkg in settlingPackages) settledState.value[pkg] ?: enabled else enabled
+        }
     }
     LaunchedEffect(pendingPackage) {
         val pkg = pendingPackage ?: return@LaunchedEffect
         pendingPackage = null
-        if (settledEnabled[pkg] == enabledFlags[pkg]) return@LaunchedEffect
-        settledState.value = enabledFlags
+        settlingPackages.remove(pkg)
+        if (settledState.value[pkg] == enabledFlags[pkg]) return@LaunchedEffect
+        settledState.value = settledState.value + (pkg to (enabledFlags[pkg] == true))
         highlightPackage = pkg
     }
     LaunchedEffect(highlightPackage) {
@@ -421,7 +433,7 @@ internal fun AppScopeScreen(
                                     onOpen = { onOpenModule(module) },
                                     highlight = module.packageName == highlightPackage,
                                     onSwitchSettled = { onSwitchSettled(module.packageName) },
-                                ) { onToggle(module, it) }
+                                ) { onModuleToggle(module, it) }
                                 if (index != group.lastIndex) MiuixDivider()
                             }
                         }
@@ -437,7 +449,7 @@ internal fun AppScopeScreen(
                                 onOpen = { onOpenModule(module) },
                                 highlight = module.packageName == highlightPackage,
                                 onSwitchSettled = { onSwitchSettled(module.packageName) },
-                            ) { onToggle(module, it) }
+                            ) { onModuleToggle(module, it) }
                             RowDivider()
                         }
                     }
@@ -459,7 +471,7 @@ internal fun AppScopeScreen(
                             onOpen = { onOpenModule(module) },
                             highlight = module.packageName == highlightPackage,
                             onSwitchSettled = { onSwitchSettled(module.packageName) },
-                        ) { onToggle(module, it) }
+                        ) { onModuleToggle(module, it) }
                         if (index != listed.lastIndex) MiuixDivider()
                     }
                 }
@@ -475,7 +487,7 @@ internal fun AppScopeScreen(
                         onOpen = { onOpenModule(module) },
                         highlight = module.packageName == highlightPackage,
                         onSwitchSettled = { onSwitchSettled(module.packageName) },
-                    ) { onToggle(module, it) }
+                    ) { onModuleToggle(module, it) }
                     RowDivider()
                 }
             }

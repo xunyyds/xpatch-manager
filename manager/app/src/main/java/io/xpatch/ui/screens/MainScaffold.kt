@@ -10,6 +10,10 @@ import androidx.compose.animation.togetherWith
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
@@ -126,7 +130,9 @@ import java.io.BufferedOutputStream
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -226,6 +232,16 @@ fun MainScaffold(
     var patchedApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var patchableApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var modules by remember { mutableStateOf<List<ModuleInfo>>(emptyList()) }
+    var catalogApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
+    var catalogReady by remember { mutableStateOf(false) }
+    val catalogRequests = remember { Channel<Unit>(Channel.CONFLATED) }
+    var catalogNeedsScan by remember { mutableStateOf(false) }
+    var catalogForceScan by remember { mutableStateOf(false) }
+    val requestCatalogRefresh: (Boolean, Boolean) -> Unit = { scan, force ->
+        catalogNeedsScan = catalogNeedsScan || scan
+        catalogForceScan = catalogForceScan || force
+        catalogRequests.trySend(Unit)
+    }
     var settings by remember { mutableStateOf(settingsStore.load()) }
     var onboardingDone by remember { mutableStateOf(settings.onboardingDone) }
     if (!onboardingDone) {
@@ -272,20 +288,25 @@ fun MainScaffold(
     }
     val scopeSyncLocks = remember { HashMap<String, Mutex>() }
     val syncScopeFile: (String) -> Unit = { appPackage ->
+        repository.requestScopeSync(listOf(appPackage))
         val lock = synchronized(scopeSyncLocks) {
             scopeSyncLocks.getOrPut(appPackage) { Mutex() }
         }
         scope.launch(Dispatchers.IO) {
             lock.withLock {
+                val version = repository.scopeSyncVersion(appPackage)
                 val result = ScopeFileWriter(context).sync(appPackage)
                 if (!result.ok) {
                     eventLog.add("作用域同步失败 " + (result.failureText ?: appPackage))
                     val entries = eventLog.entries()
                     withContext(Dispatchers.Main) { logs = entries }
-                } else if (result.dataViaShizuku) {
-                    eventLog.add("已通过 Shizuku 清理 " + appPackage + " 的遗留 data 作用域")
-                    val entries = eventLog.entries()
-                    withContext(Dispatchers.Main) { logs = entries }
+                } else {
+                    repository.acknowledgeScopeSync(appPackage, version)
+                    if (result.dataViaShizuku) {
+                        eventLog.add("已通过 Shizuku 清理 " + appPackage + " 的遗留 data 作用域")
+                        val entries = eventLog.entries()
+                        withContext(Dispatchers.Main) { logs = entries }
+                    }
                 }
             }
         }
@@ -296,7 +317,6 @@ fun MainScaffold(
         settingsStore.setSignatureBypassLevel(options.bypassLevel)
         settingsStore.setInjectSignature(options.injectSignature)
         settingsStore.setFileProvider(options.fileProvider)
-        settingsStore.setDynamicMode(options.dynamicMode)
         settingsStore.setForceOverwrite(options.forceOverwrite)
         settingsStore.setSigMode(options.sigMode)
         settingsStore.setInjectObfuscate(options.obfuscate)
@@ -306,7 +326,6 @@ fun MainScaffold(
             signatureBypassLevel = options.bypassLevel,
             injectSignature = options.injectSignature,
             fileProvider = options.fileProvider,
-            dynamicMode = options.dynamicMode,
             forceOverwrite = options.forceOverwrite,
             sigMode = options.sigMode,
             injectObfuscate = options.obfuscate,
@@ -842,24 +861,68 @@ fun MainScaffold(
         logsRuntime = logsRuntime.copy(hasAccess = logStore.hasAccess())
     }
 
-    LaunchedEffect(token) {
-        val loadedPatched = repository.loadPatchedApps()
-        val loadedModules = repository.loadModules()
-        withContext(Dispatchers.Main) {
-            patchedApps = loadedPatched
-            modules = loadedModules
+    LaunchedEffect(repository) {
+        for (request in catalogRequests) {
+            val scan = catalogNeedsScan
+            val force = catalogForceScan
+            catalogNeedsScan = false
+            catalogForceScan = false
+            try {
+                val loaded = if (scan) repository.refresh(force) else repository.loadOverview()
+                if (!catalogNeedsScan && !catalogForceScan) {
+                    val initialSync = !catalogReady && loaded.packageScanComplete
+                    patchedApps = loaded.patchedApps
+                    modules = loaded.modules
+                    catalogApps = loaded.apps
+                    catalogReady = loaded.packageScanComplete
+                    val syncTargets = loaded.affectedScopeApps.toMutableSet()
+                    if (initialSync) {
+                        val initialTargets = loaded.patchedApps.map { it.packageName }
+                        withContext(Dispatchers.IO) { repository.requestScopeSync(initialTargets) }
+                        syncTargets.addAll(initialTargets)
+                    }
+                    syncTargets.forEach(syncScopeFile)
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                eventLog.add("应用与模块刷新失败：" + (error.message ?: "未知错误"))
+                logs = eventLog.entries()
+            } finally {
+                if (!catalogNeedsScan && !catalogForceScan) {
+                    homeRefreshing = false
+                    modulesRefreshing = false
+                }
+            }
         }
     }
 
-    LaunchedEffect(token, includeSystem) {
-        val loadedPatchable = repository.loadPatchableApps(includeSystem)
-        withContext(Dispatchers.Main) {
-            patchableApps = loadedPatchable
-        }
+    LaunchedEffect(token) {
+        requestCatalogRefresh(false, false)
+    }
+
+    LaunchedEffect(catalogApps, includeSystem) {
+        patchableApps = catalogApps.filter { includeSystem || !it.isSystem }
     }
 
     LaunchedEffect(token) {
         logs = withContext(Dispatchers.IO) { eventLog.entries() }
+    }
+
+    LaunchedEffect(catalogReady, modules, patchedApps, nav.page) {
+        if (!catalogReady) return@LaunchedEffect
+        when (val current = nav.page) {
+            is Page.ModuleScope -> if (modules.none { it.packageName == current.module.packageName }) {
+                nav.select(Tab.Modules)
+            }
+            is Page.ModuleDetail -> if (modules.none { it.packageName == current.module.packageName }) {
+                nav.select(Tab.Modules)
+            }
+            is Page.AppScope -> if (patchedApps.none { it.packageName == current.app.packageName }) {
+                nav.select(Tab.Home)
+            }
+            else -> Unit
+        }
     }
 
     val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
@@ -874,17 +937,42 @@ fun MainScaffold(
                 if (access && (logsRuntime.snapshot == null || !hadAccess) && !logsRefreshing) {
                     scope.launch { loadRuntimeLogs() }
                 }
-                scope.launch {
-                    repository.invalidate()
-                    val refreshed = repository.loadPatchedApps()
-                    withContext(Dispatchers.Main) {
-                        patchedApps = refreshed
-                    }
-                }
+                requestCatalogRefresh(true, false)
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    DisposableEffect(context, repository) {
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(receiverContext: Context, intent: Intent) {
+                val packageName = intent.data?.schemeSpecificPart ?: return
+                val replacing = intent.action == Intent.ACTION_PACKAGE_REMOVED &&
+                    intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                if (intent.action == Intent.ACTION_PACKAGE_REMOVED) {
+                    repository.onPackageRemoved(packageName, replacing)
+                } else {
+                    repository.onPackageChanged(packageName)
+                }
+                labelCache.remove(packageName)
+                if (!replacing) requestCatalogRefresh(true, true)
+            }
+        }
+        val filter = IntentFilter().apply {
+            addAction(Intent.ACTION_PACKAGE_ADDED)
+            addAction(Intent.ACTION_PACKAGE_REMOVED)
+            addAction(Intent.ACTION_PACKAGE_REPLACED)
+            addAction(Intent.ACTION_PACKAGE_CHANGED)
+            addDataScheme("package")
+        }
+        androidx.core.content.ContextCompat.registerReceiver(
+            context,
+            receiver,
+            filter,
+            androidx.core.content.ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
+        onDispose { context.unregisterReceiver(receiver) }
     }
 
     LaunchedEffect(nav.tab) {
@@ -1082,14 +1170,9 @@ fun MainScaffold(
         }
         eventLog.add("已卸载 " + target.packageName + "，继续安装")
         logs = eventLog.entries()
-        scope.launch {
-            repository.invalidate()
-            val refreshed = repository.loadPatchedApps()
-            withContext(Dispatchers.Main) {
-                patchedApps = refreshed
-                token++
-            }
-        }
+        repository.onPackageChanged(target.packageName)
+        requestCatalogRefresh(true, true)
+        token++
         installOutcome(target)
     }
 
@@ -1297,12 +1380,9 @@ fun MainScaffold(
                         apps = patchedApps,
                         refreshing = homeRefreshing,
                         onRefresh = {
-                            scope.launch {
+                            if (!homeRefreshing) {
                                 homeRefreshing = true
-                                repository.invalidate()
-                                patchedApps = repository.loadPatchedApps()
-                                homeRefreshing = false
-                                token++
+                                requestCatalogRefresh(true, true)
                             }
                         },
                         onOpen = { nav.navigate(Page.AppScope(it)) },
@@ -1321,12 +1401,9 @@ fun MainScaffold(
                         onOpen = { nav.navigate(Page.ModuleScope(it)) },
                         refreshing = modulesRefreshing,
                         onRefresh = {
-                            scope.launch {
+                            if (!modulesRefreshing) {
                                 modulesRefreshing = true
-                                repository.invalidate()
-                                modules = repository.loadModules()
-                                modulesRefreshing = false
-                                token++
+                                requestCatalogRefresh(true, true)
                             }
                         },
                         onOpenRepo = {
@@ -1853,7 +1930,7 @@ fun MainScaffold(
                 is Page.Acknowledgements -> AcknowledgementsScreen()
 
                 is Page.ModuleScope -> ModuleScopeScreen(
-                    module = current.module,
+                    module = modules.firstOrNull { it.packageName == current.module.packageName } ?: current.module,
                     apps = patchedApps,
                     scopeOf = { repository.appsOfModule(current.module.packageName) },
                     onToggle = { app, inScope ->
@@ -1877,7 +1954,8 @@ fun MainScaffold(
                 )
 
                 is Page.AppScope -> AppScopeScreen(
-                    app = current.app,
+                    app = patchedApps.firstOrNull { it.packageName == current.app.packageName }
+                        ?: current.app.copy(enabledModules = repository.countModules(current.app.packageName)),
                     modules = modules,
                     apiOf = remember(token, current.app.packageName) {
                         { module: ModuleInfo -> moduleApiStore.apiOf(current.app.packageName, module.packageName) }

@@ -26,7 +26,7 @@ class ScopeFileWriter(private val context: Context) {
                 return buildString {
                     append(appPackage).append("：")
                     if (!mediaReady) {
-                        append(if (hasScope) "media 写入失败；" else "media 删除失败；")
+                        append(if (hasScope) "media 写入失败；" else "media 清空失败；")
                     }
                     if (!legacyDataCleaned) {
                         append("遗留 data 作用域清理失败")
@@ -51,49 +51,27 @@ class ScopeFileWriter(private val context: Context) {
         val dataRoot = File(Environment.getExternalStorageDirectory(), "Android/data")
         val files = dataRoot.listFiles() ?: return
         for (dir in files) {
-            if (!dir.isDirectory) continue
+            if (!dir.isDirectory || results.any { it.appPackage == dir.name }) continue
             val legacy = File(dir, sha1(dir.name + ".scope"))
             if (!legacy.isFile) continue
-            val hasScope = results.any { it.appPackage == dir.name && it.hasScope }
-            if (hasScope) continue
-            val staging = File(
-                File(Environment.getExternalStorageDirectory(), "Android/media/" + dir.name),
-                legacy.name + ".empty",
-            )
-            var viaShizuku = false
-            runCatching {
-                staging.parentFile?.mkdirs()
-                staging.writeText(JSONObject().put("scopes", JSONArray()).toString())
-                repeat(4) { attempt ->
-                    if (!viaShizuku) {
-                        viaShizuku = copyDataViaShizuku(staging, legacy)
-                        if (!viaShizuku && attempt < 3) Thread.sleep(2000)
-                    }
-                }
-            }
-            runCatching { staging.delete() }
-            val cleaned = !legacy.isFile || readScopeIsEmpty(legacy)
-            if (!cleaned) {
+            val result = sync(dir.name)
+            if (!result.ok) {
                 onEvent("遗留 data 作用域清理失败 " + dir.name + "（Shizuku 通道未生效）")
-            } else if (viaShizuku) {
+            } else if (result.dataViaShizuku) {
                 onEvent("已通过 Shizuku 清理 " + dir.name + " 的遗留 data 作用域")
             }
-            results.add(
-                Result(
-                    appPackage = dir.name,
-                    hasScope = false,
-                    mediaReady = true,
-                    legacyDataCleaned = cleaned,
-                    dataViaShizuku = viaShizuku,
-                    errors = if (cleaned) emptyList() else listOf("遗留 data 清理失败（Shizuku 通道未生效）"),
-                ),
-            )
+            results.add(result)
         }
     }
 
     fun sync(appPackage: String): Result = sync(appPackage, ScopeStore(context))
 
     private fun sync(appPackage: String, scopeStore: ScopeStore): Result {
+        val lock = synchronized(SYNC_LOCKS) { SYNC_LOCKS.getOrPut(appPackage) { Any() } }
+        return synchronized(lock) { syncLocked(appPackage, scopeStore) }
+    }
+
+    private fun syncLocked(appPackage: String, scopeStore: ScopeStore): Result {
         runCatching { migrateLegacyMedia(appPackage) }
         val modules = scopeStore.modulesOf(appPackage)
         val mediaFile = mediaScopeFile(appPackage)
@@ -101,8 +79,10 @@ class ScopeFileWriter(private val context: Context) {
         val errors = mutableListOf<String>()
 
         if (modules.isEmpty()) {
-            runCatching { mediaFile.delete() }
-                .onFailure { errors.add("media 删除: " + (it.message ?: "未知错误")) }
+            val mediaOk = runCatching {
+                mediaFile.parentFile?.mkdirs()
+                writeAtomic(mediaFile, JSONObject().put("scopes", JSONArray()).toString())
+            }.onFailure { errors.add("media 清空: " + (it.message ?: "未知错误")) }.isSuccess
             runCatching { legacyMediaScopeFile(appPackage).delete() }
             var dataViaShizuku = false
             if (legacyDataFile.isFile) {
@@ -125,7 +105,7 @@ class ScopeFileWriter(private val context: Context) {
             return Result(
                 appPackage = appPackage,
                 hasScope = false,
-                mediaReady = !mediaFile.isFile,
+                mediaReady = mediaOk,
                 legacyDataCleaned = !legacyDataFile.isFile || readScopeIsEmpty(legacyDataFile),
                 dataViaShizuku = dataViaShizuku,
                 errors = errors,
@@ -247,5 +227,6 @@ class ScopeFileWriter(private val context: Context) {
 
     private companion object {
         const val CONFIG_DIR = "XPatch"
+        val SYNC_LOCKS = HashMap<String, Any>()
     }
 }

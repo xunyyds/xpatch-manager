@@ -6,6 +6,7 @@ import android.content.pm.PackageInfo
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
 import android.os.Build
+import android.os.SystemClock
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.obfuscate.InjectLayout
@@ -34,8 +35,10 @@ class ManagerRepository(private val context: Context) {
     private val generation = AtomicLong(0L)
     private val iconLock = Any()
     private val patchLock = Any()
+    private val stateLock = Any()
     private val icons = HashMap<String, Drawable>()
-    private val usedIcons = HashSet<String>()
+    private val packageEntries = HashMap<String, PackageEntry>()
+    private val replacingPackages = HashMap<String, Long>()
 
     @Volatile
     private var cached: Snapshot? = null
@@ -45,11 +48,49 @@ class ManagerRepository(private val context: Context) {
 
     data class PatchInfo(val hookCore: String, val runtimeVersion: Int)
 
+    data class RefreshResult(
+        val apps: List<AppInfo>,
+        val patchedApps: List<AppInfo>,
+        val modules: List<ModuleInfo>,
+        val packageScanComplete: Boolean,
+        val removedModules: Set<String>,
+        val affectedScopeApps: Set<String>,
+    )
+
     fun invalidate() {
-        generation.incrementAndGet()
-        cached = null
-        patchCache = null
-        apiInspector.invalidate()
+        synchronized(stateLock) { generation.incrementAndGet() }
+        scope.invalidate()
+    }
+
+    fun onPackageChanged(packageName: String, replacing: Boolean = false) {
+        synchronized(stateLock) {
+            if (replacing) replacingPackages[packageName] = SystemClock.elapsedRealtime() + REPLACE_GUARD_MS
+            else replacingPackages.remove(packageName)
+            generation.incrementAndGet()
+        }
+    }
+
+    fun onPackageRemoved(packageName: String, replacing: Boolean = false) {
+        if (replacing) {
+            onPackageChanged(packageName, true)
+            return
+        }
+        onPackageChanged(packageName)
+    }
+
+    fun scopeSyncVersion(appPackage: String): String = scope.scopeSyncVersion(appPackage)
+
+    fun requestScopeSync(apps: Collection<String>) = scope.requestScopeSync(apps)
+
+    fun acknowledgeScopeSync(appPackage: String, version: String): Boolean =
+        scope.acknowledgeScopeSync(appPackage, version)
+
+    suspend fun refresh(force: Boolean = false): RefreshResult = withContext(Dispatchers.IO) {
+        overview(snapshot(refresh = true, force = force))
+    }
+
+    suspend fun loadOverview(): RefreshResult = withContext(Dispatchers.IO) {
+        overview(snapshot())
     }
 
     suspend fun loadModules(): List<ModuleInfo> = withContext(Dispatchers.IO) {
@@ -112,64 +153,207 @@ class ManagerRepository(private val context: Context) {
         val apps: List<AppInfo>,
         val modules: List<ModuleInfo>,
         val patched: Set<String>,
+        val generation: Long,
+        val scannedAt: Long,
+        val packageScanComplete: Boolean,
+        val removedModules: Set<String> = emptySet(),
     )
 
     private data class ApkStamp(val path: String, val length: Long, val lastModified: Long)
 
+    private data class PackageStamp(
+        val apk: ApkStamp,
+        val versionCode: Long,
+        val versionName: String?,
+        val lastUpdateTime: Long,
+        val flags: Int,
+        val configuration: String,
+    )
+
+    private data class PackageEntry(
+        val stamp: PackageStamp?,
+        val app: AppInfo?,
+        val module: ModuleInfo?,
+        val complete: Boolean,
+    )
+
+    private data class PackageScan(val packages: List<PackageInfo>, val complete: Boolean)
+
+    private data class PatchScan(val patches: Map<String, PatchInfo>, val entries: Map<String, String>)
+
+    private data class SnapshotBuild(
+        val snapshot: Snapshot,
+        val entries: Map<String, PackageEntry>,
+        val patches: Map<String, String>,
+        val moduleStamps: Map<String, String>,
+        val removedModules: Set<String>,
+    )
+
     private fun scoped(app: AppInfo): AppInfo =
         app.copy(enabledModules = scope.countModules(app.packageName))
 
-    private suspend fun snapshot(): Snapshot {
-        cached?.let { return it }
+    private fun overview(current: Snapshot): RefreshResult {
+        val apps = current.apps.map { scoped(it) }
+        return RefreshResult(
+            apps = apps.filter { it.packageName != context.packageName },
+            patchedApps = apps.filter { it.packageName in current.patched },
+            modules = current.modules.map { module ->
+                module.copy(enabledApps = scope.appsOf(module.packageName).count { it in current.patched })
+            },
+            packageScanComplete = current.packageScanComplete,
+            removedModules = current.removedModules,
+            affectedScopeApps = scope.pendingScopeSyncApps(),
+        )
+    }
+
+    private suspend fun snapshot(refresh: Boolean = false, force: Boolean = false): Snapshot {
+        val observed = cached
+        val now = SystemClock.elapsedRealtime()
+        if (observed != null && observed.generation == generation.get() &&
+            (!refresh || (!force && now - observed.scannedAt < REFRESH_INTERVAL_MS))
+        ) return observed
         return buildMutex.withLock {
-            cached?.let { return@withLock it }
-            val before = generation.get()
-            val built = buildSnapshot(before)
-            if (built.apps.isNotEmpty() && generation.get() == before) cached = built
-            built
+            val latest = cached
+            if (latest != null && latest.generation == generation.get() &&
+                (latest !== observed || (!force && (!refresh ||
+                    SystemClock.elapsedRealtime() - latest.scannedAt < REFRESH_INTERVAL_MS)))
+            ) return@withLock latest
+            while (true) {
+                val before = generation.get()
+                val built = buildSnapshot(before)
+                val accepted = synchronized(stateLock) {
+                    if (before != generation.get()) false
+                    else {
+                        if (built.snapshot.packageScanComplete) {
+                            scope.reconcileModules(built.moduleStamps, built.removedModules)
+                        }
+                        packageEntries.clear()
+                        packageEntries.putAll(built.entries)
+                        persistPatchEntries(built.patches)
+                        cached = built.snapshot
+                        pruneIcons(built.entries.values)
+                        true
+                    }
+                }
+                if (accepted) return@withLock built.snapshot
+            }
+            error("unreachable")
         }
     }
 
-    private suspend fun buildSnapshot(startGeneration: Long): Snapshot {
-        val packages = installedPackages()
-        val patches = detectPatches(packages, startGeneration)
-        synchronized(iconLock) { usedIcons.clear() }
-        val apps = packages
-            .mapParallel(APP_PARALLEL) { info -> toAppInfo(info, patches[info.packageName]) }
-            .filterNotNull()
-            .sortedBy { it.label.lowercase() }
-        val labels = HashMap<String, String>(apps.size)
-        apps.forEach { labels[it.packageName] = it.label }
-        val moduleCandidates = packages.filter { info -> isModuleCandidate(info) }
-        val modules = moduleCandidates
-            .mapParallel(APP_PARALLEL) { info -> toModule(info, labels) }
-            .filterNotNull()
-            .sortedBy { it.label.lowercase() }
-        pruneIcons()
-        return Snapshot(apps, modules, patches.keys.toSet())
+    private suspend fun buildSnapshot(startGeneration: Long): SnapshotBuild {
+        val scan = installedPackages()
+        val previous = cached
+        if (scan.packages.isEmpty()) {
+            val fallback = previous?.copy(
+                generation = startGeneration,
+                scannedAt = SystemClock.elapsedRealtime(),
+                packageScanComplete = false,
+                removedModules = emptySet(),
+            ) ?: Snapshot(emptyList(), emptyList(), emptySet(), startGeneration, SystemClock.elapsedRealtime(), false)
+            return SnapshotBuild(fallback, packageEntries.toMap(), patchLookup().toMap(), emptyMap(), emptySet())
+        }
+        val patches = detectPatches(scan.packages, scan.complete)
+        val configuration = context.resources.configuration.toString()
+        val entries = scan.packages.mapParallel(APP_PARALLEL) { info ->
+            info.packageName to packageEntry(info, patches, configuration)
+        }.toMap().toMutableMap()
+        val present = scan.packages.mapTo(HashSet()) { it.packageName }
+        val known = scope.knownModulePackages() + packageEntries.filterValues { it.module != null }.keys
+        val candidates = known + scope.exportAll().keys + scope.enabledModules()
+        val removed = if (scan.complete) candidates.filterTo(HashSet()) { module ->
+            module !in present && !isReplacing(module) && packageMissing(module)
+        } else emptySet()
+        packageEntries.forEach { (packageName, entry) ->
+            if (packageName !in entries && packageName !in removed &&
+                (!scan.complete || isReplacing(packageName) || !packageMissing(packageName))
+            ) entries[packageName] = entry
+        }
+        val apps = entries.values.mapNotNull { it.app }.sortedBy { it.label.lowercase() }
+        val labels = apps.associate { it.packageName to it.label }
+        val modules = entries.values.mapNotNull { it.module }.map { module ->
+            module.copy(
+                recommendedLabels = module.recommendedApps.mapNotNull { labels[it] },
+                missingRecommended = module.recommendedApps.filter { it !in labels },
+            )
+        }.sortedBy { it.label.lowercase() }
+        val patched = apps.filter { it.hookCore != null }.mapTo(HashSet()) { it.packageName }
+        val moduleStamps = entries.filter { (name, entry) ->
+            name in present && entry.complete && entry.module != null
+        }.mapValues { (_, entry) ->
+            val stamp = entry.stamp!!
+            "${stampKey(stamp.apk)}|${stamp.versionCode}|${stamp.lastUpdateTime}"
+        }
+        return SnapshotBuild(
+            Snapshot(apps, modules, patched, startGeneration, SystemClock.elapsedRealtime(), scan.complete, removed),
+            entries,
+            patches.entries,
+            moduleStamps,
+            removed,
+        )
     }
 
     @Suppress("DEPRECATION")
-    private fun installedPackages(): List<PackageInfo> = runCatching {
-        pm.getInstalledPackages(PackageManager.GET_META_DATA or PackageManager.GET_SIGNATURES)
-    }.getOrDefault(emptyList())
+    private fun installedPackages(): PackageScan = runCatching {
+        val packages = pm.getInstalledPackages(PackageManager.GET_META_DATA)
+        val complete = packages.isNotEmpty() && packages.any { it.packageName == context.packageName } &&
+            packages.all { it.packageName.isNotBlank() && it.applicationInfo != null } &&
+            packages.map { it.packageName }.toSet().size == packages.size
+        PackageScan(packages, complete)
+    }.getOrElse { PackageScan(emptyList(), false) }
 
-    private fun isModuleCandidate(info: PackageInfo): Boolean {
-        val applicationInfo = info.applicationInfo ?: return false
-        val declared = runCatching {
-            applicationInfo.metaData?.getBoolean(META_MODULE) == true
-        }.getOrDefault(false)
-        if (declared) return true
-        return runCatching {
-            apiInspector.inspect(applicationInfo.sourceDir, info.packageName)?.isModule == true
-        }.getOrDefault(false)
+    private fun isReplacing(packageName: String): Boolean = synchronized(stateLock) {
+        val until = replacingPackages[packageName] ?: return@synchronized false
+        if (until > SystemClock.elapsedRealtime()) true
+        else {
+            replacingPackages.remove(packageName)
+            false
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun packageMissing(packageName: String): Boolean {
+        return try {
+            pm.getApplicationInfo(packageName, 0)
+            false
+        } catch (_: PackageManager.NameNotFoundException) {
+            try {
+                val info = pm.getApplicationInfo(packageName, PackageManager.MATCH_UNINSTALLED_PACKAGES)
+                (info.flags and ApplicationInfo.FLAG_INSTALLED) == 0
+            } catch (_: PackageManager.NameNotFoundException) {
+                true
+            } catch (_: Exception) {
+                false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    private fun packageEntry(info: PackageInfo, patches: PatchScan, configuration: String): PackageEntry {
+        val previous = packageEntries[info.packageName]
+        val applicationInfo = info.applicationInfo ?: return previous ?: PackageEntry(null, null, null, false)
+        val patch = patches.patches[info.packageName]
+        val apk = apkStamp(info) ?: return previous ?: PackageEntry(null, toAppInfo(info, patch), null, false)
+        val stamp = PackageStamp(
+            apk, versionCodeOf(info), info.versionName, info.lastUpdateTime, applicationInfo.flags, configuration,
+        )
+        if (previous?.stamp == stamp && previous.complete) return previous
+        val patchKnown = stampKey(apk) in patches.entries
+        val previousPatch = previous?.app?.let { app -> app.hookCore?.let { PatchInfo(it, app.runtimeVersion) } }
+        val app = toAppInfo(info, if (patchKnown) patch else previousPatch)
+        val apiInfo = apiInspector.inspect(apk.path, info.packageName)
+        val declared = runCatching { applicationInfo.metaData?.getBoolean(META_MODULE) == true }.getOrDefault(false)
+        val module = if (apiInfo == null) previous?.module ?: if (declared) toModule(info, null) else null
+        else if (declared || apiInfo.isModule) toModule(info, apiInfo) else null
+        return PackageEntry(stamp, app, module, apiInfo != null && patchKnown)
     }
 
     private suspend fun detectPatches(
         packages: List<PackageInfo>,
-        startGeneration: Long,
-    ): Map<String, PatchInfo> {
-        val entries = patchLookup()
+        complete: Boolean,
+    ): PatchScan {
+        val entries = patchLookup().toMutableMap()
         val stamps = HashMap<String, ApkStamp>(packages.size)
         val pending = ArrayList<PackageInfo>()
         packages.forEach { info ->
@@ -177,33 +361,29 @@ class ManagerRepository(private val context: Context) {
             stamps[info.packageName] = stamp
             if (entries[stampKey(stamp)] == null) pending += info
         }
-        var dirty = false
         if (pending.isNotEmpty()) {
             val probed = pending.mapParallel(PATCH_PARALLEL) { info ->
                 val stamp = stamps.getValue(info.packageName)
                 stampKey(stamp) to probePatch(stamp.path)
             }
             probed.forEach { (key, value) ->
-                if (value != null) {
-                    entries[key] = value
-                    dirty = true
-                }
+                if (value != null) entries[key] = value
             }
         }
-        val live = stamps.values.map { stampKey(it) }.toSet()
-        val stale = entries.keys.filter { it !in live }
-        if (stale.isNotEmpty()) {
-            stale.forEach { entries.remove(it) }
-            dirty = true
+        if (complete) {
+            val keep = stamps.values.mapTo(HashSet()) { stampKey(it) }
+            packageEntries.forEach { (packageName, entry) ->
+                if (packageName !in stamps) entry.stamp?.apk?.let { keep.add(stampKey(it)) }
+            }
+            entries.keys.retainAll(keep)
         }
-        if (dirty && generation.get() == startGeneration) persistPatchEntries(entries)
         val patched = HashMap<String, PatchInfo>(stamps.size)
         packages.forEach { info ->
             val stamp = stamps[info.packageName] ?: return@forEach
             val patch = entries[stampKey(stamp)]?.let { decodePatch(it) } ?: return@forEach
             patched[info.packageName] = patch
         }
-        return patched
+        return PatchScan(patched, entries)
     }
 
     private fun patchLookup(): MutableMap<String, String> {
@@ -226,6 +406,7 @@ class ManagerRepository(private val context: Context) {
         if (path.isEmpty()) return null
         return runCatching {
             val apk = File(path)
+            if (!apk.isFile || !apk.canRead() || apk.length() <= 0L) return@runCatching null
             ApkStamp(path, apk.length(), apk.lastModified())
         }.getOrNull()
     }
@@ -234,7 +415,7 @@ class ManagerRepository(private val context: Context) {
 
     private fun probePatch(apkPath: String): String? = runCatching {
         val apk = File(apkPath)
-        if (!apk.canRead()) return@runCatching PATCH_NONE
+        if (!apk.canRead()) return@runCatching null
         ZipFile(apk).use { zip ->
             if (zip.getEntry(CONFIG_ENTRY) != null) legacyPatch(zip) else layoutPatch(zip)
         }
@@ -318,9 +499,13 @@ class ManagerRepository(private val context: Context) {
     }
 
     private fun persistPatchEntries(entries: Map<String, String>) {
-        val editor = patchPrefs.edit().clear()
-        entries.forEach { (key, value) -> editor.putString(key, value) }
-        editor.apply()
+        synchronized(patchLock) {
+            if (patchCache == entries) return
+            val editor = patchPrefs.edit().clear()
+            entries.forEach { (key, value) -> editor.putString(key, value) }
+            editor.apply()
+            patchCache = ConcurrentHashMap(entries)
+        }
     }
 
     private fun toAppInfo(info: PackageInfo, patch: PatchInfo?): AppInfo? {
@@ -340,13 +525,12 @@ class ManagerRepository(private val context: Context) {
         )
     }
 
-    private fun toModule(info: PackageInfo, labels: Map<String, String>): ModuleInfo? {
+    private fun toModule(info: PackageInfo, apiInfo: ModuleApiInspector.Info?): ModuleInfo? {
         val applicationInfo = info.applicationInfo ?: return null
         val metaData = applicationInfo.metaData
         val declaredModule = runCatching {
             metaData?.getBoolean(META_MODULE) == true
         }.getOrDefault(false)
-        val apiInfo = apiInspector.inspect(applicationInfo.sourceDir, info.packageName)
         if (!declaredModule && apiInfo?.isModule != true) return null
 
         val description = runCatching { metaData?.getString(META_DESCRIPTION) }.getOrNull().orEmpty()
@@ -364,9 +548,6 @@ class ManagerRepository(private val context: Context) {
             enabledApps = 0,
             icon = iconFor(applicationInfo, info.lastUpdateTime),
             recommendedApps = recommended,
-            recommendedLabels = recommended.filter { labels.containsKey(it) }
-                .map { pkg -> labels.getValue(pkg) },
-            missingRecommended = recommended.filter { !labels.containsKey(it) }.toList(),
             availableApiLevels = apiInfo?.availableLevels.orEmpty(),
             autoApiLevel = apiInfo?.resolvedLevel ?: ModuleApiInspector.API_100,
             modernModule = apiInfo?.modernModule ?: false,
@@ -394,21 +575,21 @@ class ManagerRepository(private val context: Context) {
     }.getOrDefault(emptySet())
 
     private fun iconFor(info: ApplicationInfo, lastUpdateTime: Long): Drawable? {
-        val key = "${info.packageName}@$lastUpdateTime"
-        synchronized(iconLock) {
-            usedIcons.add(key)
-            icons[key]?.let { return it }
-        }
+        val key = "${info.packageName}@$lastUpdateTime|${info.sourceDir}|${context.resources.configuration}"
+        synchronized(iconLock) { icons[key]?.let { return it } }
         val loaded = runCatching { pm.getApplicationIcon(info) }.getOrNull() ?: return null
         synchronized(iconLock) { icons[key] = loaded }
         return loaded
     }
 
-    private fun pruneIcons() {
+    private fun pruneIcons(entries: Collection<PackageEntry>) {
         synchronized(iconLock) {
-            val keep = HashSet(usedIcons)
+            val keep = entries.mapNotNullTo(HashSet()) { entry ->
+                val app = entry.app ?: return@mapNotNullTo null
+                val stamp = entry.stamp ?: return@mapNotNullTo null
+                "${app.packageName}@${stamp.lastUpdateTime}|${stamp.apk.path}|${stamp.configuration}"
+            }
             icons.keys.retainAll(keep)
-            usedIcons.clear()
         }
     }
 
@@ -448,6 +629,8 @@ class ManagerRepository(private val context: Context) {
         const val PATCH_NONE = "0"
         const val PATCH_YES = "1"
         const val PATCH_YES_WITH_SEP = "$PATCH_YES|"
+        const val REFRESH_INTERVAL_MS = 2000L
+        const val REPLACE_GUARD_MS = 120000L
         const val APP_PARALLEL = 4
         const val PATCH_PARALLEL = 8
         val HOOK_CORES = listOf("LSPlant", "LSPlantNoInline", "Pine")
