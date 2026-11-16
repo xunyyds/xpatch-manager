@@ -86,7 +86,6 @@ object EnvInfoCollector {
         appendLine("过签模式: " + describeSigMode(settings))
         appendLine("强制覆盖产物: " + onOff(settings.forceOverwrite))
         appendLine("注入签名: " + onOff(settings.injectSignature))
-        appendLine("动态模式: " + onOff(settings.dynamicMode))
         appendLine("文件提供器: " + onOff(settings.fileProvider))
         appendLine(
             "底栏样式: " + if (settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID) "液态" else "标准",

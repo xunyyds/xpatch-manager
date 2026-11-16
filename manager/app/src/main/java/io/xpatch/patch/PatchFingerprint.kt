@@ -14,7 +14,6 @@ object PatchFingerprint {
             "inject=${options.injectSignature}",
             "profile=${options.signatureProfile?.id ?: "-"}",
             "fileProvider=${options.fileProvider}",
-            "dynamic=${effectiveDynamic(options)}",
             "versionName=${options.versionName.orEmpty()}",
             "versionCode=${options.versionCode ?: -1}",
             "embed=${options.embedSource}",
@@ -35,14 +34,12 @@ object PatchFingerprint {
             "不签名"
         }
         val provider = if (options.fileProvider) "文件提供器" else "无文件提供器"
-        val mode = if (effectiveDynamic(options)) "动态" else "静态"
         val parts = mutableListOf(
             core,
             "$tier（${BypassTier.labelOf(tier)}）",
             "sigMode=" + sigModeOf(options),
             sign,
             provider,
-            mode,
         )
         if (options.forceOverwrite) parts.add("强行覆盖")
         if (options.obfuscate) {
@@ -62,10 +59,6 @@ object PatchFingerprint {
         return if (value in SettingsStore.SIG_MODES) value else SettingsStore.SIG_MODE_DEFAULT
     }
 
-    private fun effectiveDynamic(options: PatchOptions): Boolean {
-        return options.dynamicMode
-    }
-
     private fun tierOf(options: PatchOptions): String =
         BypassTier.of(options.sigMode, options.bypassLevel).key
 
@@ -81,5 +74,5 @@ object PatchFingerprint {
 
     private val HEX = "0123456789abcdef".toCharArray()
 
-    private const val SCHEMA = 6
+    private const val SCHEMA = 7
 }

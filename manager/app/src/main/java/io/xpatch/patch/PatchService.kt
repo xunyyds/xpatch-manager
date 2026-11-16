@@ -16,7 +16,6 @@ data class PatchOptions(
     val bypassLevel: Int = 3,
     val injectSignature: Boolean = true,
     val fileProvider: Boolean = false,
-    val dynamicMode: Boolean = false,
     val signatureProfile: SignatureStore.Profile? = null,
     val versionName: String? = null,
     val versionCode: Int? = null,
@@ -154,15 +153,11 @@ class PatchService(private val context: Context) {
         val signed = File(workDir, "$packageName-xpatch.apk")
         unsigned.delete()
         signed.delete()
-        val dynamicMode = options.dynamicMode
         val tier = BypassTier.of(options.sigMode, options.bypassLevel)
-        val embedSource = options.embedSource || dynamicMode || tier.needsSource
+        val embedSource = options.embedSource || tier.needsSource
         val effectiveEmbed = embedSource
         if (effectiveEmbed) {
-            log.milestone(
-                "内嵌原包（嵌套链接，资源共享不翻倍）" +
-                    if (dynamicMode) " · 动态加载" else " · 宿主代码留外层",
-            )
+            log.milestone("内嵌原包（嵌套链接，宿主条目共享原包字节，不翻倍）")
         }
         val result = try {
             ApkPatcher(context).patch(
@@ -171,7 +166,6 @@ class PatchService(private val context: Context) {
                 ApkPatcher.Options(
                     bypassLevel = options.bypassLevel,
                     hookCore = options.hookCore.index,
-                    dynamicMode = dynamicMode,
                     fileProvider = options.fileProvider,
                     injectSignature = options.injectSignature,
                     versionName = options.versionName,
@@ -190,6 +184,7 @@ class PatchService(private val context: Context) {
             throw error
         }
         result.layout?.let { layout -> log.step("布局 ${layout.dir} · config ${layout.configEntry}") }
+        log.debug("未签名产物 ${unsigned.length()} B")
 
         val profile = if (options.injectSignature) {
             options.signatureProfile ?: SignatureStore(context).defaultProfile()
@@ -207,6 +202,7 @@ class PatchService(private val context: Context) {
                 log.milestone(
                     "签名 V2+V3（${profile.name}）· ${PatchLog.secs(System.currentTimeMillis() - signStart)}",
                 )
+                log.debug("签名产物 ${signed.length()} B")
                 onProgress(92)
             } else {
                 log.debug("未签名产物通常无法安装；如需安装请选择签名")

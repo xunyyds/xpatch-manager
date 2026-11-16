@@ -24,7 +24,6 @@ class ConfigBackup(private val context: Context) {
             put("bypassLevel", settings.signatureBypassLevel)
             put("hookCore", settings.hookCore.index)
             put("injectSignature", settings.injectSignature)
-            put("dynamicMode", settings.dynamicMode)
             put("fileProvider", settings.fileProvider)
             put("sigMode", settings.sigMode)
             put("forceOverwrite", settings.forceOverwrite)
@@ -79,10 +78,6 @@ class ConfigBackup(private val context: Context) {
         }
         if (json.has("injectSignature")) {
             settingsStore.setInjectSignature(json.optBoolean("injectSignature", true))
-            applied++
-        }
-        if (json.has("dynamicMode")) {
-            settingsStore.setDynamicMode(json.optBoolean("dynamicMode", false))
             applied++
         }
         if (json.has("fileProvider")) {
@@ -269,9 +264,6 @@ class ConfigBackup(private val context: Context) {
                 }
                 if (settings.has("fileProvider")) {
                     settingsStore.setFileProvider(settings.optBoolean("fileProvider", false))
-                }
-                if (settings.has("dynamicMode")) {
-                    settingsStore.setDynamicMode(settings.optBoolean("dynamicMode", false))
                 }
                 if (settings.has("sigMode")) {
                     settingsStore.setSigMode(settings.optString("sigMode", SettingsStore.SIG_MODE_DEFAULT))

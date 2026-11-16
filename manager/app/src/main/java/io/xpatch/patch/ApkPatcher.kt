@@ -35,7 +35,6 @@ class ApkPatcher(private val context: Context) {
     data class Options(
         val bypassLevel: Int = 3,
         val hookCore: Int = 0,
-        val dynamicMode: Boolean = false,
         val fileProvider: Boolean = false,
         val injectSignature: Boolean = true,
         val versionName: String? = null,
@@ -136,7 +135,7 @@ class ApkPatcher(private val context: Context) {
                 if (stripped.rejected.isNotEmpty()) {
                     log.step("内嵌来源候选全部未通过验证（共 ${stripped.candidates.size} 个候选）")
                 }
-                if (stripped.unproven.isNotEmpty() && (options.dynamicMode || options.embedSource)) {
+                if (stripped.unproven.isNotEmpty() && options.embedSource) {
                     error(
                         "无法证明内嵌包是原始包，请改用原始 APK：外层有同包名内嵌包但内容对不上（" +
                             stripped.unproven.take(3).joinToString("，") + "）",
@@ -192,36 +191,19 @@ class ApkPatcher(private val context: Context) {
         val signedSource = effectiveSource
         val rebuilt = options.embedSource && hadInjected && effectiveSource == sourceApk
         if (rebuilt) {
-            val clean = File(
-                File(context.cacheDir, "patch").apply { mkdirs() },
-                "clean-source.${System.nanoTime()}.apk",
+            error(
+                "输入是旧补丁产物，且外层没有可提取的内嵌原包：重建出来的安装包没有原始签名块，" +
+                    "内嵌档位的原生层校验会把它当成篡改。请改用原始 APK（或先卸载重装原版）重新打包。",
             )
-            log.step("重建干净原始安装包（不含注入条目）...")
-            materializeCleanSource(effectiveSource, clean, entries, originalManifest)
-            temps += clean
-            effectiveSource = clean
-            RandomAccessFile(effectiveSource, "r").use { source ->
-                entries = readCentralDirectory(source, effectiveSource.length())
-            }
-            log.step("重建完成 ${PatchLog.mb(clean.length())} · ${entries.size} 条目")
         }
         assertClean(entries, effectiveSource, log, strip, options.embedSource)
+        val embeddedSourceLength = effectiveSource.length()
 
-        if (options.dynamicMode && options.embedSource) {
-            val before = entries.size
-            entries = entries.filter { entry ->
-                !isBootDexName(entry.name) &&
-                    !entry.name.startsWith("META-INF/") &&
-                    entry.name != "stamp-cert-sha256"
-            }
-            log.step("动态加载：保留 ${entries.size}/$before 条目，代码由原包提供")
-        }
-
-        if (!options.embedSource && entries.none { isBootDexName(it.name) }) {
+        if (entries.none { isBootDexName(it.name) }) {
             error(
-                "宿主代码已丢失，拒绝打包：输入是动态加载的补丁产物，宿主 dex 只存在于内嵌原包里，" +
-                    "剥离旧注入层后没有可恢复的原始代码，继续打包只会得到比原包更小、无法运行的空壳。" +
-                    "请改用原始 APK 重新打包，或选择文件层/原生重定向等内嵌档位、开启动态加载以提供代码。",
+                "宿主代码已丢失，拒绝打包：输入的补丁产物里没有任何宿主 dex，" +
+                    "剥离旧注入层后没有可恢复的原始代码，继续打包只会得到无法启动的空壳。" +
+                    "请改用原始 APK 重新打包。",
             )
         }
 
@@ -274,7 +256,7 @@ class ApkPatcher(private val context: Context) {
             log.step("布局生成失败，本次按旧名字打包")
         }
 
-        val manifestBase = if (rebuilt) originalManifest else inputManifest
+        val manifestBase = inputManifest
         val editor = AxmlEditor(manifestBase)
         val manifestPackage = editor.readAttribute("manifest", "package").orEmpty()
         originalFactory = inputFactory ?: recoverFactory(originalManifest, log, ourStubFactories)
@@ -388,6 +370,14 @@ class ApkPatcher(private val context: Context) {
             embeddedReady.countDown()
             runCatching { crcWorker.join(2000) }
             temps.forEach { temp -> runCatching { temp.delete() } }
+        }
+        if (options.embedSource) {
+            val overhead = outputApk.length() - embeddedSourceLength
+            check(overhead <= MAX_EMBED_OVERHEAD) {
+                "产物体积异常：比内嵌原包多出 $overhead B（上限 $MAX_EMBED_OVERHEAD B）。" +
+                    "嵌套链接没有生效，条目被重复写入会导致产物接近翻倍，已拒绝输出。"
+            }
+            log.debug("内嵌开销 ${overhead} B · 产物 ${PatchLog.mb(outputApk.length())}")
         }
 
         return Result(
@@ -1013,6 +1003,7 @@ class ApkPatcher(private val context: Context) {
 
         outputApk.delete()
         val records = ArrayList<Record>(total)
+        var finalPosition = -1L
 
         try {
             FileOutputStream(outputApk, false).buffered(BUFFER_SIZE).use { out ->
@@ -1036,7 +1027,7 @@ class ApkPatcher(private val context: Context) {
                         source.seek(0)
                         position += copyRange(source, length, out)
                         records += Record(hostEntry, headerOffset, crc, length, length)
-                        log.step("内嵌原包 · ${PatchLog.mb(length)}（嵌套链接，资源条目共享原包字节，不翻倍）")
+                        log.step("内嵌原包 · ${PatchLog.mb(length)}（嵌套链接，宿主条目共享原包字节，不翻倍）")
                         advance()
                     }
 
@@ -1044,7 +1035,7 @@ class ApkPatcher(private val context: Context) {
                         when (step) {
                             is Plan.Carried -> {
                                 val entry = step.entry
-                                if (embedSource && entry.name != MANIFEST && !isBootDexName(entry.name)) {
+                                if (embedSource && entry.name != MANIFEST) {
                                     records += Record(
                                         entry,
                                         hostDataOffset + entry.headerOffset,
@@ -1095,6 +1086,7 @@ class ApkPatcher(private val context: Context) {
                     centralSize += bytes.size
                 }
                 endOfCentralDirectory(out, records.size, centralOffset, centralSize)
+                finalPosition = centralOffset + centralSize + END_OF_CENTRAL_SIZE
             }
         } catch (error: Throwable) {
             outputApk.delete()
@@ -1104,6 +1096,7 @@ class ApkPatcher(private val context: Context) {
         log.milestone(
             "写包 ${PatchLog.mb(outputApk.length())} · ${PatchLog.secs(System.currentTimeMillis() - writeStart)}",
         )
+        log.debug("写包位置 $finalPosition · 文件长度 ${outputApk.length()} · 复用 ${carried.size} 条目")
     }
 
     private fun writeCarried(
@@ -1129,45 +1122,6 @@ class ApkPatcher(private val context: Context) {
             written += copyRange(source, entry.compressedSize, out)
         }
         return written to Record(entry, headerOffset, crc, compressed, uncompressed)
-    }
-
-    private fun materializeCleanSource(
-        sourceApk: File,
-        outputApk: File,
-        entries: List<Entry>,
-        manifest: ByteArray,
-    ) {
-        outputApk.delete()
-        val kept = entries.filterNot { isSignatureEntry(it.name) }
-        val records = ArrayList<Record>(kept.size)
-        FileOutputStream(outputApk, false).buffered(BUFFER_SIZE).use { out ->
-            var position = 0L
-            RandomAccessFile(sourceApk, "r").use { source ->
-                for (entry in kept) {
-                    val written = writeCarried(source, entry, manifest, out, position)
-                    position += written.first
-                    records += written.second
-                }
-            }
-            val centralOffset = position
-            var centralSize = 0L
-            for (record in records) {
-                val bytes = centralRecord(record)
-                out.write(bytes)
-                centralSize += bytes.size
-            }
-            endOfCentralDirectory(out, records.size, centralOffset, centralSize)
-        }
-        require(outputApk.length() > 0L) { "重建原始安装包失败：产物为空" }
-    }
-
-    private fun isSignatureEntry(name: String): Boolean {
-        if (name == "stamp-cert-sha256") return true
-        if (!name.startsWith("META-INF/")) return false
-        val leaf = name.substringAfterLast('/').uppercase()
-        return leaf == "MANIFEST.MF" || leaf.startsWith("SIG-") ||
-            leaf.endsWith(".SF") || leaf.endsWith(".RSA") || leaf.endsWith(".DSA") ||
-            leaf.endsWith(".EC")
     }
 
     private fun modeTimestamp(carried: List<Entry>): Pair<Int, Int> {
@@ -1581,7 +1535,7 @@ class ApkPatcher(private val context: Context) {
         json.put("ver", RUNTIME_VERSION)
         json.put("build_nonce", nonce())
         json.put("bypass_sign_type", options.bypassLevel)
-        json.put("dynamic_mode", options.dynamicMode)
+        json.put("dynamic_mode", false)
         json.put("file_provider", options.fileProvider)
         json.put("manager_package", context.packageName)
         json.put("real_version_code", info?.longVersionCode ?: 0L)
@@ -1867,6 +1821,7 @@ class ApkPatcher(private val context: Context) {
 
         const val APK_SUFFIX = ".apk"
         const val MIN_EMBEDDED = 100L * 1024
+        const val MAX_EMBED_OVERHEAD = 32L * 1024 * 1024
         const val MAX_STRIP_DEPTH = 5
         const val NESTED_APK_COST_LIMIT = 0.25
         const val MAX_BOOTDEX = 2L * 1024 * 1024

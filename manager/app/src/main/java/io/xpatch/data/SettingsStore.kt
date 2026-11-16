@@ -25,7 +25,6 @@ data class ManagerSettings(
     val hookCore: HookCore,
     val showSystemApps: Boolean,
     val injectSignature: Boolean,
-    val dynamicMode: Boolean = false,
     val fileProvider: Boolean = false,
     val bottomBarStyle: Int = SettingsStore.BOTTOM_BAR_STANDARD,
     val uiStyle: UiStyle = UiStyle.MATERIAL3,
@@ -59,7 +58,6 @@ class SettingsStore(context: Context) {
             ?: HookCore.XPLANT,
         showSystemApps = prefs.getBoolean(KEY_SHOW_SYSTEM, false),
         injectSignature = prefs.getBoolean(KEY_INJECT_SIGNATURE, true),
-        dynamicMode = prefs.getBoolean(KEY_DYNAMIC_MODE, false),
         fileProvider = prefs.getBoolean(KEY_FILE_PROVIDER, false),
         bottomBarStyle = prefs.getInt(KEY_BOTTOM_BAR, SettingsStore.BOTTOM_BAR_STANDARD),
         uiStyle = UiStyle.of(prefs.getInt(KEY_UI_STYLE, UiStyle.MATERIAL3.index)),
@@ -94,9 +92,6 @@ class SettingsStore(context: Context) {
 
     fun setInjectSignature(inject: Boolean) =
         prefs.edit().putBoolean(KEY_INJECT_SIGNATURE, inject).apply()
-
-    fun setDynamicMode(enabled: Boolean) =
-        prefs.edit().putBoolean(KEY_DYNAMIC_MODE, enabled).apply()
 
     fun setFileProvider(enabled: Boolean) =
         prefs.edit().putBoolean(KEY_FILE_PROVIDER, enabled).apply()
@@ -193,7 +188,6 @@ class SettingsStore(context: Context) {
         private const val KEY_HOOK_CORE = "hook_core"
         private const val KEY_SHOW_SYSTEM = "show_system"
         private const val KEY_INJECT_SIGNATURE = "inject_signature"
-        private const val KEY_DYNAMIC_MODE = "dynamic_mode"
         private const val KEY_FILE_PROVIDER = "file_provider"
         private const val KEY_BOTTOM_BAR = "bottom_bar_style"
         private const val KEY_UI_STYLE = "ui_style"

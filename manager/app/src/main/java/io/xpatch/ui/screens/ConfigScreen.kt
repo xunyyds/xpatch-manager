@@ -163,7 +163,6 @@ internal fun ConfigScreen(
     var bypass by remember { mutableStateOf(defaults.signatureBypassLevel) }
     var injectSignature by remember { mutableStateOf(defaults.injectSignature) }
     var fileProvider by remember { mutableStateOf(defaults.fileProvider) }
-    var dynamicMode by remember { mutableStateOf(defaults.dynamicMode) }
     var forceOverwrite by remember { mutableStateOf(defaults.forceOverwrite) }
     var sigMode by remember { mutableStateOf(defaults.sigMode) }
     var injectObfuscate by remember { mutableStateOf(defaults.injectObfuscate) }
@@ -212,18 +211,17 @@ internal fun ConfigScreen(
         is PatchTarget.Installed -> runCatching { File(target.app.apkPath).length() }.getOrDefault(0L)
         is PatchTarget.FromFile -> runCatching { target.file.length() }.getOrDefault(0L)
     }
-    val embedEstimate = dynamicMode || BypassTier.of(sigMode, bypass).needsSource
     var estimatedSize by remember { mutableStateOf(0L) }
     var estimating by remember { mutableStateOf(false) }
     var estimateDots by remember { mutableStateOf(0) }
     val context = LocalContext.current
-    LaunchedEffect(sourcePath, sourceSize, embedEstimate, dynamicMode, fileProvider, injectObfuscate, injectKeepCrashPermission) {
+    LaunchedEffect(sourcePath, sourceSize, fileProvider, injectObfuscate, injectKeepCrashPermission) {
         estimating = sourceSize > 0L && !busy
         estimateDots = 0
         estimatedSize = 0L
         if (estimating) {
             delay(2000)
-            estimatedSize = estimateApkSize(context, sourcePath, sourceSize, embedEstimate, dynamicMode)
+            estimatedSize = estimateApkSize(context, sourceSize)
         }
         estimating = false
     }
@@ -245,7 +243,6 @@ internal fun ConfigScreen(
         bypassLevel = bypass,
         injectSignature = if (forceOverwrite) true else injectSignature,
         fileProvider = fileProvider,
-        dynamicMode = dynamicMode,
         signatureProfile = selectedProfile,
         forceOverwrite = forceOverwrite,
         versionName = versionName.trim().ifBlank { null },
@@ -321,12 +318,6 @@ internal fun ConfigScreen(
                             subtitle = "提供给系统的文件访问组件，可在无 Root 权限时管理 data 目录文件（来自 MT 管理器）",
                             checked = fileProvider,
                             onChange = { fileProvider = it },
-                        )
-                        SwitchLine(
-                            title = "动态模式",
-                            subtitle = "决定宿主代码的加载方式：开启则外层省略宿主 dex，由内核从内嵌原包动态接管类加载；关闭则宿主 dex 留在外层正常加载。文件层 / native 重定向档位都会自动以嵌套链接内嵌原包（资源条目共享原包字节，产物不翻倍），开关动态都生效。",
-                            checked = dynamicMode,
-                            onChange = { dynamicMode = it },
                         )
                     }
                 }
@@ -887,29 +878,12 @@ private fun StartButton(busy: Boolean, onClick: () -> Unit) {
 
 private fun estimateApkSize(
     context: android.content.Context,
-    sourcePath: String,
     sourceSize: Long,
-    embed: Boolean,
-    dynamic: Boolean,
 ): Long {
     if (sourceSize <= 0L) {
         return 0L
     }
-    val overhead = injectedAssetBytes(context)
-    if (!embed || dynamic) {
-        return sourceSize + overhead
-    }
-    var dexBytes = 0L
-    runCatching {
-        java.util.zip.ZipFile(File(sourcePath)).use { zip ->
-            zip.entries().asSequence().forEach { entry ->
-                if (entry.name.startsWith("classes") && entry.name.endsWith(".dex")) {
-                    dexBytes += entry.compressedSize
-                }
-            }
-        }
-    }
-    return sourceSize + dexBytes + overhead
+    return sourceSize + injectedAssetBytes(context)
 }
 
 private fun injectedAssetBytes(context: android.content.Context): Long {
