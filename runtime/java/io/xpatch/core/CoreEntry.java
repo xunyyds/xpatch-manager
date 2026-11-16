@@ -44,7 +44,12 @@ public class CoreEntry {
         synchronized (CoreEntry.class) {
             loader = AppEnv.dynamicLoader;
             if (loader == null) {
-                loader = new dalvik.system.PathClassLoader(source, ClassLoader.getSystemClassLoader());
+                try {
+                    loader = new dalvik.system.PathClassLoader(source, ClassLoader.getSystemClassLoader());
+                } catch (Throwable th) {
+                    Log.d("XPatch", "动态类加载器不可用：" + source + "（" + th + "）");
+                    return null;
+                }
                 AppEnv.dynamicLoader = loader;
             }
         }

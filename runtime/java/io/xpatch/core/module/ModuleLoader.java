@@ -323,6 +323,11 @@ public class ModuleLoader {
 
     private static String moduleNativeDir(ZipFile zipFile, String apkPath, String abi,
             java.util.Set<String> compressed, boolean is64) {
+        String installed = installedNativeDir(zipFile, apkPath, abi);
+        if (installed != null) {
+            XpHook.log0(TAG, "模块 native 库目录（模块自身已安装目录）：" + installed);
+            return installed;
+        }
         if (compressed.contains(abi)) {
             String dir = extractModuleNativeLibs(zipFile, apkPath, abi);
             if (dir != null) {
@@ -334,6 +339,85 @@ public class ModuleLoader {
         XpHook.log0(TAG, "模块 native 库目录：" + apkPath + "!/lib/" + abi
                 + "/（进程位宽=" + (is64 ? "64" : "32") + "）");
         return apkPath + "!/lib/" + abi + "/";
+    }
+
+    private static String installedNativeDir(ZipFile zipFile, String apkPath, String abi) {
+        if (abi == null || abi.length() == 0) {
+            return null;
+        }
+        String directory = installedNativeDirName(abi);
+        File root = null;
+        File apk = new File(apkPath);
+        File parent = apk.getParentFile();
+        if (parent != null && directory != null) {
+            File sibling = new File(new File(parent, "lib"), directory);
+            if (sibling.isDirectory()) {
+                root = sibling;
+            }
+        }
+        if (root == null) {
+            root = installedNativeDirByPackage(apkPath, directory);
+        }
+        if (root == null) {
+            return null;
+        }
+        String prefix = "lib/" + abi + "/";
+        java.util.Enumeration<? extends ZipEntry> entries = zipFile.entries();
+        int matched = 0;
+        while (entries.hasMoreElements()) {
+            String name = entries.nextElement().getName();
+            if (!name.startsWith(prefix)) {
+                continue;
+            }
+            String fileName = name.substring(prefix.length());
+            if (fileName.length() == 0 || fileName.indexOf('/') >= 0 || !fileName.endsWith(".so")) {
+                continue;
+            }
+            File library = new File(root, fileName);
+            if (!library.isFile() || !library.canRead()) {
+                return null;
+            }
+            matched++;
+        }
+        return matched > 0 ? root.getAbsolutePath() : null;
+    }
+
+    private static String installedNativeDirName(String abi) {
+        if ("arm64-v8a".equals(abi)) {
+            return "arm64";
+        }
+        if ("armeabi-v7a".equals(abi) || "armeabi".equals(abi)) {
+            return "arm";
+        }
+        if ("x86_64".equals(abi) || "x86".equals(abi) || "riscv64".equals(abi) || "mips64".equals(abi)) {
+            return abi;
+        }
+        return null;
+    }
+
+    private static File installedNativeDirByPackage(String apkPath, String directory) {
+        try {
+            Context context = AppEnv.appContext;
+            if (context == null) {
+                return null;
+            }
+            PackageInfo archive = context.getPackageManager().getPackageArchiveInfo(apkPath, 0);
+            if (archive == null || archive.packageName == null || archive.packageName.length() == 0) {
+                return null;
+            }
+            ApplicationInfo info = context.getPackageManager()
+                    .getApplicationInfo(archive.packageName, 0);
+            if (info == null || info.nativeLibraryDir == null) {
+                return null;
+            }
+            File root = new File(info.nativeLibraryDir);
+            if (!root.isDirectory() || (directory != null && !directory.equals(root.getName()))) {
+                return null;
+            }
+            return root;
+        } catch (Throwable th) {
+            return null;
+        }
     }
 
     private static String pickAbi(java.util.Set<String> present, boolean is64, boolean sameWidth) {
@@ -580,64 +664,32 @@ public class ModuleLoader {
         }
 
         public void buildAvailableApiLevels() {
-            int i;
-            LinkedHashSet linkedHashSet = new LinkedHashSet();
-            int i2 = this.legacyApiLevel;
-            if (i2 > 0) {
-                if (i2 != 89 && i2 != 100 && i2 != 101 && i2 != 102) {
-                    i2 = 89;
+            LinkedHashSet<Integer> levels = new LinkedHashSet<Integer>();
+            int legacy = this.legacyApiLevel;
+            if (legacy > 0) {
+                if (legacy != 89 && legacy != 100 && legacy != 101 && legacy != 102) {
+                    legacy = 89;
                 }
-                linkedHashSet.add(Integer.valueOf(i2));
+                levels.add(Integer.valueOf(legacy));
             } else if (this.legacyModule) {
-                linkedHashSet.add(89);
+                levels.add(89);
             }
-            int i3 = this.modernMinApiLevel;
-            int i4 = this.modernTargetApiLevel;
-            int i5 = 100;
-            if (i3 >= 100) {
-                i5 = 102;
-                if (i4 > 102) {
-                    i4 = 102;
+            if (this.modernModule || this.modernMinApiLevel >= 100 || this.modernTargetApiLevel >= 100) {
+                int minimum = this.modernMinApiLevel >= 100 ? this.modernMinApiLevel : 100;
+                int target = this.modernTargetApiLevel >= minimum ? this.modernTargetApiLevel : minimum;
+                if (target > 102) {
+                    target = 102;
                 }
-                if (i4 < 102) {
-                    i4 = 100;
-                }
-                if (i3 < 102) {
-                    for (i = 100; i <= i4; i++) {
-                        linkedHashSet.add(Integer.valueOf(i));
+                if (minimum > 102) {
+                    levels.add(Integer.valueOf(minimum));
+                } else {
+                    for (int level = minimum; level <= target; level++) {
+                        levels.add(Integer.valueOf(level));
                     }
-                } else if (i3 >= i5) {
-                    linkedHashSet.add(Integer.valueOf(i3));
-                } else if (this.modernModule) {
-                    linkedHashSet.add(Integer.valueOf(i5));
                 }
-            } else if (i4 >= 100) {
-                i3 = 100;
-                i5 = 102;
-                if (i4 > 102) {
-                    i4 = 102;
-                }
-                if (i4 < 102) {
-                    i4 = 100;
-                }
-                if (i3 < 102) {
-                    for (i = 100; i <= i4; i++) {
-                        if (i != 89 || i == 100 || i == 101 || i == 102) {
-                            linkedHashSet.add(Integer.valueOf(i));
-                        }
-                    }
-                } else if (i3 >= i5) {
-                    linkedHashSet.add(Integer.valueOf(i3));
-                } else if (this.modernModule) {
-                    linkedHashSet.add(Integer.valueOf(i5));
-                }
-            } else if (i3 >= i5) {
-                linkedHashSet.add(Integer.valueOf(i3));
-            } else if (this.modernModule) {
-                linkedHashSet.add(Integer.valueOf(i5));
             }
             this.apiLevels.clear();
-            this.apiLevels.addAll(linkedHashSet);
+            this.apiLevels.addAll(levels);
         }
     }
 

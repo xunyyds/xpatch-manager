@@ -1,7 +1,6 @@
 package io.xpatch.core;
 
 import android.app.Application;
-import android.app.Instrumentation;
 import android.app.LoadedApk;
 import android.content.Context;
 import android.content.Intent;
@@ -146,12 +145,6 @@ public class XpInit {
                 }
             }
         });
-        runStep("preDeopt", failed, new Step() {
-            @Override
-            public void run() throws Throwable {
-                preDeopt();
-            }
-        });
         runStep("preloadWrapperAssets", failed, new Step() {
             @Override
             public void run() throws Throwable {
@@ -202,12 +195,6 @@ public class XpInit {
                 RemoteAccessBridge.initialize(AppEnv.appContext);
             }
         });
-        runStep("createFakeInstrumentation", failed, new Step() {
-            @Override
-            public void run() throws Throwable {
-                createFakeInstrumentation();
-            }
-        });
         runStep("preloadHostFactory", failed, new Step() {
             @Override
             public void run() throws Throwable {
@@ -222,12 +209,6 @@ public class XpInit {
             @Override
             public void run() throws Throwable {
                 ModuleLoader.preloadWrapperDexes();
-            }
-        });
-        runStep("refreshScopeModulePaths", failed, new Step() {
-            @Override
-            public void run() throws Throwable {
-                refreshScopeModulePaths();
             }
         });
         runStep("initModules", failed, new Step() {
@@ -512,49 +493,6 @@ public class XpInit {
             zipFile.close();
         } catch (Throwable th) {
             XpHook.log0(TAG, "预读 file provider dex 失败：" + Log.getStackTraceString(th));
-        }
-    }
-
-    private static void preDeopt() {
-        try {
-            for (Method method : Instrumentation.class.getDeclaredMethods()) {
-                if (method.getName().equals("newApplication")) {
-                    XpHook.deopt0(method);
-                    XpHook.log0(TAG, "置为解释执行：" + method);
-                }
-            }
-        } catch (Throwable th) {
-            XpHook.log0(TAG, "Instrumentation.newApplication 置解释执行失败（不阻塞后续初始化）："
-                    + Log.getStackTraceString(th));
-        }
-        try {
-            for (Method method2 : LoadedApk.class.getDeclaredMethods()) {
-                if (method2.getName().contains("makeApplication")) {
-                    XpHook.deopt0(method2);
-                    XpHook.log0(TAG, "置为解释执行：" + method2);
-                }
-            }
-        } catch (Exception unused) {
-        }
-    }
-
-    private static void createFakeInstrumentation() {
-        try {
-            Class<?> cls = Class.forName("android.app.ActivityThread");
-            Object objInvoke = HiddenApiBypass.getDeclaredMethod(cls, "currentActivityThread", new Class[0]).invoke(null, new Object[0]);
-            Instrumentation instrumentation = new Instrumentation();
-            Class<?> cls2 = instrumentation.getClass();
-            Field fieldFindObjectField = findObjectField(cls2, "mThread");
-            fieldFindObjectField.setAccessible(true);
-            fieldFindObjectField.set(instrumentation, objInvoke);
-            Field fieldFindObjectField2 = findObjectField(cls2, "mAppContext");
-            fieldFindObjectField2.setAccessible(true);
-            fieldFindObjectField2.set(instrumentation, AppEnv.appContext);
-            Field declaredField = cls.getDeclaredField("mInstrumentation");
-            declaredField.setAccessible(true);
-            declaredField.set(objInvoke, instrumentation);
-        } catch (Exception e) {
-            throw new ExceptionInInitializerError("XPatch 初始化失败!!!\n" + e);
         }
     }
 
@@ -963,8 +901,12 @@ public class XpInit {
         String finalName = entry.getCrc() + ".apk";
         File target = new File(cacheDir, finalName);
         if (target.isFile() && target.length() == entry.getSize()) {
-            markEmbeddedApk(entryName, target, isSource);
-            return;
+            if (isUsableApk(target)) {
+                markEmbeddedApk(entryName, target, isSource);
+                return;
+            }
+            XpHook.log0(TAG, "缓存原包不可用（缺清单或 classes.dex），重新释放：" + target);
+            deleteQuietly(target);
         }
         File unique = new File(cacheDir, entry.getCrc() + "-" + Process.myPid()
                 + "-" + System.currentTimeMillis() + ".apk");
@@ -997,6 +939,10 @@ public class XpInit {
                         + "）：放弃该原包，过签改用纯 Java 路径");
                 return;
             }
+            if (!isUsableApk(unique)) {
+                XpHook.log0(TAG, "原包释放后校验失败（缺清单或 classes.dex）：放弃该原包，过签改用纯 Java 路径");
+                return;
+            }
             if (!unique.renameTo(target)) {
                 deleteQuietly(target);
                 if (!unique.renameTo(target)) {
@@ -1013,7 +959,35 @@ public class XpInit {
                 deleteQuietly(unique);
             }
         }
+        if (!isUsableApk(target)) {
+            XpHook.log0(TAG, "落位后的原包校验失败，已删除（" + target + "）：过签改用纯 Java 路径");
+            deleteQuietly(target);
+            return;
+        }
         markEmbeddedApk(entryName, target, isSource);
+    }
+
+    private static boolean isUsableApk(File file) {
+        if (file == null || !file.isFile() || file.length() <= 0L) {
+            return false;
+        }
+        ZipFile zip = null;
+        try {
+            zip = new ZipFile(file);
+            if (zip.getEntry("AndroidManifest.xml") == null) {
+                return false;
+            }
+            return zip.getEntry("classes.dex") != null;
+        } catch (Throwable th) {
+            return false;
+        } finally {
+            if (zip != null) {
+                try {
+                    zip.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
     }
 
     private static void markEmbeddedApk(String entryName, File target, boolean isSource) {
@@ -1393,8 +1367,17 @@ public class XpInit {
                     iterator.remove();
                 }
             }
-            collectStartupCrashes(dir, counts, currentSignatures);
+            Set<String> crashed = new HashSet<String>();
+            collectStartupCrashes(dir, counts, currentSignatures, crashed);
             writeModuleCounts(counts);
+            java.util.Iterator<RemoteModule> moduleIterator = modules.iterator();
+            while (moduleIterator.hasNext()) {
+                RemoteModule candidate = moduleIterator.next();
+                if (candidate != null && crashed.contains(candidate.packageName)) {
+                    moduleIterator.remove();
+                    XpHook.log0(TAG, "模块 " + candidate.packageName + " 已达崩溃阈值，从作用域移出，本次不加载");
+                }
+            }
         } finally {
             if (lockHandle != null) {
                 lockHandle.close();
@@ -1403,7 +1386,7 @@ public class XpInit {
     }
 
     private static void collectStartupCrashes(File dir, Map<String, CrashCount> counts,
-                                              Map<String, String> currentSignatures) {
+                                              Map<String, String> currentSignatures, Set<String> blocked) {
         String processPrefix = MODULE_PENDING_PREFIX + stableHash(processNameForHash()) + "-";
         File[] files = dir.listFiles();
         if (files != null) {
@@ -1414,17 +1397,21 @@ public class XpInit {
                 if (!file.getName().startsWith(processPrefix)) {
                     continue;
                 }
+                long modified = file.lastModified();
                 String[] entry = readPendingModule(file);
                 deleteQuietly(file);
                 if (entry == null || entry[0].length() == 0) {
                     continue;
                 }
-                long age = System.currentTimeMillis() - file.lastModified();
-                if (file.lastModified() > 0 && age > MODULE_PENDING_MAX_AGE_MILLIS) {
+                long age = System.currentTimeMillis() - modified;
+                if (modified > 0 && age > MODULE_PENDING_MAX_AGE_MILLIS) {
                     XpHook.log0(TAG, "pending 已超龄（" + (age / 1000L) + " s），视为非崩溃：" + entry[0]);
                     continue;
                 }
                 String pkg = entry[0];
+                if (!currentSignatures.containsKey(pkg)) {
+                    continue;
+                }
                 String current = currentSignatures.get(pkg);
                 if (entry[1].length() > 0 && current != null && !entry[1].equals(current)) {
                     counts.remove(pkg);
@@ -1442,6 +1429,7 @@ public class XpInit {
                     count.count = MODULE_CRASH_THRESHOLD;
                     XpHook.log0(TAG, "模块 " + pkg + " 已连续 " + MODULE_CRASH_THRESHOLD
                             + " 次导致启动崩溃：移除作用域并通知用户");
+                    blocked.add(pkg);
                     notifyModuleCrash(pkg);
                 } else {
                     XpHook.log0(TAG, "模块 " + pkg + " 上次启动崩溃（" + count.count + "/"

@@ -9,6 +9,8 @@ import io.xpatch.hook.XpHook;
 import io.xpatch.utils.DataUtils;
 import io.xpatch.utils.FileUtils;
 import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import org.json.JSONArray;
@@ -30,7 +32,11 @@ class LocalStoreModuleProvider implements IModuleProvider {
                 continue;
             }
             try {
-                return RemoteModuleProvider.parseModules(FileUtils.readString(str));
+                String scope = readScopeFile(str);
+                if (scope == null) {
+                    continue;
+                }
+                return resolveModulePaths(RemoteModuleProvider.parseModules(scope));
             } catch (Exception e) {
                 XpHook.log0(TAG, "读取作用域文件失败：" + str + " " + e);
             }
@@ -38,11 +44,33 @@ class LocalStoreModuleProvider implements IModuleProvider {
         return Collections.emptyList();
     }
 
+    private List<RemoteModule> resolveModulePaths(List<RemoteModule> modules) {
+        List<RemoteModule> resolved = new ArrayList<RemoteModule>();
+        for (RemoteModule module : modules) {
+            if (module == null || TextUtils.isEmpty(module.packageName)) {
+                continue;
+            }
+            String latest = resolveLatestApkPath(module.packageName);
+            if (!TextUtils.isEmpty(latest)) {
+                module.apkPath = latest;
+            }
+            if (TextUtils.isEmpty(module.apkPath) || !new File(module.apkPath).isFile()) {
+                XpHook.log0(TAG, "模块 APK 不存在，本次跳过：" + module.packageName);
+                continue;
+            }
+            resolved.add(module);
+        }
+        return resolved;
+    }
+
     public void refreshScopeModulePaths() {
         if (this.context == null) {
             return;
         }
         String scopeFile = findScopeFile();
+        if (scopeFile == null) {
+            return;
+        }
         try {
             refreshScopeFile(scopeFile);
         } catch (Exception e) {
@@ -57,13 +85,21 @@ class LocalStoreModuleProvider implements IModuleProvider {
                 return str;
             }
         }
-        return scopeFilePaths[0];
+        return null;
+    }
+
+    private String readScopeFile(String path) {
+        if (TextUtils.isEmpty(path) || !new File(path).isFile()) {
+            return null;
+        }
+        byte[] bytes = FileUtils.readBytes(path);
+        return bytes == null ? null : new String(bytes, StandardCharsets.UTF_8);
     }
 
     private void refreshScopeFile(String str) throws Exception {
         boolean zRefreshScopeArray;
         String string;
-        String string2 = FileUtils.readString(str);
+        String string2 = readScopeFile(str);
         if (TextUtils.isEmpty(string2)) {
             return;
         }
@@ -96,26 +132,22 @@ class LocalStoreModuleProvider implements IModuleProvider {
             if (jSONObjectOptJSONObject != null) {
                 String strOptString = jSONObjectOptJSONObject.optString("packageName", jSONObjectOptJSONObject.optString("pkg"));
                 if (!TextUtils.isEmpty(strOptString)) {
-                    String strOptString2 = jSONObjectOptJSONObject.optString("apkPath", jSONObjectOptJSONObject.optString("path"));
-                    if (TextUtils.isEmpty(strOptString2) || !new File(strOptString2).exists()) {
-                        String strResolveLatestApkPath = resolveLatestApkPath(strOptString);
-                        if (!TextUtils.isEmpty(strResolveLatestApkPath) && !TextUtils.equals(strOptString2, strResolveLatestApkPath)) {
-                            if (z) {
-                                try {
-                                    jSONObjectOptJSONObject.put("path", strResolveLatestApkPath);
-                                } catch (Exception unused) {
-                                }
-                            } else {
-                                try {
-                                    jSONObjectOptJSONObject.put("apkPath", strResolveLatestApkPath);
-                                    if (jSONObjectOptJSONObject.has("path")) {
-                                        jSONObjectOptJSONObject.put("path", strResolveLatestApkPath);
-                                    }
-                                } catch (Exception unused) {
-                                }
+                    String key = z ? "path" : "apkPath";
+                    String alias = z ? "apkPath" : "path";
+                    String strOptString2 = jSONObjectOptJSONObject.optString(key);
+                    String strResolveLatestApkPath = resolveLatestApkPath(strOptString);
+                    if (!TextUtils.isEmpty(strResolveLatestApkPath)
+                            && (!TextUtils.equals(strOptString2, strResolveLatestApkPath)
+                            || jSONObjectOptJSONObject.has(alias)
+                            && !TextUtils.equals(jSONObjectOptJSONObject.optString(alias), strResolveLatestApkPath))) {
+                        try {
+                            jSONObjectOptJSONObject.put(key, strResolveLatestApkPath);
+                            if (jSONObjectOptJSONObject.has(alias)) {
+                                jSONObjectOptJSONObject.put(alias, strResolveLatestApkPath);
                             }
                             z2 = true;
                             XpHook.log0(TAG, "更新模块 apk 路径： " + strOptString + " -> " + strResolveLatestApkPath);
+                        } catch (Exception unused) {
                         }
                     }
                 }
@@ -125,11 +157,14 @@ class LocalStoreModuleProvider implements IModuleProvider {
     }
 
     private String resolveLatestApkPath(String str) {
+        if (this.context == null) {
+            return null;
+        }
         try {
             PackageInfo packageInfo = this.context.getPackageManager().getPackageInfo(str, 0);
             if (packageInfo != null && packageInfo.applicationInfo != null) {
                 String str2 = packageInfo.applicationInfo.sourceDir;
-                if (!TextUtils.isEmpty(str2) && new File(str2).exists()) {
+                if (!TextUtils.isEmpty(str2) && new File(str2).isFile()) {
                     return str2;
                 }
             }
