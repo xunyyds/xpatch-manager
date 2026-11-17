@@ -2019,17 +2019,24 @@ fun MainScaffold(
                         }
                     },
                     onDexopt = {
-                        scope.launch {
-                            busyText = "正在执行 Dexopt…"
-                            val ok = withContext(Dispatchers.IO) {
-                                runCatching { ShizukuBridge.dexopt(current.app.packageName) }.getOrDefault(false)
+                        if (!ShizukuBridge.isAvailable() || !ShizukuBridge.hasPermission()) {
+                            failure = "优化启动速度需要 Shizuku。请先安装并授权 Shizuku 后重试。"
+                        } else {
+                            scope.launch {
+                                val ok = withContext(Dispatchers.IO) {
+                                    ShizukuBridge.dexopt(current.app.packageName)
+                                }
+                                eventLog.add(
+                                    if (ok) "已开始在后台优化 ${current.app.packageName}，完成后系统会自动生效"
+                                    else "Dexopt 调度失败，请检查 Shizuku 授权",
+                                )
+                                logs = eventLog.entries()
+                                showToast(
+                                    if (ok) "已开始在后台优化，可正常使用应用"
+                                    else "Dexopt 调度失败，请检查 Shizuku 授权",
+                                )
+                                token++
                             }
-                            busyText = null
-                            eventLog.add(
-                                if (ok) "Dexopt 优化完成 ${current.app.packageName}"
-                                else "Dexopt 失败：请先安装并授权 Shizuku",
-                            )
-                            token++
                         }
                     },
                     onAppInfo = { ShizukuBridge.openAppDetails(context, current.app.packageName) },
@@ -2375,6 +2382,7 @@ fun MainScaffold(
 
 private fun failureTitleOf(message: String): String = when {
     "签名" in message && ("安装" in message || "卸载" in message) -> "安装失败"
+    "优化" in message || "Dexopt" in message -> "优化失败"
     "安装" in message -> "安装失败"
     "日志" in message -> "日志读取失败"
     "导入" in message || "配置" in message -> "配置导入失败"

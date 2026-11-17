@@ -95,7 +95,7 @@ fun Project.registerXpTasks(compileSdk: Int, buildToolsVersion: String) {
     val xpAssetsDir: File = file("src/main/assets/xp")
     val xpDebugAssetsDir: File = file("src/debug/assets/xp")
     val xpRuntimeSourceDir: File = File(xpRepoRoot, "runtime/java")
-    val xpFpaCoreDir: File = File(xpRepoRoot.parentFile ?: xpRepoRoot, "fpa-core")
+    val xpNativeCoreDir: File = File(xpRepoRoot.parentFile ?: xpRepoRoot, "native-core")
 
     val checkReleaseAssetsTask = tasks.register("checkReleaseAssets", CheckReleaseAssetsTask::class.java) { task ->
         task.group = "xp"
@@ -103,7 +103,7 @@ fun Project.registerXpTasks(compileSdk: Int, buildToolsVersion: String) {
         task.assetsDir.set(xpAssetsDir)
         task.runtimeSourceDir.set(xpRuntimeSourceDir)
         task.debugAssetsDir.set(xpDebugAssetsDir)
-        task.fpaCoreBuildDir.set(File(xpFpaCoreDir, "build"))
+        task.nativeCoreBuildDir.set(File(xpNativeCoreDir, "build"))
         task.hookCoreSo.set(File(xpAssetsDir, "hook_core.so"))
         task.hookCoreX86So.set(File(xpAssetsDir, "hook_core_x86_64.so"))
         task.runtimeDex.set(File(xpAssetsDir, "runtime.dex"))

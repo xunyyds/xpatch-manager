@@ -61,7 +61,7 @@ class XPatchUserService : IXPatchService.Stub {
 
     override fun dexopt(packageName: String) {
         runCatching {
-            exec("cmd package compile -m speed -f " + shellQuote(packageName))
+            ProcessBuilder("sh", "-c", "nohup cmd package compile -m speed -f " + shellQuote(packageName) + " >/dev/null 2>&1 &").start()
         }
     }
 

@@ -31,7 +31,7 @@ abstract class CheckReleaseAssetsTask : DefaultTask() {
     abstract val debugAssetsDir: DirectoryProperty
 
     @get:Internal
-    abstract val fpaCoreBuildDir: DirectoryProperty
+    abstract val nativeCoreBuildDir: DirectoryProperty
 
     @get:Internal
     abstract val hookCoreSo: RegularFileProperty
@@ -77,12 +77,12 @@ abstract class CheckReleaseAssetsTask : DefaultTask() {
         }
 
         val soCases = listOf(
-            hookCoreSo.get().asFile to File(fpaCoreBuildDir.get().asFile, "libhook_core.so"),
-            hookCoreX86So.get().asFile to File(fpaCoreBuildDir.get().asFile, "libhook_core.so"),
+            hookCoreSo.get().asFile to File(nativeCoreBuildDir.get().asFile, "libhook_core.so"),
+            hookCoreX86So.get().asFile to File(nativeCoreBuildDir.get().asFile, "libhook_core.so"),
         )
-        val x86BuildDir = File(fpaCoreBuildDir.get().asFile.parentFile, "build-x86").let { File(it, "libhook_core.so") }
+        val x86BuildDir = File(nativeCoreBuildDir.get().asFile.parentFile, "build-x86").let { File(it, "libhook_core.so") }
         val soSources = listOf(
-            hookCoreSo.get().asFile to File(fpaCoreBuildDir.get().asFile, "libhook_core.so"),
+            hookCoreSo.get().asFile to File(nativeCoreBuildDir.get().asFile, "libhook_core.so"),
             hookCoreX86So.get().asFile to x86BuildDir,
         )
 
