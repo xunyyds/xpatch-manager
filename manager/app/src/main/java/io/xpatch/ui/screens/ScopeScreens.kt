@@ -312,7 +312,7 @@ internal fun AppScopeScreen(
                     MiuixDivider()
                     ActionRow("查看日志", onViewLogs)
                     MiuixDivider()
-                    ActionRow("更新内核", onUpdateCore, "使用当前内核重新打包")
+                    ActionRow("更新内核", onUpdateCore, "使用当前安装包重新打包")
                 }
             } else {
                 Column(Modifier.padding(horizontal = 20.dp, vertical = 12.dp)) {
@@ -328,7 +328,7 @@ internal fun AppScopeScreen(
                 ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle)
                 ActionRow("应用信息", onAppInfo)
                 ActionRow("查看日志", onViewLogs)
-                ActionRow("更新内核", onUpdateCore, "使用当前内核重新打包")
+                ActionRow("更新内核", onUpdateCore, "使用当前安装包重新打包")
             }
         }
         stickyHeader(key = "modules-header") {

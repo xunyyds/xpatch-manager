@@ -24,6 +24,7 @@ import io.xpatch.core.signbypass.AppInfoHooks;
 import io.xpatch.core.signbypass.CheckSignaturesBypass;
 import io.xpatch.core.signbypass.DeferredSignHooks;
 import io.xpatch.core.signbypass.FileLayerHooks;
+import io.xpatch.core.signbypass.InstallSourceHooks;
 import io.xpatch.core.signbypass.PMSignBypass;
 import io.xpatch.core.signbypass.SignBypass;
 import io.xpatch.core.signbypass.SignatureFacade;
@@ -151,6 +152,12 @@ public class XpInit {
                 preloadWrapperAssets();
             }
         });
+        runStep("preDeopt", failed, new Step() {
+            @Override
+            public void run() throws Throwable {
+                preDeopt();
+            }
+        });
         runStep("installSignBypass", failed, new Step() {
             @Override
             public void run() throws Throwable {
@@ -241,6 +248,50 @@ public class XpInit {
             failed.add(name + "(" + th.getClass().getSimpleName() + ": " + th.getMessage() + ")");
             XpHook.log0(TAG, "步骤 " + name + " 失败：" + Log.getStackTraceString(th));
         }
+    }
+
+    private static void scheduleHitReport() {
+        try {
+            final Handler handler = new Handler(Looper.getMainLooper());
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    XpHook.log0(TAG, "签名 API 命中汇总（30s）：" + PMSignBypass.hitSummary());
+                }
+            }, 30000L);
+            handler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    XpHook.log0(TAG, "签名 API 命中汇总（120s）：" + PMSignBypass.hitSummary());
+                }
+            }, 120000L);
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "命中汇总定时器启动失败：" + th);
+        }
+    }
+
+    private static void preDeopt() {
+        int count = 0;
+        try {
+            for (Method method : android.app.Instrumentation.class.getDeclaredMethods()) {
+                if ("newApplication".equals(method.getName())) {
+                    XpHook.deopt0(method);
+                    count++;
+                }
+            }
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "deopt Instrumentation.newApplication 失败：" + th);
+        }
+        try {
+            for (Method method : LoadedApk.class.getDeclaredMethods()) {
+                if (method.getName().contains("makeApplication")) {
+                    XpHook.deopt0(method);
+                    count++;
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        XpHook.log0(TAG, "preDeopt 完成：deopt " + count + " 个方法（对齐 FPA 时序）");
     }
 
     private static void installSignBypass() {
@@ -341,6 +392,7 @@ public class XpInit {
                     + "，证书数=" + (signs == null ? 0 : signs.length)
                     + "，原始证书=" + sha256Prefix(signs)
                     + "，详情[" + describeSigningDetails() + "]");
+            scheduleHitReport();
         } catch (Throwable th) {
             XpHook.log0(TAG, "签名伪装失败：" + Log.getStackTraceString(th)
                     + "\n  => 应用将看到重签证书，可能触发自校验闪退");
@@ -387,6 +439,11 @@ public class XpInit {
             }
         } catch (Throwable th) {
             XpHook.log0(TAG, "checkSignatures 伪装安装异常：" + Log.getStackTraceString(th));
+        }
+        try {
+            InstallSourceHooks.install();
+        } catch (Throwable th) {
+            XpHook.log0(TAG, "安装来源伪装安装异常：" + Log.getStackTraceString(th));
         }
     }
 

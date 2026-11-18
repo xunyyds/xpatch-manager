@@ -231,12 +231,10 @@ internal fun ConfigScreen(
             estimateDots = (estimateDots + 1) % 4
         }
     }
-    val selectedProfile = if (forceOverwrite) {
-        signatures.firstOrNull { it.id == SignatureStore.BUILTIN_XPATCH }
-    } else if (injectSignature) {
-        signatures.firstOrNull { it.id == defaultSignatureId }
-    } else {
-        null
+    val selectedProfile = when {
+        injectSignature -> signatures.firstOrNull { it.id == defaultSignatureId }
+            ?: signatures.firstOrNull()
+        else -> null
     }
     val options = PatchOptions(
         hookCore = hookCore,
@@ -278,7 +276,7 @@ internal fun ConfigScreen(
                     SignatureRow(
                         signatures = signatures,
                         selectedId = if (injectSignature) defaultSignatureId else NO_SIGN_ID,
-                        enabled = !forceOverwrite,
+                        enabled = true,
                         onSelect = { profile ->
                             if (profile.id == NO_SIGN_ID) {
                                 injectSignature = false
@@ -308,7 +306,7 @@ internal fun ConfigScreen(
                             value = versionCode,
                             onValueChange = { versionCode = it.filter { ch -> ch.isDigit() } },
                         )
-                        NoteText("留空则沿用当前应用的真实版本信息。")
+                        NoteText("留空则沿用当前应用的真实版本信息")
                     }
                 }
                 item {
@@ -343,7 +341,7 @@ internal fun ConfigScreen(
                                 },
                             )
                         }
-                        NoteText("混淆会把注入条目改名为随机资产路径，并默认跳过崩溃通知权限声明；模块崩溃时管理器只能看到日志。")
+                        NoteText("混淆会把注入条目改名为随机资产路径，并默认跳过崩溃通知权限声明；模块崩溃时管理器只能看到日志")
                         SwitchLine(
                             title = "强行覆盖安装",
                             subtitle = "签名不一致时保留数据卸载再安装，需要 Shizuku；开启后固定使用 XPatch 签名",
@@ -364,7 +362,7 @@ internal fun ConfigScreen(
                     }
                 }
             }
-            item { NoteText("点「返回」会保留打包结果，不必重新打包。") }
+            item { NoteText("点「返回」会保留打包结果，不必重新打包") }
         }
         if (reusable != null) {
             Row(
@@ -396,9 +394,9 @@ internal fun ConfigScreen(
             }
         }
         if (estimating) {
-            NoteText("预计产物大小：计算中" + ".".repeat(estimateDots))
+            NoteText("预计安装包大小：计算中" + ".".repeat(estimateDots))
         } else if (estimatedSize > 0L) {
-            NoteText("预计产物大小：" + readableSize(estimatedSize) + "+")
+            NoteText("预计安装包大小：" + readableSize(estimatedSize) + "+")
         }
         StartButton(busy) {
             if (reusable != null) {
@@ -447,7 +445,7 @@ internal fun ConfigScreen(
                 Text(reason, style = MaterialTheme.typography.bodySmall)
                 Spacer(Modifier.height(8.dp))
                 Text(
-                    "该功能依赖 Shizuku 完成保留数据的卸载与重装，请先安装并授权 Shizuku 后再开启。",
+                    "该功能依赖 Shizuku 完成保留数据的卸载与重装，请先安装并授权 Shizuku 后再开启",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -473,7 +471,7 @@ internal fun ConfigScreen(
         ) {
             Column {
                 Text(
-                    "检测到同配置的打包产物，可直接复用，省去重新打包的时间。",
+                    "检测到同配置的打包产物，可直接复用，省去重新打包的时间",
                     style = MaterialTheme.typography.bodySmall,
                 )
                 Spacer(Modifier.height(6.dp))

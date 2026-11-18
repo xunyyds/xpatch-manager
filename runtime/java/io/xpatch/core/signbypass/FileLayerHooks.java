@@ -120,6 +120,34 @@ public final class FileLayerHooks {
         }
     }
 
+    private static void patchNativeLibDir(ApplicationInfo copy, ApplicationInfo original) {
+        try {
+            String real = original.nativeLibraryDir;
+            if (real == null || real.length() == 0) {
+                return;
+            }
+            int libIndex = real.indexOf("/lib/");
+            if (libIndex > 0) {
+                String fake = real.substring(0, libIndex) + "/lib/" + extractAbi(real);
+                copy.nativeLibraryDir = fake;
+                return;
+            }
+            copy.nativeLibraryDir = real;
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private static String extractAbi(String nativeLibDir) {
+        try {
+            int slash = nativeLibDir.lastIndexOf('/');
+            if (slash > 0 && slash + 1 < nativeLibDir.length()) {
+                return nativeLibDir.substring(slash + 1);
+            }
+        } catch (Throwable ignored) {
+        }
+        return "arm64";
+    }
+
     private static boolean hookApplicationInfo(Class<?> cls) {
         try {
             java.lang.reflect.Method method = cls.getDeclaredMethod("getApplicationInfo");
@@ -149,6 +177,7 @@ public final class FileLayerHooks {
                     copy.sourceDir = target;
                     copy.publicSourceDir = target;
                     copy.appComponentFactory = factory;
+                    patchNativeLibDir(copy, info);
                     param.setResult(copy);
                 }
             });

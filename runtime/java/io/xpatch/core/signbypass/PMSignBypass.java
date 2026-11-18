@@ -71,6 +71,33 @@ public class PMSignBypass {
 
     private static volatile Collection<PublicKey> publicKeysCached;
 
+    private static final java.util.Map<String, Integer> HIT_COUNTS =
+            new java.util.concurrent.ConcurrentHashMap<String, Integer>();
+
+    public static void noteHit(String api, String detail) {
+        Integer current = HIT_COUNTS.get(api);
+        int next = current == null ? 1 : current.intValue() + 1;
+        HIT_COUNTS.put(api, Integer.valueOf(next));
+        if (next <= 3) {
+            XpHook.log0(TAG, "签名 API 命中 #" + next + "：" + api
+                    + (detail == null ? "" : "（" + detail + "）"));
+        }
+    }
+
+    public static String hitSummary() {
+        if (HIT_COUNTS.isEmpty()) {
+            return "无";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (java.util.Map.Entry<String, Integer> entry : HIT_COUNTS.entrySet()) {
+            if (sb.length() > 0) {
+                sb.append("，");
+            }
+            sb.append(entry.getKey()).append("=").append(entry.getValue());
+        }
+        return sb.toString();
+    }
+
     public static void enableSignBypassByHook() throws Exception {
         if (packageInfoHookInstalled) {
             XpHook.log0(TAG, "PackageInfo 层签名伪装已安装，跳过重复安装");
@@ -83,6 +110,7 @@ public class PMSignBypass {
                 public void onHook(XpHook.XpParam xpParam) throws Throwable {
                     xpParam.proceed();
                     PackageInfo packageInfo = (PackageInfo) xpParam.this0;
+                    noteHit("PackageInfo(Parcel)", packageInfo == null ? null : packageInfo.packageName);
                     PMSignBypass.replaceSignature(packageInfo);
                     if (packageInfo == null || packageInfo.packageName == null
                             || !packageInfo.packageName.equals(AppEnv.packageName) || AppEnv.read_version_code <= 0) {
@@ -214,7 +242,9 @@ public class PMSignBypass {
             XpHook.XpUnhook token = XpHook.doHook(method, 0, new XpHook.XpCallback() {
                 @Override
                 public void onHook(XpHook.XpParam xpParam) throws Throwable {
-                    if (PMSignBypass.isExpectedSigningCertificateQuery(xpParam.args)) {
+                    boolean expected = PMSignBypass.isExpectedSigningCertificateQuery(xpParam.args);
+                    noteHit("hasSigningCertificate", expected ? "本包查询" : "其它包");
+                    if (expected) {
                         xpParam.setResult(Boolean.TRUE);
                     } else {
                         xpParam.proceed();
@@ -391,11 +421,13 @@ public class PMSignBypass {
         if (originals == null || originals.length == 0) {
             return;
         }
-        Signature[] legacySignatures = data != null && data.oldest != null && data.oldest.length > 0
-                ? data.oldest : originals;
-        if (packageInfo.signatures != null && packageInfo.signatures.length > 0) {
-            packageInfo.signatures = cloneSignatures(legacySignatures);
-        }
+        Signature[] legacySignatures = originals;
+        packageInfo.signatures = cloneSignatures(legacySignatures);
+        noteHit("PackageInfo.signatures 替换",
+                "signer=" + SigningDetailsData.sha256Prefix(
+                        legacySignatures != null && legacySignatures.length > 0
+                                ? legacySignatures[0].toByteArray() : null)
+                + " history=" + (data == null ? 0 : data.history.length));
         if (Build.VERSION.SDK_INT < 28) {
             return;
         }
@@ -414,10 +446,14 @@ public class PMSignBypass {
             return null;
         }
         int scheme = schemeOf(old, data);
-        Signature[] historySource = data != null && data.hasHistory() ? data.history : originals;
+        boolean rotated = data != null && data.hasRotation();
+        Signature[] historySource = rotated ? data.history : originals;
         Collection<Signature> apkSigners = new ArrayList<Signature>(Arrays.asList(cloneSignatures(originals)));
         Collection<Signature> history = new ArrayList<Signature>(Arrays.asList(cloneSignatures(historySource)));
         Collection<PublicKey> publicKeys = publicKeysOf(originals, old);
+        noteHit("buildSigningInfo",
+                "scheme=" + scheme + " rotated=" + rotated
+                + " apkSigners=" + apkSigners.size() + " history=" + history.size());
         if (Build.VERSION.SDK_INT >= 35) {
             return new SigningInfo(scheme, apkSigners, publicKeys, history);
         }
@@ -685,6 +721,7 @@ public class PMSignBypass {
                 }
             }
             Object result = xpParam.getResult();
+            noteHit("getPackageArchiveInfo", args != null && args.length > 0 ? String.valueOf(args[0]) : null);
             if (!(result instanceof PackageInfo)) {
                 return;
             }

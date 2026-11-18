@@ -1531,7 +1531,7 @@ class ApkPatcher(private val context: Context) {
         json.put("app_component_name", originalFactory.orEmpty())
         json.put("sign", recordedSign ?: signaturesJson(info))
         json.put("sig_mode", normalizeSigMode(options.sigMode))
-        json.put("signing_details", recordedSigningDetails ?: signingDetailsJson(apk))
+        json.put("signing_details", signingDetailsPayload(recordedSigningDetails, apk))
         json.put("ver", RUNTIME_VERSION)
         json.put("build_nonce", nonce())
         json.put("bypass_sign_type", options.bypassLevel)
@@ -1553,6 +1553,10 @@ class ApkPatcher(private val context: Context) {
         return array.toString()
     }
 
+    private fun signingDetailsPayload(recorded: String?, apk: File): Any {
+        val raw = recorded ?: signingDetailsJson(apk)
+        return runCatching { JSONObject(raw) }.getOrDefault(raw)
+    }
     fun signingDetailsJson(apk: File): String {
         val json = JSONObject()
         @Suppress("NewApi")
@@ -1566,19 +1570,11 @@ class ApkPatcher(private val context: Context) {
         if (signing != null) {
             @Suppress("NewApi")
             val apkCerts = runCatching { signing.apkContentsSigners }.getOrNull()
-            @Suppress("NewApi")
-            val history = runCatching { signing.signingCertificateHistory }.getOrNull()
             val current = if (apkCerts.isNullOrEmpty()) legacySignatures(apk) else apkCerts
-            val chain = if (history.isNullOrEmpty()) current else history
-            val rotating = current != null && chain != null &&
-                current.size == 1 && chain.isNotEmpty() &&
-                chain[0].toByteArray().contentEquals(current[0].toByteArray()) &&
-                chain.size == 1
-            val stale = if (rotating) current else chain
             json.put("scheme", signingSchemeVersion(signing))
             json.put("apk", certificatesJson(current))
-            json.put("history", certificatesJson(stale))
-            json.put("oldest", certificatesJson(oldestCertificate(current, chain)))
+            json.put("history", certificatesJson(current))
+            json.put("oldest", certificatesJson(current))
             return json.toString()
         }
         val legacy = legacySignatures(apk)
@@ -1587,18 +1583,6 @@ class ApkPatcher(private val context: Context) {
         json.put("history", certificatesJson(legacy))
         json.put("oldest", certificatesJson(legacy))
         return json.toString()
-    }
-
-    @Suppress("NewApi")
-    private fun oldestCertificate(
-        current: Array<Signature>?,
-        chain: Array<Signature>?,
-    ): Array<Signature>? {
-        if (chain.isNullOrEmpty()) return current
-        if (current == null || current.isEmpty()) return chain
-        if (chain.size < 2) return current
-        val sameAsCurrent = chain[0].toByteArray().contentEquals(current[0].toByteArray())
-        return if (sameAsCurrent) arrayOf(chain[chain.size - 1]) else arrayOf(chain[0])
     }
 
     @Suppress("NewApi")
@@ -1831,6 +1815,7 @@ class ApkPatcher(private val context: Context) {
             name in INJECTED_NAMES ||
                 LEGACY_PREFIXES.any { name.startsWith(it) } ||
                 name in LEGACY_NAMES
+
 
         fun isBootDexName(name: String): Boolean =
             name == "classes.dex" ||

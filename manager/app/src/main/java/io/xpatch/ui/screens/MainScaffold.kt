@@ -225,6 +225,7 @@ fun MainScaffold(
     var result by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var failure by remember { mutableStateOf<String?>(null) }
     var pendingInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
+    var pendingInstallProfileName by remember { mutableStateOf("") }
     var pendingUninstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var uninstallingTarget by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var installBlocked by remember { mutableStateOf<InstallBlock?>(null) }
@@ -383,18 +384,6 @@ fun MainScaffold(
             )
             withContext(Dispatchers.IO) {
                 historyStore.record(record)
-                outcome.exported?.let { saved ->
-                    historyStore.addExport(
-                        record.id,
-                        PatchExportRef(
-                            path = saved.path + "/" + saved.name,
-                            name = saved.name,
-                            time = System.currentTimeMillis(),
-                            uri = saved.uri,
-                            size = saved.size,
-                        ),
-                    )
-                }
             }
             currentRecordId = record.id
             historyTick++
@@ -2244,16 +2233,18 @@ fun MainScaffold(
             },
             onInstall = {
                 val outcome = result ?: return@PatchProgressDialog
+                val profile = signatureStore.defaultProfile()
                 val matched = InstallHelper.signatureMatches(
                     context,
                     outcome.packageName,
-                    signatureStore.certificateBytes(signatureStore.defaultProfile()),
+                    signatureStore.certificateBytes(profile),
                 )
                 result = null
                 patchLog.clear()
                 token++
                 if (matched == false) {
                     pendingInstall = outcome
+                    pendingInstallProfileName = profile.name
                 } else {
                     installOutcome(outcome)
                 }
@@ -2287,9 +2278,13 @@ fun MainScaffold(
         ) {
             Text(
                 if (outcome.forceOverwrite) {
-                    "该产物使用 XPatch 签名，与已安装应用签名不同。\n「继续安装」会先保留数据卸载原应用，再安装新包（需要 Shizuku）。\n「卸载原应用」调用系统卸载，数据会被删除。\n\n点「返回」会保留打包结果，不必重新打包。"
+                    "该产物使用「" + pendingInstallProfileName + "」签名，与已安装应用签名不同。\n" +
+                        "「继续安装」会先保留数据卸载原应用，再安装新包（需要 Shizuku）。\n" +
+                        "「卸载原应用」调用系统卸载，数据会被删除。\n\n"
                 } else {
-                    "内置证书与已安装应用的签名不同，直接覆盖安装会失败。\n「卸载原应用」调用系统卸载，卸载完成后自动继续安装（数据会被删除）。\n也可以改用其他签名重新打包。\n\n点「返回」会保留打包结果，不必重新打包。"
+                    "「" + pendingInstallProfileName + "」证书与已安装应用的签名不同，直接覆盖安装会失败。\n" +
+                        "「卸载原应用」调用系统卸载，卸载完成后自动继续安装（数据会被删除）。\n" +
+                        "也可以改用其他签名重新打包。\n\n"
                 },
                 style = MaterialTheme.typography.bodySmall,
             )

@@ -20,14 +20,14 @@ object ShizukuInstaller {
             if (!ShizukuBridge.isAvailable()) return@withContext Result.Unavailable
             if (!ShizukuBridge.hasPermission()) {
                 val granted = requestPermission()
-                if (!granted) return@withContext Result.Failure("Shizuku 未授权，已回退系统安装器")
+                if (!granted) return@withContext Result.Failure("Shizuku 未授权，将使用系统安装器")
             }
             val source = readableByShell(context, apk)
-                ?: return@withContext Result.Failure("Shizuku 无法读取安装包，已回退系统安装器")
+                ?: return@withContext Result.Failure("Shizuku 无法读取安装包，将使用系统安装器")
             val output = ShizukuBridge.exec("pm install -r -t -d --user current " + shellQuote(source.absolutePath))
             cleanupStaged(source)
             when {
-                output.isNullOrBlank() -> Result.Failure("Shizuku 安装无响应，已回退系统安装器")
+                output.isNullOrBlank() -> Result.Failure("Shizuku 安装无响应，将使用系统安装器")
                 output.contains("Success") -> Result.Success("已通过 Shizuku 静默安装 $packageName")
                 else ->
                     Result.Failure(

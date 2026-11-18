@@ -71,7 +71,7 @@ object UpdateChecker {
             if (settings.updateCheckCache.isNotBlank()) {
                 parseBest(settings.updateCheckCache, beta)?.let { return@withContext judge(it) }
             }
-            return@withContext CheckResult.Failed("网络不可用，或所有检查源均失败，请稍后重试")
+            return@withContext CheckResult.Failed("网络不可用，或所有源均失败，请稍后重试")
         }
         val release = parseBest(body, beta)
             ?: return@withContext CheckResult.Failed("更新信息解析失败")

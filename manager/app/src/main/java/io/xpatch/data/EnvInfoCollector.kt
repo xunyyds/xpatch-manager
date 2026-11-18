@@ -15,7 +15,7 @@ import java.util.Locale
 object EnvInfoCollector {
 
     fun collect(context: Context, extras: Map<String, String> = emptyMap()): String = buildString {
-        appendLine("XPatch 环境信息（用于问题排查，可整份发给开发者）")
+        appendLine("环境信息")
         appendLine("生成时间: " + SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.US).format(Date()))
         appendLine()
         appendLine("== 应用 ==")
@@ -41,14 +41,6 @@ object EnvInfoCollector {
         val configuration = context.resources.configuration
         appendLine("分辨率: " + metrics.widthPixels + "x" + metrics.heightPixels)
         appendLine("密度: " + metrics.densityDpi + "dpi (" + metrics.density + "x)")
-        appendLine("字体缩放: " + configuration.fontScale)
-        appendLine(
-            "方向: " + if (configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
-                "横屏"
-            } else {
-                "竖屏"
-            },
-        )
         appendLine()
         appendLine("== 权限 ==")
         appendLine(
@@ -73,24 +65,12 @@ object EnvInfoCollector {
         appendLine()
         appendLine("== 设置 ==")
         val settings = SettingsStore(context).load()
-        appendLine("界面风格: " + settings.uiStyle.label)
-        appendLine(
-            "主题: " + when (settings.themeMode) {
-                SettingsStore.THEME_LIGHT -> "浅色"
-                SettingsStore.THEME_DARK -> "深色"
-                else -> "跟随系统"
-            },
-        )
         appendLine("Hook 内核: " + settings.hookCore.label)
         appendLine("签名绕过等级: " + settings.signatureBypassLevel)
         appendLine("过签模式: " + describeSigMode(settings))
         appendLine("强制覆盖产物: " + onOff(settings.forceOverwrite))
         appendLine("注入签名: " + onOff(settings.injectSignature))
         appendLine("文件提供器: " + onOff(settings.fileProvider))
-        appendLine(
-            "底栏样式: " + if (settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID) "液态" else "标准",
-        )
-        appendLine("打包历史上限: " + settings.patchHistoryLimit)
         appendLine()
         if (extras.isNotEmpty()) {
             appendLine("== 运行状态 ==")

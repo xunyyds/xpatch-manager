@@ -106,7 +106,7 @@ internal fun HomeScreen(
                 }
                 if (apps.isEmpty()) {
                     item {
-                        EmptyState("还没有已打包的应用\n点右下角「添加应用」开始\n下拉可重新加载")
+                        EmptyState("还没有已打包的应用\n点右下角「添加应用」开始\n下拉可刷新")
                     }
                 } else {
                     item { GroupHeader("已打包 ${apps.size} 个应用") }

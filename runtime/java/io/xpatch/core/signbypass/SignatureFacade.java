@@ -379,7 +379,10 @@ public final class SignatureFacade {
             if (!(result instanceof byte[])) {
                 return;
             }
-            byte[] normalized = SignatureFacade.normalize((byte[]) result);
+            byte[] raw = (byte[]) result;
+            byte[] normalized = SignatureFacade.normalize(raw);
+            PMSignBypass.noteHit("Signature.toByteArray",
+                    (normalized != null ? "归一化" : "透传") + " raw=" + SigningDetailsData.sha256Prefix(raw));
             if (normalized != null) {
                 param.setResult(normalized.clone());
             }

@@ -67,7 +67,7 @@ object PermissionCenter {
             Item(
                 id = Id.INSTALL,
                 title = "安装未知应用",
-                reason = "允许 XPatch 直接安装打包产物",
+                reason = "允许 XPatch 安装应用",
                 granted = context.packageManager.canRequestPackageInstalls(),
                 kind = Kind.SETTINGS_PAGE,
             ),
@@ -76,7 +76,7 @@ object PermissionCenter {
             Item(
                 id = Id.APP_LIST,
                 title = "应用列表访问",
-                reason = "读取已安装应用用于作用域配置；列表为空时请在该应用的权限管理中放开",
+                reason = "读取已安装应用用于打包时选择应用，列表为空时请检查是否授权对应权限",
                 granted = appListVisible(context),
                 kind = Kind.DECLARED,
             ),
@@ -86,9 +86,9 @@ object PermissionCenter {
                 id = Id.SHIZUKU,
                 title = "Shizuku",
                 reason = if (shizukuAvailable) {
-                    "静默安装、启动与停止应用、执行 Dexopt；未授权时自动回退系统安装器"
+                    "静默安装、启动与停止应用、执行 Dexopt"
                 } else {
-                    "未检测到 Shizuku；可跳过，功能会自动回退系统安装器"
+                    "未检测到 Shizuku；将使用系统安装器"
                 },
                 granted = shizukuAvailable && shizukuGranted,
                 kind = Kind.SHIZUKU,

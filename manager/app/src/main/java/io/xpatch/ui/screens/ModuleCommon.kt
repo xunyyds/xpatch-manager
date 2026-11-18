@@ -47,8 +47,8 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 internal fun moduleTypeText(module: ModuleInfo): String = when {
     module.modernModule && module.legacyModule -> "新版 + 旧版"
-    module.modernModule -> "新版模块"
-    module.legacyModule -> "旧版模块"
+    module.modernModule -> "新版api"
+    module.legacyModule -> "旧版api"
     else -> "未知"
 }
 

@@ -894,7 +894,7 @@ private fun RuntimeLogList(
                     runtime.entries.isEmpty() && rows.isEmpty() -> item(key = "state:empty") {
                         LogStateCard(
                             title = "暂无运行日志",
-                            body = "已安装模块的应用运行后才会生成日志，路径为 Android/data/应用包名/.logs。下拉可重新加载。",
+                            body = "已安装模块的应用运行后才会生成日志，路径为 Android/data/应用包名/.logs。下拉可刷新",
                             action = null,
                             onAction = {},
                         )

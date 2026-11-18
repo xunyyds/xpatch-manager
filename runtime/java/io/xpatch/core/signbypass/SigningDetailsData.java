@@ -57,23 +57,26 @@ public final class SigningDetailsData {
             return null;
         }
         try {
-            JSONObject object = new JSONObject(text);
+            JSONObject object = unwrapObject(text);
+            if (object == null) {
+                return null;
+            }
             int scheme = object.optInt("scheme", SCHEME_UNKNOWN);
-            Signature[] apk = parseSignatures(object.optJSONArray("apk"), "apk");
+            Signature[] apk = parseSignatures(parseArrayField(object, "apk"), "apk");
             if (apk == null) {
                 return null;
             }
             if (apk.length == 0) {
                 return null;
             }
-            Signature[] history = parseSignatures(object.optJSONArray("history"), "history");
+            Signature[] history = parseSignatures(parseArrayField(object, "history"), "history");
             if (history == null) {
                 return null;
             }
             if (history.length == 0) {
                 history = apk;
             }
-            Signature[] oldest = parseSignatures(object.optJSONArray("oldest"), "oldest");
+            Signature[] oldest = parseSignatures(parseArrayField(object, "oldest"), "oldest");
             if (oldest == null) {
                 oldest = pickOldest(apk, history);
             }
@@ -82,6 +85,60 @@ public final class SigningDetailsData {
             XpHook.log0("XpSignBypass", "解析 signing_details 失败，退回 legacy sign：" + th);
             return null;
         }
+    }
+
+    private static JSONObject unwrapObject(String text) {
+        Object parsed = parseMaybeEncoded(text);
+        if (parsed instanceof JSONObject) {
+            return (JSONObject) parsed;
+        }
+        if (parsed instanceof String) {
+            String inner = ((String) parsed).trim();
+            if (inner.length() > 0 && !inner.equals(text)) {
+                Object second = parseMaybeEncoded(inner);
+                if (second instanceof JSONObject) {
+                    return (JSONObject) second;
+                }
+            }
+        }
+        return null;
+    }
+
+    private static Object parseMaybeEncoded(String text) {
+        try {
+            return new org.json.JSONTokener(text).nextValue();
+        } catch (Throwable ignored) {
+        }
+        try {
+            return new JSONArray(text);
+        } catch (Throwable ignored) {
+        }
+        return null;
+    }
+
+    private static JSONArray parseArrayField(JSONObject object, String field) {
+        Object value = object.opt(field);
+        if (value instanceof JSONArray) {
+            return (JSONArray) value;
+        }
+        if (value instanceof String) {
+            String text = ((String) value).trim();
+            if (text.length() == 0 || "null".equals(text)) {
+                return new JSONArray();
+            }
+            Object parsed = parseMaybeEncoded(text);
+            if (parsed instanceof JSONArray) {
+                return (JSONArray) parsed;
+            }
+            if (parsed instanceof String) {
+                Object second = parseMaybeEncoded(((String) parsed).trim());
+                if (second instanceof JSONArray) {
+                    return (JSONArray) second;
+                }
+            }
+            return new JSONArray();
+        }
+        return object.optJSONArray(field);
     }
 
     public static SigningDetailsData fromSignatures(Signature[] signatures) {
@@ -110,6 +167,15 @@ public final class SigningDetailsData {
 
     public boolean hasHistory() {
         return history != null && history.length > 0;
+    }
+
+    public boolean hasRotation() {
+        if (history == null || history.length < 2) {
+            return false;
+        }
+        byte[] first = history[0] == null ? null : history[0].toByteArray();
+        byte[] last = history[history.length - 1] == null ? null : history[history.length - 1].toByteArray();
+        return first != null && last != null && !java.util.Arrays.equals(first, last);
     }
 
     public String describe() {

@@ -46,8 +46,119 @@ internal fun SignaturesScreen(
     onOpenPicker: () -> Unit,
 ) {
     val miuix = LocalMiuix.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val builtin = profiles.filter { it.kind == SignatureStore.Kind.BUILTIN }
     val custom = profiles.filter { it.kind == SignatureStore.Kind.CUSTOM }
+
+    val store = remember { SignatureStore(context) }
+    var pickKeystore by remember { mutableStateOf(false) }
+    var pickCert by remember { mutableStateOf(false) }
+    var pendingKeyFile by remember { mutableStateOf<java.io.File?>(null) }
+    var pendingCertFile by remember { mutableStateOf<java.io.File?>(null) }
+    var importName by remember { mutableStateOf("") }
+    var importPassword by remember { mutableStateOf("") }
+    var importError by remember { mutableStateOf<String?>(null) }
+    var importBusy by remember { mutableStateOf(false) }
+
+    fun tmpCopy(uri: android.net.Uri): java.io.File? = runCatching {
+        val out = java.io.File(context.cacheDir, "sig_import_" + System.currentTimeMillis())
+        context.contentResolver.openInputStream(uri)?.use { input ->
+            out.outputStream().use { output -> input.copyTo(output) }
+        } ?: return null
+        out
+    }.getOrNull()
+
+    val keystorePicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        pickKeystore = false
+        if (uri == null) return@rememberLauncherForActivityResult
+        val f = tmpCopy(uri)
+        if (f == null) {
+            importError = "读取所选文件失败"
+            return@rememberLauncherForActivityResult
+        }
+        pendingCertFile = null
+        pendingKeyFile = null
+        importName = f.nameWithoutExtension
+        importPassword = ""
+        importError = null
+        pickKeystore = false
+        pendingKeyFile = f
+    }
+
+    val certPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        pickCert = false
+        if (uri == null) return@rememberLauncherForActivityResult
+        val f = tmpCopy(uri)
+        if (f == null) {
+            importError = "读取证书文件失败"
+            return@rememberLauncherForActivityResult
+        }
+        pendingCertFile = f
+    }
+
+    val keyPicker = androidx.activity.compose.rememberLauncherForActivityResult(
+        androidx.activity.result.contract.ActivityResultContracts.OpenDocument(),
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val f = tmpCopy(uri)
+        if (f == null) {
+            importError = "读取私钥文件失败"
+            return@rememberLauncherForActivityResult
+        }
+        pendingKeyFile = f
+        if (pendingCertFile != null) {
+            importName = pendingCertFile?.nameWithoutExtension ?: ""
+            importPassword = ""
+            importError = null
+        }
+    }
+
+    fun doImport() {
+        if (importBusy) return
+        val name = importName.trim()
+        if (name.isEmpty()) {
+            importError = "请输入签名名称"
+            return
+        }
+        importBusy = true
+        importError = null
+        val cert = pendingCertFile
+        val key = pendingKeyFile
+        val saved = if (cert != null && key != null) {
+            runCatching { store.importKeystore(name, key, importPassword, cert, key) }
+        } else if (key != null) {
+            runCatching { store.importKeystore(name, key, importPassword, null, null) }
+        } else {
+            runCatching { store.importKeystore(name, java.io.File(""), importPassword, null, null) }
+                .recoverCatching { throw IllegalStateException("缺少签名文件") }
+        }
+        importBusy = false
+        saved.onSuccess { profile ->
+            onSelect(profile)
+            pendingKeyFile = null
+            pendingCertFile = null
+            importName = ""
+            importPassword = ""
+            importError = null
+            pickKeystore = false
+        }.onFailure { e ->
+            importError = "导入失败：" + (e.message ?: "未知错误")
+        }
+    }
+
+    fun dismissImport() {
+        pickKeystore = false
+        pendingKeyFile = null
+        pendingCertFile = null
+        importName = ""
+        importPassword = ""
+        importError = null
+    }
+
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
             Modifier.weight(1f),
@@ -81,7 +192,131 @@ internal fun SignaturesScreen(
                 }
             }
         }
-        ExtendenAddButton(onOpenPicker)
+        if (pickKeystore && pendingKeyFile != null) {
+            ImportFormCard(
+                title = "导入签名文件",
+                nameLabel = "签名名称",
+                nameValue = importName,
+                onNameChange = { importName = it },
+                passwordLabel = "文件密码（无密码留空）",
+                passwordValue = importPassword,
+                onPasswordChange = { importPassword = it },
+                hint = "格式：PKCS12 / JKS / BKS",
+                error = importError,
+                busy = importBusy,
+                onConfirm = { doImport() },
+                onDismiss = { dismissImport() },
+            )
+        }
+        if (pendingCertFile != null && pendingKeyFile != null) {
+            ImportFormCard(
+                title = "导入证书与私钥",
+                nameLabel = "签名名称",
+                nameValue = importName,
+                onNameChange = { importName = it },
+                passwordLabel = "PKCS8 私钥密码（无密码留空）",
+                passwordValue = importPassword,
+                onPasswordChange = { importPassword = it },
+                hint = "证书：" + (pendingCertFile?.name ?: "") + " · 私钥：" + (pendingKeyFile?.name ?: ""),
+                error = importError,
+                busy = importBusy,
+                onConfirm = { doImport() },
+                onDismiss = { dismissImport() },
+            )
+        }
+        var menuOpen by remember { mutableStateOf(false) }
+        Box {
+            ExtendenAddButton(
+                onClick = {
+                    if (pendingCertFile != null && pendingKeyFile == null) {
+                        pickCert = true
+                        keyPicker.launch(arrayOf("*/*"))
+                    } else {
+                        menuOpen = true
+                    }
+                },
+            )
+            DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                DropdownMenuItem(
+                    text = { Text("导入 keystore 文件（p12 / jks / bks）") },
+                    onClick = {
+                        menuOpen = false
+                        pendingCertFile = null
+                        pendingKeyFile = null
+                        pickKeystore = false
+                        keystorePicker.launch(arrayOf("*/*"))
+                    },
+                )
+                DropdownMenuItem(
+                    text = { Text("导入证书 + 私钥（der / pem + pk8）") },
+                    onClick = {
+                        menuOpen = false
+                        pendingCertFile = null
+                        pendingKeyFile = null
+                        pickCert = true
+                        certPicker.launch(arrayOf("*/*"))
+                    },
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ImportFormCard(
+    title: String,
+    nameLabel: String,
+    nameValue: String,
+    onNameChange: (String) -> Unit,
+    passwordLabel: String,
+    passwordValue: String,
+    onPasswordChange: (String) -> Unit,
+    hint: String,
+    error: String?,
+    busy: Boolean,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    MiuixCard(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 6.dp),
+    ) {
+        Column(Modifier.padding(14.dp)) {
+            Text(title, style = MaterialTheme.typography.titleMedium)
+            Spacer(Modifier.height(10.dp))
+            Text(nameLabel, style = MaterialTheme.typography.labelMedium)
+            androidx.compose.material3.OutlinedTextField(
+                value = nameValue,
+                onValueChange = onNameChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+            )
+            Spacer(Modifier.height(8.dp))
+            Text(passwordLabel, style = MaterialTheme.typography.labelMedium)
+            androidx.compose.material3.OutlinedTextField(
+                value = passwordValue,
+                onValueChange = onPasswordChange,
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
+            )
+            Spacer(Modifier.height(6.dp))
+            Text(hint, style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (error != null) {
+                Spacer(Modifier.height(6.dp))
+                Text(error, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.error)
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp)) {
+                Button(onClick = onConfirm, enabled = !busy) {
+                    Text(if (busy) "导入中…" else "导入")
+                }
+                Button(onClick = onDismiss, enabled = !busy) {
+                    Text("取消")
+                }
+            }
+        }
     }
 }
 

@@ -23,7 +23,7 @@ class BackupArchive(private val context: Context) {
         SCOPE("scope", "作用域与模块", "模块开关、作用域、模块 API 与保护记录"),
         SIGNATURES("signatures", "签名", "默认签名档与自定义证书文件"),
         HISTORY("history", "打包历史与导出记录", "每次打包的参数、产物信息与导出位置"),
-        ARTIFACTS("artifacts", "打包产物", "历史记录对应的 APK 文件，需同时备份打包历史，体积可能很大"),
+        ARTIFACTS("artifacts", "打包产物", "历史记录对应的 APK 文件，需同时备份打包历史"),
         LOGS("logs", "操作日志与崩溃记录", "管理器操作记录与崩溃堆栈"),
         RUNTIME("runtime", "运行日志", "目标应用目录下的模块日志，只备份不还原"),
         CACHE("cache", "仓库缓存", "模块仓库索引与模块说明"),

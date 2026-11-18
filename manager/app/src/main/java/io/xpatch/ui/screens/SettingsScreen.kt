@@ -165,7 +165,7 @@ internal fun SettingsScreen(
                 SettingGroup("签名") {
                     SettingItem(
                         "签名管理",
-                        "打包产物使用的证书，可添加自定义签名",
+                        "打包时使用的签名证书，可自定义",
                         defaultSignatureName,
                         arrow = true,
                         onClick = onOpenSignatures,
@@ -217,10 +217,10 @@ internal fun SettingsScreen(
             }
             item {
                 SettingGroup("备份与恢复") {
-                    SettingItem("备份数据", "自选范围，全部数据打包为一个 ZIP", arrow = true, onClick = {
+                    SettingItem("备份数据", "", arrow = true, onClick = {
                         showBackupDialog = true
                     })
-                    SettingItem("从备份恢复", "从 ZIP 恢复，兼容旧版配置文件", arrow = true, onClick = {
+                    SettingItem("从备份恢复", "", arrow = true, onClick = {
                         onRestoreBackup()
                     })
                     SettingItem(
@@ -228,9 +228,9 @@ internal fun SettingsScreen(
                         if (exportLost) {
                             "权限已失效，请重新选择"
                         } else if (exportLabel.isBlank()) {
-                            "打包产物与导出文件的保存位置"
+                            "打包完成时导出安装包的位置"
                         } else {
-                            "打包产物与导出文件的保存位置 长按可清除"
+                            "打包完成时导出安装包的位置 长按可清除"
                         },
                         if (exportLabel.isBlank()) "未设置" else exportLabel,
                         arrow = true,
@@ -281,7 +281,7 @@ internal fun SettingsScreen(
                 SettingGroup("签名") {
                     SettingItem(
                         "签名管理",
-                        "打包产物使用的证书，可添加自定义签名",
+                        "",
                         defaultSignatureName,
                         arrow = true,
                         onClick = onOpenSignatures,
@@ -333,10 +333,10 @@ internal fun SettingsScreen(
             }
             item {
                 SettingGroup("备份与恢复") {
-                    SettingItem("备份数据", "自选范围，全部数据打包为一个 ZIP", onClick = {
+                    SettingItem("备份数据", "", onClick = {
                         showBackupDialog = true
                     })
-                    SettingItem("从备份恢复", "从 ZIP 恢复，兼容旧版配置文件", onClick = {
+                    SettingItem("从备份恢复", "", onClick = {
                         onRestoreBackup()
                     })
                     SettingItem(
@@ -344,9 +344,9 @@ internal fun SettingsScreen(
                         if (exportLost) {
                             "权限已失效，请重新选择"
                         } else if (exportLabel.isBlank()) {
-                            "打包产物与导出文件的保存位置"
+                            "打包完成时导出安装包的位置"
                         } else {
-                            "打包产物与导出文件的保存位置 长按可清除"
+                            "打包完成时导出安装包的位置 长按可清除"
                         },
                         if (exportLabel.isBlank()) "未设置" else exportLabel,
                         arrow = true,

@@ -490,7 +490,7 @@ internal fun buildExportOptions(
             fullExport?.let { stream ->
                 LogExportOption(
                     label = "导出全部日志（含未加载）",
-                    description = "流式读取磁盘上全部日志文件，不受已加载范围限制",
+                    description = "读取磁盘上全部日志文件，不受已加载范围限制",
                     fileName = "xpatch-runtime-all-$stamp.zip",
                     build = { "" },
                     hasContent = true,

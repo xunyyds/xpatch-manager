@@ -30,7 +30,7 @@ class ScopeFileWriter(private val context: Context) {
                     }
                     if (!legacyDataCleaned) {
                         append("遗留 data 作用域清理失败")
-                        if (!dataViaShizuku) append("（Shizuku 兜底不可用）")
+                        if (!dataViaShizuku) append("（Shizuku 不可用）")
                         append("；")
                     }
                     if (errors.isNotEmpty()) append(errors.joinToString("；"))
@@ -79,6 +79,18 @@ class ScopeFileWriter(private val context: Context) {
         val errors = mutableListOf<String>()
 
         if (modules.isEmpty()) {
+            val existing = runCatching { mediaFile.readText() }.getOrNull()
+            val hasPayload = existing != null && existing.contains("\"packageName\"")
+            if (hasPayload) {
+                return Result(
+                    appPackage = appPackage,
+                    hasScope = true,
+                    mediaReady = true,
+                    legacyDataCleaned = true,
+                    dataViaShizuku = false,
+                    errors = errors,
+                )
+            }
             val mediaOk = runCatching {
                 mediaFile.parentFile?.mkdirs()
                 writeAtomic(mediaFile, JSONObject().put("scopes", JSONArray()).toString())
@@ -128,12 +140,16 @@ class ScopeFileWriter(private val context: Context) {
     }
 
     private fun writeAtomic(target: File, payload: String) {
+        if (target.isFile && runCatching { target.readText() }.getOrNull() == payload) {
+            return
+        }
         val tmp = File(target.absolutePath + ".tmp")
         val backup = File(target.absolutePath + ".bak")
         try {
             tmp.writeText(payload)
-            if (target.isFile && !backup.exists() && !target.renameTo(backup)) {
+            if (target.isFile) {
                 backup.delete()
+                target.copyTo(backup, overwrite = true)
             }
             if (!tmp.renameTo(target)) {
                 tmp.copyTo(target, overwrite = true)

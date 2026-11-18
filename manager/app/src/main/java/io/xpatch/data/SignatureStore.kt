@@ -25,6 +25,7 @@ class SignatureStore(private val context: Context) {
         Triple(BUILTIN_XPATCH, "XPatch", BUILTIN_XPATCH),
         Triple("fpa", "FPA", "fpa"),
         Triple("np", "NPatch", "np"),
+        Triple("lspatch", "LSPatch", "lspatch"),
     ).filter { isBuiltinAvailable(it.third) }
         .map { (id, name, builtinId) ->
             Profile(id = id, name = name, kind = Kind.BUILTIN, builtinId = builtinId)
@@ -169,6 +170,129 @@ class SignatureStore(private val context: Context) {
     }
 
     fun updateCustom(profile: Profile) = save(profile)
+
+    fun importKeystore(
+        name: String,
+        source: File,
+        password: String,
+        certFile: File?,
+        keyFile: File?,
+    ): Profile {
+        val dir = File(context.filesDir, "signatures").apply { mkdirs() }
+        val id = "custom_" + System.currentTimeMillis()
+        val target = File(dir, "$id.bin")
+        if (certFile != null && keyFile != null) {
+            val certData = certFile.readBytes()
+            val keyData = keyFile.readBytes()
+            val cert = java.security.cert.CertificateFactory
+                .getInstance("X.509")
+                .generateCertificate(certData.inputStream()) as java.security.cert.X509Certificate
+            val sanitized = stripPemHeader(keyData)
+            val publicKey = cert.publicKey
+            val key = runCatching {
+                val factory = java.security.KeyFactory.getInstance(publicKey.algorithm)
+                factory.generatePrivate(java.security.spec.PKCS8EncodedKeySpec(sanitized))
+            }.recoverCatching {
+                val factory = java.security.KeyFactory.getInstance("RSA")
+                factory.generatePrivate(java.security.spec.RSAPrivateCrtKeySpec::class.java.let {
+                    java.security.spec.PKCS8EncodedKeySpec(sanitized)
+                })
+            }.getOrElse {
+                throw IllegalArgumentException("无法解析私钥（仅支持 PKCS8 DER/PEM）：${it.message}")
+            }
+            val store = java.security.KeyStore.getInstance("PKCS12")
+            store.load(null, null)
+            store.setKeyEntry("import", key, password.toCharArray(), arrayOf(cert))
+            verifyKeyCertMatch(key, cert)
+            target.outputStream().use { out ->
+                store.store(out, password.toCharArray())
+            }
+        } else {
+            source.copyTo(target, overwrite = true)
+        }
+        val profile = Profile(
+            id = id,
+            name = name,
+            kind = Kind.CUSTOM,
+            customFile = target.absolutePath,
+            password = password,
+            algorithm = certAlgorithmOf(certFile, source, password),
+        )
+        save(profile)
+        return profile
+    }
+
+    private fun verifyKeyCertMatch(key: java.security.PrivateKey, cert: java.security.cert.X509Certificate) {
+        val mismatch = runCatching {
+            val sig = java.security.Signature.getInstance(
+                when (cert.publicKey.algorithm) {
+                    "EC" -> "SHA256withECDSA"
+                    else -> "SHA256withRSA"
+                },
+            )
+            val sample = ByteArray(64)
+            sig.initSign(key)
+            sig.update(sample)
+            val signed = sig.sign()
+            sig.initVerify(cert)
+            sig.update(sample)
+            !sig.verify(signed)
+        }.getOrDefault(true)
+        if (mismatch) {
+            throw IllegalArgumentException("私钥与证书不匹配，请确认两个文件来自同一对密钥")
+        }
+    }
+
+    private fun stripPemHeader(data: ByteArray): ByteArray {
+        val text = String(data, Charsets.US_ASCII).trim()
+        if (!text.startsWith("-----BEGIN")) {
+            return data
+        }
+        val body = text
+            .replace("-----BEGIN PRIVATE KEY-----", "")
+            .replace("-----END PRIVATE KEY-----", "")
+            .replace("-----BEGIN RSA PRIVATE KEY-----", "")
+            .replace("-----END RSA PRIVATE KEY-----", "")
+            .replace("\\s".toRegex(), "")
+        return android.util.Base64.decode(body, android.util.Base64.DEFAULT)
+    }
+
+    private fun certAlgorithmOf(certFile: File?, source: File, password: String): String {
+        if (certFile != null) {
+            return runCatching {
+                val cert = java.security.cert.CertificateFactory
+                    .getInstance("X.509")
+                    .generateCertificate(certFile.inputStream())
+                cert.publicKey.algorithm
+            }.getOrDefault("RSA")
+        }
+        return runCatching {
+            val store = loadAnyStore(source, password) ?: return@runCatching "RSA"
+            val alias = store.aliases().toList().firstOrNull() ?: return@runCatching "RSA"
+            val cert = store.getCertificate(alias) ?: return@runCatching "RSA"
+            cert.publicKey.algorithm
+        }.getOrDefault("RSA")
+    }
+
+    private fun loadAnyStore(file: File, password: String): java.security.KeyStore? {
+        val types = listOf("PKCS12", "BKS", "JKS")
+        val providers = listOf("BC", "BC", null)
+        for (i in types.indices) {
+            val result = runCatching {
+                val store = if (providers[i] != null) {
+                    java.security.KeyStore.getInstance(types[i], providers[i])
+                } else {
+                    java.security.KeyStore.getInstance(types[i])
+                }
+                file.inputStream().use { store.load(it, password.toCharArray()) }
+                store
+            }
+            if (result.isSuccess && result.getOrNull() != null) {
+                return result.getOrNull()
+            }
+        }
+        return null
+    }
 
     fun deleteCustom(id: String) {
         val list = customProfiles().filterNot { it.id == id }

@@ -130,8 +130,8 @@ internal fun AboutScreen(
                 )
                 RowDivider(startPadding = 16.dp)
                 SettingSwitchItem(
-                    title = "接收测试版",
-                    subtitle = "开启后检查更新会包含预发布（Beta）版本",
+                    title = "接收测试版更新",
+                    subtitle = "测试版不稳定，请谨慎更新",
                     checked = receiveBeta,
                     onCheckedChange = { enabled ->
                         receiveBeta = enabled
@@ -173,7 +173,7 @@ internal fun AboutScreen(
                 RowDivider(startPadding = 16.dp)
                 SettingItem(
                     "特别鸣谢",
-                    "致谢项目与提供建议的小伙伴",
+                    "致谢项目",
                     arrow = true,
                     onClick = { onOpenAcknowledgements() },
                 )
