@@ -38,7 +38,6 @@ class PatchService(private val context: Context) {
         val config: String,
 
         val forceOverwrite: Boolean = false,
-        val exported: ExportStore.Saved? = null,
     )
 
     data class ExportResult(val path: String, val name: String, val uri: String, val size: Long)
@@ -222,12 +221,10 @@ class PatchService(private val context: Context) {
         onProgress(95)
         val delivered = File(outputDir().apply { mkdirs() }, "$label-$packageName.apk")
         val copied = runCatching { signed.copyTo(delivered, overwrite = true) }
-        val exported = if (copied.isSuccess) {
+        if (copied.isSuccess) {
             log.milestone("完成。输出 APK：${delivered.absolutePath}")
-            deliverToChosenDir(delivered, log)
         } else {
             log.step("产物另存失败，保留缓存：${signed.absolutePath}")
-            null
         }
 
         Outcome(
@@ -238,7 +235,6 @@ class PatchService(private val context: Context) {
             originalFactory = result.originalFactory,
             config = result.config,
             forceOverwrite = options.forceOverwrite,
-            exported = exported,
         )
     }
 
@@ -272,16 +268,6 @@ class PatchService(private val context: Context) {
         ExportResult(path = target.absolutePath, name = target.name, uri = "", size = target.length())
     }
 
-    private suspend fun deliverToChosenDir(source: File, log: PatchLog): ExportStore.Saved? {
-        val chosen = ExportStore(context).savedTarget() ?: return null
-        return runCatching {
-            ExportStore(context).save(source, source.name, chosen.uri)
-        }.onSuccess {
-            log.milestone("已放入导出目录 " + it.path + "/" + it.name)
-        }.onFailure {
-            log.step("放入导出目录失败：" + (it.message ?: "无法写入所选目录"))
-        }.getOrNull()
-    }
 
     fun outcomeOf(record: PatchRecord): Outcome = Outcome(
         apk = File(record.apkPath),
