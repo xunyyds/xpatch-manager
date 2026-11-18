@@ -17,8 +17,8 @@ android {
         applicationId = "io.xpatch"
         minSdk = 29
         targetSdk = 37
-        versionCode = 10
-        versionName = "0.1.8-beta2"
+        versionCode = 11
+        versionName = "0.1.8-rc.1"
     }
 
     signingConfigs {

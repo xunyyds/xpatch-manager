@@ -106,14 +106,82 @@ object UpdateChecker {
     }
 
     fun compareVersion(left: String, right: String): Int {
-        val l = left.trim().removePrefix("v").removePrefix("V").split('.')
-        val r = right.trim().removePrefix("v").removePrefix("V").split('.')
-        for (index in 0 until maxOf(l.size, r.size)) {
-            val a = l.getOrNull(index)?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 0
-            val b = r.getOrNull(index)?.takeWhile { it.isDigit() }?.toIntOrNull() ?: 0
-            if (a != b) return a - b
+        val a = parseVersion(left)
+        val b = parseVersion(right)
+        for (index in 0 until maxOf(a.core.size, b.core.size)) {
+            val x = a.core.getOrNull(index) ?: 0
+            val y = b.core.getOrNull(index) ?: 0
+            if (x != y) return if (x > y) 1 else -1
+        }
+        if (!a.hasPre && !b.hasPre) return 0
+        if (!a.hasPre) return 1
+        if (!b.hasPre) return -1
+        return comparePrerelease(a.pre, b.pre)
+    }
+
+    private data class VersionKey(
+        val core: List<Int>,
+        val pre: List<Pair<String, Int>>,
+        val hasPre: Boolean,
+    )
+
+    private fun parseVersion(raw: String): VersionKey {
+        val text = raw.trim().removePrefix("v").removePrefix("V")
+        val dash = text.indexOf('-')
+        val coreText = if (dash >= 0) text.substring(0, dash) else text
+        val preText = if (dash >= 0) text.substring(dash + 1) else ""
+        val core = coreText.split('.')
+            .map { it.takeWhile { ch -> ch.isDigit() }.toIntOrNull() ?: 0 }
+        val pre = if (preText.isEmpty()) emptyList() else preText.split('.').flatMap { tokensOf(it) }
+        return VersionKey(core = core, pre = pre, hasPre = preText.isNotEmpty())
+    }
+
+    private fun tokensOf(part: String): List<Pair<String, Int>> {
+        val name = part.takeWhile { it.isLetter() }
+        val rest = part.dropWhile { it.isLetter() }
+        if (name.isEmpty()) {
+            return listOf("" to (rest.takeWhile { it.isDigit() }.toIntOrNull() ?: 0))
+        }
+        if (rest.isEmpty()) {
+            return listOf(name.lowercase() to -1)
+        }
+        val number = rest.takeWhile { it.isDigit() }.toIntOrNull() ?: 0
+        return listOf(name.lowercase() to -1, "" to number)
+    }
+
+    private fun comparePrerelease(left: List<Pair<String, Int>>, right: List<Pair<String, Int>>): Int {
+        for (index in 0 until maxOf(left.size, right.size)) {
+            val x = left.getOrNull(index)
+            val y = right.getOrNull(index)
+            if (x == null) return -1
+            if (y == null) return 1
+            val byName = compareStage(x.first, y.first)
+            if (byName != 0) return byName
+            if (x.second != y.second) {
+                if (x.second < 0) return -1
+                if (y.second < 0) return 1
+                return if (x.second > y.second) 1 else -1
+            }
         }
         return 0
+    }
+
+    private fun compareStage(left: String, right: String): Int {
+        if (left == right) return 0
+        if (left.isEmpty()) return -1
+        if (right.isEmpty()) return 1
+        val x = stageRank(left)
+        val y = stageRank(right)
+        if (x != y) return if (x > y) 1 else -1
+        return left.compareTo(right).let { if (it > 0) 1 else -1 }
+    }
+
+    private fun stageRank(stage: String): Int = when (stage) {
+        "dev", "snapshot" -> 0
+        "alpha", "a" -> 1
+        "beta", "b" -> 2
+        "rc", "pre", "preview" -> 3
+        else -> 2
     }
 
     private fun judge(release: ReleaseInfo): CheckResult =
