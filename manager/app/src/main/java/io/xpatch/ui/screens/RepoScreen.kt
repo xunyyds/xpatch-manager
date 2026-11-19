@@ -137,6 +137,7 @@ private data class RepoQuery(
     val query: String,
     val broadSearch: Boolean,
     val sort: Int,
+    val descending: Boolean,
     val chip89: Boolean,
     val chip100: Boolean,
     val chipLsp: Boolean,
@@ -229,7 +230,7 @@ private fun sortModules(
     for (module in list) lowerNames[module.packageName] = module.name.lowercase()
     fun nameOf(module: RepoStore.RepoModule): String = lowerNames[module.packageName] ?: module.name
 
-    return when (input.sort) {
+    val ordered = when (input.sort) {
         1 -> list.sortedByDescending { it.updateTime }
         2 -> list.sortedByDescending { input.snapshot.lastUpdateTimeOf(it.packageName) }
         3 -> list.sortedBy { nameOf(it) }
@@ -246,6 +247,7 @@ private fun sortModules(
                 .thenBy { nameOf(it) },
         )
     }
+    return if (input.descending) ordered.asReversed() else ordered
 }
 
 @Composable
@@ -267,6 +269,7 @@ internal fun RepoPageScreen(
     var query by rememberSaveable { mutableStateOf("") }
     var broadSearch by rememberSaveable { mutableStateOf(false) }
     var sort by rememberSaveable { mutableIntStateOf(0) }
+    var descending by rememberSaveable { mutableStateOf(false) }
     var sortMenu by remember { mutableStateOf(false) }
     var chip89 by rememberSaveable { mutableStateOf(false) }
     var chip100 by rememberSaveable { mutableStateOf(false) }
@@ -324,6 +327,7 @@ internal fun RepoPageScreen(
         query = debouncedQuery,
         broadSearch = broadSearch,
         sort = sort,
+        descending = descending,
         chip89 = chip89,
         chip100 = chip100,
         chipLsp = chipLsp,
@@ -341,6 +345,16 @@ internal fun RepoPageScreen(
 
     val filtersActive = chip89 || chip100 || chipLsp || recentDays > 0 || statuses.isNotEmpty() ||
         authorFilter != null || scopeTarget != null || broadSearch
+    val activeFilterCount = listOf(
+        chip89,
+        chip100,
+        chipLsp,
+        recentDays > 0,
+        statuses.isNotEmpty(),
+        authorFilter != null,
+        scopeTarget != null,
+        broadSearch,
+    ).count { it }
 
     Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize()) {
@@ -376,11 +390,14 @@ internal fun RepoPageScreen(
                         softWrap = false,
                     )
                     if (filtersActive) {
-                        Spacer(Modifier.width(4.dp))
-                        Box(
-                            Modifier
-                                .size(6.dp)
-                                .background(MaterialTheme.colorScheme.primary, CircleShape),
+                        Spacer(Modifier.width(5.dp))
+                        Text(
+                            activeFilterCount.toString(),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier
+                                .background(MaterialTheme.colorScheme.primary, CircleShape)
+                                .padding(horizontal = 6.dp, vertical = 1.dp),
                         )
                     }
                 }
@@ -401,7 +418,7 @@ internal fun RepoPageScreen(
                     )
                     Spacer(Modifier.width(5.dp))
                     Text(
-                        RepoSortLabels[sort],
+                        if (descending) RepoSortLabels[sort] + " ↓" else RepoSortLabels[sort],
                         style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.primary,
                         maxLines = 1,
@@ -412,12 +429,44 @@ internal fun RepoPageScreen(
                     RepoSortLabels.forEachIndexed { index, label ->
                         DropdownMenuItem(
                             text = { Text(label) },
+                            trailingIcon = if (index == sort) {
+                                {
+                                    Icon(
+                                        Icons.Rounded.Check,
+                                        contentDescription = null,
+                                        Modifier.size(18.dp),
+                                        tint = MaterialTheme.colorScheme.primary,
+                                    )
+                                }
+                            } else {
+                                null
+                            },
                             onClick = {
                                 sort = index
                                 sortMenu = false
                             },
                         )
                     }
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 4.dp),
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f),
+                    )
+                    DropdownMenuItem(
+                        text = { Text("倒序") },
+                        trailingIcon = {
+                            Icon(
+                                Icons.Rounded.Check,
+                                contentDescription = null,
+                                Modifier.size(18.dp),
+                                tint = if (descending) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    Color.Transparent
+                                },
+                            )
+                        },
+                        onClick = { descending = !descending },
+                    )
                 }
             }
             Spacer(Modifier.weight(1f))
@@ -662,11 +711,16 @@ internal fun RepoModuleRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable { onOpen() }
             .padding(horizontal = 20.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Column(Modifier.weight(1f)) {
+        Column(
+            Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { onOpen() }
+                .padding(start = 0.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
+        ) {
             Text(
                 module.name,
                 style = MaterialTheme.typography.bodyLarge,
@@ -724,7 +778,7 @@ internal fun RepoModuleRow(
                 )
             },
         ) {
-            Text(if (downloading) "下载中" else if (cached) "安装" else "下载")
+            Text(if (downloading) "下载中" else if (cached) "去安装" else "下载")
         }
     }
     HorizontalDivider(
@@ -932,7 +986,7 @@ internal fun DownloadsScreen(
                     }
                 }
             } else {
-                items(entries, key = { it.packageName }) { entry ->
+                items(entries, key = { it.key }) { entry ->
                     val module = modulesByPackage[entry.packageName]
                     val installed = snapshot.versionNameOf(entry.packageName)
                     val code = snapshot.versionCodeOf(entry.packageName)
@@ -941,27 +995,34 @@ internal fun DownloadsScreen(
                     Column(
                         Modifier
                             .fillMaxWidth()
-                            .clickable(enabled = module != null) { module?.let(onOpenDetail) }
                             .padding(horizontal = 20.dp, vertical = 12.dp),
                     ) {
-                        Text(
-                            module?.name ?: entry.fileName,
-                            style = MaterialTheme.typography.bodyLarge,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        val status = if (!installed.isNullOrBlank()) "已安装(" + installed + ")" else "未安装"
-                        val meta = mutableListOf<String>()
-                        meta.add("v" + entry.version)
-                        meta.add(formatSize(entry.size))
-                        meta.add(formatTime(entry.time))
-                        meta.add(status)
-                        if (outdated) meta.add("仓库已有 " + module?.version)
-                        Text(
-                            meta.joinToString(" · "),
-                            style = MaterialTheme.typography.labelSmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable(enabled = module != null) { module?.let(onOpenDetail) }
+                                .padding(vertical = 2.dp),
+                        ) {
+                            Text(
+                                module?.name ?: entry.fileName,
+                                style = MaterialTheme.typography.bodyLarge,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val status = if (!installed.isNullOrBlank()) "已安装(" + installed + ")" else "未安装"
+                            val meta = mutableListOf<String>()
+                            meta.add("v" + entry.version)
+                            meta.add(formatSize(entry.size))
+                            meta.add(formatTime(entry.time))
+                            meta.add(status)
+                            if (outdated) meta.add("仓库已有 " + module?.version)
+                            Text(
+                                meta.joinToString(" · "),
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.End,
@@ -992,6 +1053,10 @@ internal fun RepoDetailScreen(
     cached: Boolean,
     busy: Boolean,
     readme: String?,
+    versions: List<RepoStore.RemoteVersion> = emptyList(),
+    versionsLoading: Boolean = false,
+    onLoadVersions: (() -> Unit)? = null,
+    onOpenVersion: ((RepoStore.RemoteVersion) -> Unit)? = null,
     onAction: () -> Unit,
     onOpenStore: () -> Unit,
 ) {
@@ -999,10 +1064,24 @@ internal fun RepoDetailScreen(
         !ModuleUpdate.isUpdate(module.version, module.versionCode, installed, installedVersionCode)
     val actionLabel = when {
         installed != null && installedMatch -> "已安装"
-        cached -> "安装模块"
-        else -> "下载并安装"
+        cached -> "去下载管理安装"
+        else -> "下载到下载管理"
     }
     val blocks = rememberMarkdownBlocks(readme)
+    var showVersions by remember { mutableStateOf(false) }
+    if (showVersions) {
+        RepoVersionsDialog(
+            versions = versions,
+            loading = versionsLoading,
+            currentVersion = module.version,
+            busy = busy,
+            onRetry = { onLoadVersions?.invoke() },
+            onPick = { version ->
+                onOpenVersion?.invoke(version)
+            },
+            onDismiss = { showVersions = false },
+        )
+    }
     Column(Modifier.fillMaxSize()) {
         LazyColumn(
             modifier = Modifier
@@ -1073,6 +1152,35 @@ internal fun RepoDetailScreen(
                 CompatibilityCard(module)
             }
 
+            if (onLoadVersions != null) {
+                item(key = "detail:versions") {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .clickable {
+                                showVersions = true
+                                if (versions.isEmpty() && !versionsLoading) onLoadVersions()
+                            }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "历史版本",
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Text(
+                            "查看",
+                            style = MaterialTheme.typography.labelMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+
             if (module.summary.isNotBlank()) {
                 item(key = "detail:summary") {
                     Column(Modifier.padding(horizontal = 20.dp)) {
@@ -1123,6 +1231,104 @@ internal fun RepoDetailScreen(
             shape = RoundedCornerShape(16.dp),
         ) {
             Text("在仓库中查看")
+        }
+    }
+}
+
+@Composable
+private fun RepoVersionsDialog(
+    versions: List<RepoStore.RemoteVersion>,
+    loading: Boolean,
+    currentVersion: String,
+    busy: Boolean,
+    onRetry: () -> Unit,
+    onPick: (RepoStore.RemoteVersion) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    XPatchDialog(
+        onDismiss = onDismiss,
+        title = "历史版本",
+        actions = listOf(DialogAction("关闭", onClick = onDismiss)),
+    ) {
+        when {
+            loading -> {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 24.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    PulsingDots()
+                }
+            }
+            versions.isEmpty() -> {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    Text(
+                        "没有可用的历史版本",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(onClick = onRetry) { Text("重新加载") }
+                }
+            }
+            else -> {
+                versions.forEachIndexed { index, version ->
+                    if (index > 0) {
+                        HorizontalDivider(
+                            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        )
+                    }
+                    val isCurrent = version.version == currentVersion
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(enabled = !busy && !isCurrent) { onPick(version) }
+                            .padding(horizontal = 4.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(
+                                "v" + version.version,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (isCurrent) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.onSurface
+                                },
+                            )
+                            val meta = mutableListOf<String>()
+                            if (version.updateTime > 0L) meta.add(formatTime(version.updateTime))
+                            if (isCurrent) meta.add("当前版本")
+                            if (meta.isNotEmpty()) {
+                                Text(
+                                    meta.joinToString(" · "),
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
+                        if (!isCurrent) {
+                            Text(
+                                "下载",
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (busy) {
+                                    MaterialTheme.colorScheme.onSurfaceVariant
+                                } else {
+                                    MaterialTheme.colorScheme.primary
+                                },
+                                modifier = Modifier.padding(end = 4.dp),
+                            )
+                        }
+                    }
+                }
+            }
         }
     }
 }

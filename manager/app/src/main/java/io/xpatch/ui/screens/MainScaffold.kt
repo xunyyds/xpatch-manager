@@ -1056,31 +1056,7 @@ fun MainScaffold(
     }
 
     val installModuleFile: (String, java.io.File, String) -> Unit = { name, file, pkg ->
-        scope.launch {
-            val viaShizuku = ShizukuBridge.isAvailable()
-            busyText = if (viaShizuku) "正在通过 Shizuku 安装 " + name + "…" else null
-            try {
-                when (val step = ShizukuInstaller.install(context, file, pkg)) {
-                    is ShizukuInstaller.Result.Success -> {
-                        eventLog.add(step.message)
-                        showToast(step.message)
-                    }
-                    is ShizukuInstaller.Result.Failure -> {
-                        eventLog.add(step.message)
-                        showToast(step.message)
-                        fallbackModuleInstall(name, file, pkg)
-                    }
-                    ShizukuInstaller.Result.Unavailable -> {
-                        eventLog.add("Shizuku 不可用，改用系统安装器安装 " + name)
-                        fallbackModuleInstall(name, file, pkg)
-                    }
-                }
-            } finally {
-                busyText = null
-            }
-            logs = eventLog.entries()
-            token++
-        }
+        fallbackModuleInstall(name, file, pkg)
     }
 
     val fallbackInstall: (PatchService.Outcome) -> Unit = fallback@{ outcome ->
@@ -1198,9 +1174,8 @@ fun MainScaffold(
                     repoDownloadPkg = null
                     repoDownloadTaskId = null
                     repoDownloadDoneTick++
-                    eventLog.add("已下载 " + event.module.name)
-                    showToast("已下载 " + event.module.name)
-                    installModuleFile(event.module.name, event.file, event.module.packageName)
+                    eventLog.add("已下载 " + event.module.name + "，可在下载管理中安装")
+                    showToast("已下载 " + event.module.name + "，请到下载管理安装")
                     token++
                 }
 
@@ -1252,7 +1227,7 @@ fun MainScaffold(
                                 miuix = true,
                                 progress = moduleDownloadPercent,
                                 badge = repoSnapshot.value.badge,
-                                onClick = { nav.replace(Page.RepoDownloads) },
+                                onClick = { nav.navigate(Page.RepoDownloads) },
                             )
                         }
                     },
@@ -1287,7 +1262,7 @@ fun MainScaffold(
                                 miuix = false,
                                 progress = moduleDownloadPercent,
                                 badge = repoSnapshot.value.badge,
-                                onClick = { nav.replace(Page.RepoDownloads) },
+                                onClick = { nav.navigate(Page.RepoDownloads) },
                             )
                         }
                     },
@@ -1618,7 +1593,7 @@ fun MainScaffold(
                     downloadingPkg = repoDownloadPkg,
                     downloadProgress = { repoDownloadProgress },
                     downloadDoneTick = repoDownloadDoneTick,
-                    onOpenDownloads = { nav.replace(Page.RepoDownloads) },
+                    onOpenDownloads = { nav.navigate(Page.RepoDownloads) },
                     onRefresh = {
                         scope.launch {
                             repoBusy = true
@@ -1640,8 +1615,10 @@ fun MainScaffold(
                             runCatching {
                                 val cached = repoStore.cachedApk(module)
                                 if (cached != null) {
-                                    installModuleFile(module.name, cached, module.packageName)
+                                    nav.navigate(Page.RepoDownloads)
                                 } else {
+                                    showToast("开始下载 " + module.name)
+                                    eventLog.add("开始下载 " + module.name)
                                     repoDownloadPkg = module.packageName
                                     repoDownloadProgress = 0
                                     repoDownloadTaskId = DownloadCenter.startModule(context, repoStore, module)
@@ -1649,9 +1626,11 @@ fun MainScaffold(
                             }.onFailure {
                                 repoError = it.message ?: "下载失败"
                                 eventLog.add("下载失败 " + (it.message ?: ""))
+                                showToast("下载失败：" + (it.message ?: "未知错误"))
                             }
                             busyText = null
                             repoBusy = false
+                            logs = eventLog.entries()
                             token++
                         }
                     },
@@ -1671,8 +1650,8 @@ fun MainScaffold(
                         )
                     },
                     onDelete = { entry ->
-                        val ok = runCatching { repoStore.removeDownload(entry.packageName) }.getOrDefault(false)
-                        eventLog.add(if (ok) "已删除 " + entry.packageName + " 的下载缓存" else "删除失败 " + entry.packageName)
+                        val ok = runCatching { repoStore.removeDownload(entry.key) }.getOrDefault(false)
+                        eventLog.add(if (ok) "已删除 " + entry.packageName + " v" + entry.version + " 的下载缓存" else "删除失败 " + entry.packageName)
                         showToast(if (ok) "已删除" else "删除失败")
                         logs = eventLog.entries()
                         token++
@@ -1693,6 +1672,10 @@ fun MainScaffold(
 
                 is Page.RepoDetail -> {
                     var detailReadme by remember(current.module.packageName) { mutableStateOf<String?>(null) }
+                    var detailVersions by remember(current.module.packageName) {
+                        mutableStateOf<List<RepoStore.RemoteVersion>>(emptyList())
+                    }
+                    var versionsLoading by remember(current.module.packageName) { mutableStateOf(false) }
                     LaunchedEffect(current.module.packageName) {
                         detailReadme = withContext(Dispatchers.IO) {
                             repoStore.readmeText(current.module.packageName)
@@ -1706,6 +1689,48 @@ fun MainScaffold(
                         cached = detailSnapshot.isCached(current.module),
                         busy = repoBusy,
                         readme = detailReadme,
+                        versions = detailVersions,
+                        versionsLoading = versionsLoading,
+                        onLoadVersions = {
+                            if (!versionsLoading) {
+                                scope.launch {
+                                    versionsLoading = true
+                                    runCatching { repoStore.versions(current.module.packageName) }
+                                        .onSuccess { detailVersions = it }
+                                        .onFailure {
+                                            eventLog.add("获取历史版本失败 " + (it.message ?: ""))
+                                            showToast("获取历史版本失败")
+                                        }
+                                    versionsLoading = false
+                                }
+                            }
+                        },
+                        onOpenVersion = { version ->
+                            showToast("开始下载 " + current.module.name + " v" + version.version)
+                            eventLog.add("开始下载 " + current.module.name + " v" + version.version)
+                            scope.launch {
+                                repoBusy = true
+                                repoError = null
+                                runCatching {
+                                    repoDownloadPkg = current.module.packageName
+                                    repoDownloadProgress = 0
+                                    repoDownloadTaskId = DownloadCenter.startModule(
+                                        context,
+                                        repoStore,
+                                        current.module,
+                                        version,
+                                    )
+                                }.onFailure {
+                                    repoError = it.message ?: "下载失败"
+                                    eventLog.add("下载失败 " + (it.message ?: ""))
+                                    showToast("下载失败：" + (it.message ?: "未知错误"))
+                                }
+                                busyText = null
+                                repoBusy = false
+                                logs = eventLog.entries()
+                                token++
+                            }
+                        },
                         onAction = {
                             scope.launch {
                                 repoBusy = true
@@ -1713,7 +1738,7 @@ fun MainScaffold(
                                 runCatching {
                                     val cached = repoStore.cachedApk(current.module)
                                     if (cached != null) {
-                                        installModuleFile(current.module.name, cached, current.module.packageName)
+                                        nav.navigate(Page.RepoDownloads)
                                     } else {
                                         repoDownloadPkg = current.module.packageName
                                         repoDownloadProgress = 0

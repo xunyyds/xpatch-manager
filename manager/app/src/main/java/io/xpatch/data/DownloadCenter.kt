@@ -78,17 +78,23 @@ object DownloadCenter {
         return id
     }
 
-    fun startModule(context: Context, repoStore: RepoStore, module: RepoStore.RepoModule): Long {
+    fun startModule(
+        context: Context,
+        repoStore: RepoStore,
+        module: RepoStore.RepoModule,
+        version: RepoStore.RemoteVersion? = null,
+    ): Long {
         val app = context.applicationContext
         appContext = app
         AppNotifications.ensureChannels(app)
         val id = nextId.getAndIncrement()
         val control = DownloadControl()
         controls[id] = control
-        putTask(Task(id, Kind.MODULE, "正在下载 " + module.name))
+        val label = if (version != null) module.name + " v" + version.version else module.name
+        putTask(Task(id, Kind.MODULE, "正在下载 " + label))
         scope.launch {
             val file = runCatching {
-                repoStore.download(module, control) { percent, speed ->
+                repoStore.download(module, control, version) { percent, speed ->
                     onProgress(id, percent, speed)
                 }
             }.getOrNull()
