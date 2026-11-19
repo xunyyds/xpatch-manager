@@ -19,6 +19,7 @@ class ConfigBackup(private val context: Context) {
             put("themeMode", settings.themeMode)
             put("uiStyle", settings.uiStyle.index)
             put("bottomBarStyle", settings.bottomBarStyle)
+            put("liquidGlassLevel", settings.liquidGlassLevel.index)
             put("showSystemApps", settings.showSystemApps)
             put("patchLogLevel", settings.patchLogLevel)
             put("bypassLevel", settings.signatureBypassLevel)
@@ -55,6 +56,12 @@ class ConfigBackup(private val context: Context) {
         if (json.has("bottomBarStyle")) {
             settingsStore.setBottomBarStyle(
                 json.optInt("bottomBarStyle", SettingsStore.BOTTOM_BAR_STANDARD),
+            )
+            applied++
+        }
+        if (json.has("liquidGlassLevel")) {
+            settingsStore.setLiquidGlassLevel(
+                LiquidGlassLevel.of(json.optInt("liquidGlassLevel", SettingsStore.LIQUID_GLASS_ENHANCED)),
             )
             applied++
         }
@@ -285,6 +292,13 @@ class ConfigBackup(private val context: Context) {
                 if (settings.has("bottomBarStyle")) {
                     settingsStore.setBottomBarStyle(
                         settings.optInt("bottomBarStyle", SettingsStore.BOTTOM_BAR_STANDARD),
+                    )
+                }
+                if (settings.has("liquidGlassLevel")) {
+                    settingsStore.setLiquidGlassLevel(
+                        LiquidGlassLevel.of(
+                            settings.optInt("liquidGlassLevel", SettingsStore.LIQUID_GLASS_ENHANCED),
+                        ),
                     )
                 }
                 HookCore.entries.getOrNull(settings.optInt("hookCore", 0))?.let {

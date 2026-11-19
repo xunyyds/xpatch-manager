@@ -29,6 +29,9 @@ import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.catalog.components.LiquidBottomTab
 import com.kyant.backdrop.catalog.components.LiquidBottomTabs
 import io.xpatch.ui.screens.Tab
+import io.xpatch.data.LiquidGlassLevel
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Icon as MiuixIcon
 import top.yukonga.miuix.kmp.basic.NavigationBar as MiuixNavigationBar
@@ -81,8 +84,14 @@ internal fun MiuixBottomBar(current: Tab, onSelect: (Tab) -> Unit) {
 }
 
 @Composable
-internal fun LiquidBar(current: Tab, backdrop: Backdrop, onSelect: (Tab) -> Unit) {
+internal fun LiquidBar(
+    current: Tab,
+    backdrop: Backdrop,
+    glassLevel: LiquidGlassLevel = LiquidGlassLevel.ENHANCED,
+    onSelect: (Tab) -> Unit
+) {
     val miuix = LocalMiuix.current
+    val lowPower = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
     val idle = if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
     else MaterialTheme.colorScheme.onSurfaceVariant
@@ -98,6 +107,8 @@ internal fun LiquidBar(current: Tab, backdrop: Backdrop, onSelect: (Tab) -> Unit
             backdrop = backdrop,
             tabsCount = Tab.entries.size,
             accentColor = primary,
+            glassLevel = glassLevel,
+            lowPower = lowPower,
             containerColor = if (LocalMiuix.current) {
                 MiuixTheme.colorScheme.surface
             } else {

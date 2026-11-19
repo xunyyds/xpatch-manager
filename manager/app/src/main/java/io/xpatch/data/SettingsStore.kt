@@ -19,6 +19,18 @@ enum class UiStyle(val index: Int, val label: String) {
     }
 }
 
+enum class LiquidGlassLevel(val index: Int, val label: String) {
+    STANDARD(0, "标准"),
+    ENHANCED(1, "增强"),
+    HIGH_TRANSPARENCY(2, "高透"),
+    ;
+
+    companion object {
+        fun of(index: Int): LiquidGlassLevel =
+            entries.firstOrNull { it.index == index } ?: ENHANCED
+    }
+}
+
 data class ManagerSettings(
     val themeMode: Int,
     val signatureBypassLevel: Int,
@@ -27,6 +39,7 @@ data class ManagerSettings(
     val injectSignature: Boolean,
     val fileProvider: Boolean = false,
     val bottomBarStyle: Int = SettingsStore.BOTTOM_BAR_STANDARD,
+    val liquidGlassLevel: LiquidGlassLevel = LiquidGlassLevel.ENHANCED,
     val uiStyle: UiStyle = UiStyle.MATERIAL3,
     val exportTreeUri: String = "",
     val exportTreeLabel: String = "",
@@ -60,6 +73,9 @@ class SettingsStore(context: Context) {
         injectSignature = prefs.getBoolean(KEY_INJECT_SIGNATURE, true),
         fileProvider = prefs.getBoolean(KEY_FILE_PROVIDER, false),
         bottomBarStyle = prefs.getInt(KEY_BOTTOM_BAR, SettingsStore.BOTTOM_BAR_STANDARD),
+        liquidGlassLevel = LiquidGlassLevel.of(
+            prefs.getInt(KEY_LIQUID_GLASS, SettingsStore.LIQUID_GLASS_ENHANCED),
+        ),
         uiStyle = UiStyle.of(prefs.getInt(KEY_UI_STYLE, UiStyle.MATERIAL3.index)),
         exportTreeUri = prefs.getString(KEY_EXPORT_TREE, "").orEmpty(),
         exportTreeLabel = prefs.getString(KEY_EXPORT_LABEL, "").orEmpty(),
@@ -98,6 +114,9 @@ class SettingsStore(context: Context) {
 
     fun setBottomBarStyle(style: Int) =
         prefs.edit().putInt(KEY_BOTTOM_BAR, style).apply()
+
+    fun setLiquidGlassLevel(level: LiquidGlassLevel) =
+        prefs.edit().putInt(KEY_LIQUID_GLASS, level.index).apply()
 
     fun setUiStyle(style: UiStyle) =
         prefs.edit().putInt(KEY_UI_STYLE, style.index).apply()
@@ -190,6 +209,7 @@ class SettingsStore(context: Context) {
         private const val KEY_INJECT_SIGNATURE = "inject_signature"
         private const val KEY_FILE_PROVIDER = "file_provider"
         private const val KEY_BOTTOM_BAR = "bottom_bar_style"
+        private const val KEY_LIQUID_GLASS = "liquid_glass_level"
         private const val KEY_UI_STYLE = "ui_style"
         private const val KEY_EXPORT_TREE = "export_tree_uri"
         private const val KEY_EXPORT_LABEL = "export_tree_label"
@@ -212,5 +232,8 @@ class SettingsStore(context: Context) {
         const val LOG_LEVEL_DEFAULT = PatchLog.LEVEL_NORMAL
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1
+        const val LIQUID_GLASS_STANDARD = 0
+        const val LIQUID_GLASS_ENHANCED = 1
+        const val LIQUID_GLASS_HIGH_TRANSPARENCY = 2
     }
 }

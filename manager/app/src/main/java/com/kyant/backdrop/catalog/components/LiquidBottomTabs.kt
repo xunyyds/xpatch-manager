@@ -32,6 +32,7 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.util.fastCoerceIn
@@ -51,9 +52,20 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
+import io.xpatch.data.LiquidGlassLevel
 import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sign
+
+@Composable
+private fun liquidBlurRadius(level: LiquidGlassLevel, lowPower: Boolean): Dp {
+    if (lowPower) return 0.dp
+    return when (level) {
+        LiquidGlassLevel.STANDARD -> 8.dp
+        LiquidGlassLevel.ENHANCED -> 4.dp
+        LiquidGlassLevel.HIGH_TRANSPARENCY -> 1.5.dp
+    }
+}
 
 @Composable
 fun LiquidBottomTabs(
@@ -64,6 +76,7 @@ fun LiquidBottomTabs(
     modifier: Modifier = Modifier,
     accentColor: Color = Color.Unspecified,
     containerColor: Color = Color.Unspecified,
+    glassLevel: LiquidGlassLevel = LiquidGlassLevel.ENHANCED,
     lowPower: Boolean = false,
     content: @Composable RowScope.() -> Unit
 ) {
@@ -74,7 +87,7 @@ fun LiquidBottomTabs(
         } else {
             accentColor
         }
-    val blurRadius = if (lowPower) 0.dp else 8.dp
+    val blurRadius = liquidBlurRadius(glassLevel, lowPower)
     val isTransparent = blurRadius <= 0.dp
     val baseContainer =
         if (containerColor.isUnspecified) {

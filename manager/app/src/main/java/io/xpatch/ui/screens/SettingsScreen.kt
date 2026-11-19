@@ -47,9 +47,11 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import io.xpatch.BuildConfig
 import io.xpatch.data.BackupArchive
+import io.xpatch.data.LiquidGlassLevel
 import io.xpatch.data.ManagerSettings
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.PermissionCenter
+import io.xpatch.data.SettingsStore
 import io.xpatch.data.UiStyle
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.PatchLog
@@ -84,6 +86,7 @@ internal fun SettingsScreen(
     onUiStyleChange: (UiStyle) -> Unit,
     onShowSystemChange: (Boolean) -> Unit,
     onBottomBarChange: (Int) -> Unit,
+    onLiquidGlassLevelChange: (LiquidGlassLevel) -> Unit,
     onLogLevelChange: (Int) -> Unit,
     onPickExportDir: () -> Unit,
     onClearExportDir: () -> Unit,
@@ -146,6 +149,14 @@ internal fun SettingsScreen(
                         settings.bottomBarStyle,
                         onBottomBarChange,
                     )
+                    if (settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID) {
+                        SettingChoiceRow(
+                            "液态底栏通透度",
+                            LiquidGlassLevel.entries.map { it.label },
+                            settings.liquidGlassLevel.index,
+                            { index -> onLiquidGlassLevelChange(LiquidGlassLevel.entries[index]) },
+                        )
+                    }
                 }
             }
             item {
@@ -262,6 +273,16 @@ internal fun SettingsScreen(
                         selectedIndex = settings.bottomBarStyle,
                         onSelect = onBottomBarChange,
                     )
+                    if (settings.bottomBarStyle == SettingsStore.BOTTOM_BAR_LIQUID) {
+                        MiuixSpinnerRow(
+                            title = "液态底栏通透度",
+                            options = LiquidGlassLevel.entries.map { it.label },
+                            selectedIndex = settings.liquidGlassLevel.index,
+                            onSelect = { index ->
+                                onLiquidGlassLevelChange(LiquidGlassLevel.entries[index])
+                            },
+                        )
+                    }
                 }
             }
             item {

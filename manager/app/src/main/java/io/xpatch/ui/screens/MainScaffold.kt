@@ -1310,7 +1310,11 @@ fun MainScaffold(
             if (nav.page is Page.Home) {
                 Box(Modifier.background(androidx.compose.ui.graphics.Color.Transparent)) {
                     when {
-                        liquidBottomBar -> LiquidBar(nav.tab, backdrop) { nav.select(it) }
+                        liquidBottomBar -> LiquidBar(
+                            current = nav.tab,
+                            backdrop = backdrop,
+                            glassLevel = settings.liquidGlassLevel,
+                        ) { nav.select(it) }
 
                         else -> StandardBottomBar(nav.tab) { nav.select(it) }
                     }
@@ -1567,6 +1571,10 @@ fun MainScaffold(
                         onBottomBarChange = {
                             settingsStore.setBottomBarStyle(it)
                             settings = settings.copy(bottomBarStyle = it)
+                        },
+                        onLiquidGlassLevelChange = {
+                            settingsStore.setLiquidGlassLevel(it)
+                            settings = settings.copy(liquidGlassLevel = it)
                         },
 
                         onPickExportDir = { exportDirLauncher.launch(null) },
