@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 
 class InteractiveHighlight(
     val animationScope: CoroutineScope,
+    val reducedMotion: Boolean = false,
     val position: (size: Size, offset: Offset) -> Offset = { _, offset -> offset }
 ) {
 
@@ -97,21 +98,42 @@ half4 main(float2 coord) {
             inspectDragGestures(
                 onDragStart = { down ->
                     startPosition = down.position
-                    animationScope.launch {
-                        launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
-                        launch { positionAnimation.snapTo(startPosition) }
+                    if (reducedMotion) {
+                        animationScope.launch {
+                            pressProgressAnimation.snapTo(1f)
+                            positionAnimation.snapTo(startPosition)
+                        }
+                    } else {
+                        animationScope.launch {
+                            launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
+                            launch { positionAnimation.snapTo(startPosition) }
+                        }
                     }
                 },
                 onDragEnd = {
-                    animationScope.launch {
-                        launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
-                        launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+                    if (reducedMotion) {
+                        animationScope.launch {
+                            pressProgressAnimation.snapTo(0f)
+                            positionAnimation.snapTo(startPosition)
+                        }
+                    } else {
+                        animationScope.launch {
+                            launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                            launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+                        }
                     }
                 },
                 onDragCancel = {
-                    animationScope.launch {
-                        launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
-                        launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+                    if (reducedMotion) {
+                        animationScope.launch {
+                            pressProgressAnimation.snapTo(0f)
+                            positionAnimation.snapTo(startPosition)
+                        }
+                    } else {
+                        animationScope.launch {
+                            launch { pressProgressAnimation.animateTo(0f, pressProgressAnimationSpec) }
+                            launch { positionAnimation.animateTo(startPosition, positionAnimationSpec) }
+                        }
                     }
                 }
             ) { change, _ ->

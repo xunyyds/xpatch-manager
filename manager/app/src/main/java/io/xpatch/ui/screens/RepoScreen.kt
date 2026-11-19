@@ -63,6 +63,8 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
@@ -277,6 +279,7 @@ internal fun RepoPageScreen(
     var scopePicker by remember { mutableStateOf(false) }
     var showDoneFlash by remember { mutableStateOf(false) }
 
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val flyProgress = remember { Animatable(1f) }
     val iconPulse = remember { Animatable(1f) }
     var flyStart by remember { mutableStateOf<Offset?>(null) }
@@ -295,10 +298,18 @@ internal fun RepoPageScreen(
         val start = flyStart ?: return@LaunchedEffect
         val end = downloadIconCenter ?: return@LaunchedEffect
         flyProgress.snapTo(0f)
-        flyProgress.animateTo(1f, tween(520, easing = FastOutSlowInEasing))
+        if (reduced) {
+            flyProgress.snapTo(1f)
+        } else {
+            flyProgress.animateTo(1f, tween(520, easing = FastOutSlowInEasing))
+        }
         flyStart = null
         iconPulse.snapTo(1.2f)
-        iconPulse.animateTo(1f, tween(200, easing = FastOutSlowInEasing))
+        if (reduced) {
+            iconPulse.snapTo(1f)
+        } else {
+            iconPulse.animateTo(1f, tween(200, easing = FastOutSlowInEasing))
+        }
     }
 
     val debouncedQuery by produceState(initialValue = query, query) {

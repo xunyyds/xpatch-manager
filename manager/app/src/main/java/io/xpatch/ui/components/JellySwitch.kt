@@ -26,6 +26,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 
 @Composable
 fun JellySwitch(
@@ -41,43 +43,56 @@ fun JellySwitch(
     val knob = trackHeight - margin * 2
     val travel = trackWidth - knob - margin * 2
 
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val knobX = remember { Animatable(if (checked) 1f else 0f) }
     val stretch = remember { Animatable(0f) }
     val trackColor = remember { Animatable(if (checked) 1f else 0f) }
     val settledCallback = rememberUpdatedState(onSettled)
     var animateOnSettle by remember { mutableStateOf(false) }
 
-    LaunchedEffect(checked) {
-        knobX.animateTo(
-            targetValue = if (checked) 1f else 0f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioMediumBouncy,
-                stiffness = Spring.StiffnessMediumLow,
-                visibilityThreshold = 0.001f,
-            ),
-        )
+    LaunchedEffect(checked, reduced) {
+        val target = if (checked) 1f else 0f
+        if (reduced) {
+            knobX.snapTo(target)
+        } else {
+            knobX.animateTo(
+                targetValue = target,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                    visibilityThreshold = 0.001f,
+                ),
+            )
+        }
     }
-    LaunchedEffect(checked) {
-        stretch.animateTo(
-            targetValue = 1f,
-            animationSpec = spring(stiffness = Spring.StiffnessHigh, dampingRatio = 1f),
-        )
-        stretch.animateTo(
-            targetValue = 0f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioLowBouncy,
-                stiffness = Spring.StiffnessMediumLow,
-            ),
-        )
+    LaunchedEffect(checked, reduced) {
+        if (!reduced) {
+            stretch.animateTo(
+                targetValue = 1f,
+                animationSpec = spring(stiffness = Spring.StiffnessHigh, dampingRatio = 1f),
+            )
+            stretch.animateTo(
+                targetValue = 0f,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow,
+                ),
+            )
+        }
     }
-    LaunchedEffect(checked) {
-        trackColor.animateTo(
-            targetValue = if (checked) 1f else 0f,
-            animationSpec = spring(
-                dampingRatio = Spring.DampingRatioNoBouncy,
-                stiffness = Spring.StiffnessMedium,
-            ),
-        )
+    LaunchedEffect(checked, reduced) {
+        val target = if (checked) 1f else 0f
+        if (reduced) {
+            trackColor.snapTo(target)
+        } else {
+            trackColor.animateTo(
+                targetValue = target,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioNoBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
+            )
+        }
         if (animateOnSettle) settledCallback.value?.invoke()
     }
 

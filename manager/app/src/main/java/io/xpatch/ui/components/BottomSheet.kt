@@ -41,6 +41,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -53,6 +55,7 @@ internal fun BottomSheet(
     content: @Composable () -> Unit,
 ) {
     val miuix = LocalMiuix.current
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val scope = rememberCoroutineScope()
     val offset = remember { Animatable(0f) }
     var sheetHeight by remember { mutableFloatStateOf(0f) }
@@ -63,10 +66,18 @@ internal fun BottomSheet(
         dragging = false
         scope.launch {
             if (offset.value > sheetHeight * SHEET_DISMISS_FRACTION) {
-                offset.animateTo(sheetHeight, tween(180, easing = FastOutSlowInEasing))
+                if (reduced) {
+                    offset.snapTo(sheetHeight)
+                } else {
+                    offset.animateTo(sheetHeight, tween(180, easing = FastOutSlowInEasing))
+                }
                 onDismiss()
             } else {
-                offset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow))
+                if (reduced) {
+                    offset.snapTo(0f)
+                } else {
+                    offset.animateTo(0f, spring(stiffness = Spring.StiffnessMediumLow))
+                }
             }
         }
     }
@@ -98,7 +109,11 @@ internal fun BottomSheet(
                             sheetHeight = height
                             scope.launch {
                                 offset.snapTo(height)
-                                offset.animateTo(0f, tween(150, easing = FastOutSlowInEasing))
+                                if (reduced) {
+                                    offset.snapTo(0f)
+                                } else {
+                                    offset.animateTo(0f, tween(150, easing = FastOutSlowInEasing))
+                                }
                                 entered = true
                             }
                         }

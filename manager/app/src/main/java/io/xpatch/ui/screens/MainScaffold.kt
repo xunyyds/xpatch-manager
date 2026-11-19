@@ -2,6 +2,7 @@ package io.xpatch.ui.screens
 
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
@@ -117,6 +118,8 @@ import io.xpatch.ui.components.StandardBottomBar
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.util.AdaptiveWidth
 import io.xpatch.ui.util.LocalPageKey
@@ -1331,13 +1334,18 @@ fun MainScaffold(
                 )
                 .then(if (liquidBottomBar) Modifier.layerBackdrop(backdrop) else Modifier),
         ) {
+            val reducedMotion = LocalAnimationQuality.current == AnimationQuality.REDUCED
             AnimatedContent(
                 targetState = nav.page,
                 transitionSpec = {
-                    (slideInHorizontally(animationSpec = tween(160)) { it / 6 } + fadeIn(tween(160)))
-                        .togetherWith(
-                            slideOutHorizontally(animationSpec = tween(120)) { -it / 6 } + fadeOut(tween(120)),
-                        )
+                    if (reducedMotion) {
+                        fadeIn(snap()) togetherWith fadeOut(snap())
+                    } else {
+                        (slideInHorizontally(animationSpec = tween(160)) { it / 6 } + fadeIn(tween(160)))
+                            .togetherWith(
+                                slideOutHorizontally(animationSpec = tween(120)) { -it / 6 } + fadeOut(tween(120)),
+                            )
+                    }
                 },
                 label = "pageNav",
             ) { current ->

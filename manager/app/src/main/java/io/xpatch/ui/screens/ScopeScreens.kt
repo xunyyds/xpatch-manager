@@ -2,6 +2,7 @@ package io.xpatch.ui.screens
 
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -52,6 +53,8 @@ import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SortMenu
 import io.xpatch.ui.components.SortOption
 import io.xpatch.ui.components.SearchField
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -506,9 +509,14 @@ private fun ScopeModuleRow(
     onSwitchSettled: () -> Unit = {},
     onToggle: (Boolean) -> Unit,
 ) {
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val highlightAlpha by animateFloatAsState(
         targetValue = if (highlight) 1f else 0f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow),
+        animationSpec = if (reduced) {
+            snap()
+        } else {
+            spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessLow)
+        },
         label = "highlight",
     )
     val accent = if (LocalMiuix.current) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary

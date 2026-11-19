@@ -137,6 +137,7 @@ fun XPatchTheme(
 
     val miuix = uiStyle == UiStyle.MIUIX
     val context = LocalContext.current
+    val animationQuality = rememberAnimationQuality()
     val colors = remember(context, dark, miuix) {
         when {
             miuix -> if (dark) MiuixDark else MiuixLight
@@ -161,44 +162,46 @@ fun XPatchTheme(
         }
     }
 
-    if (miuix) {
-        val miuixColors = remember(dark) {
-            if (dark) {
-                top.yukonga.miuix.kmp.theme.darkColorScheme(
-                    background = Color(0xFF1B1B1B),
-                    surface = Color(0xFF1B1B1B),
-                    surfaceContainer = Color(0xFF242424),
-                    surfaceContainerHigh = Color(0xFF2D2D2D),
-                    surfaceContainerHighest = Color(0xFF333333),
-                    onSurfaceVariantSummary = Color(0xFF949AB2),
-                )
-            } else {
-                top.yukonga.miuix.kmp.theme.lightColorScheme(
-                    background = Color(0xFFF2F3F5),
-                    surface = Color(0xFFF2F3F5),
-                    surfaceVariant = Color(0xFFFFFFFF),
-                    surfaceContainer = Color(0xFFFFFFFF),
-                    surfaceContainerHigh = Color(0xFFF2F3F5),
-                    surfaceContainerHighest = Color(0xFFE8E8E8),
-                    onSurfaceVariantSummary = Color(0xFF6B7290),
-                )
+    CompositionLocalProvider(LocalAnimationQuality provides animationQuality) {
+        if (miuix) {
+            val miuixColors = remember(dark) {
+                if (dark) {
+                    top.yukonga.miuix.kmp.theme.darkColorScheme(
+                        background = Color(0xFF1B1B1B),
+                        surface = Color(0xFF1B1B1B),
+                        surfaceContainer = Color(0xFF242424),
+                        surfaceContainerHigh = Color(0xFF2D2D2D),
+                        surfaceContainerHighest = Color(0xFF333333),
+                        onSurfaceVariantSummary = Color(0xFF949AB2),
+                    )
+                } else {
+                    top.yukonga.miuix.kmp.theme.lightColorScheme(
+                        background = Color(0xFFF2F3F5),
+                        surface = Color(0xFFF2F3F5),
+                        surfaceVariant = Color(0xFFFFFFFF),
+                        surfaceContainer = Color(0xFFFFFFFF),
+                        surfaceContainerHigh = Color(0xFFF2F3F5),
+                        surfaceContainerHighest = Color(0xFFE8E8E8),
+                        onSurfaceVariantSummary = Color(0xFF6B7290),
+                    )
+                }
             }
-        }
-        MiuixTheme(colors = miuixColors) {
-            CompositionLocalProvider(LocalMiuix provides true) {
+            MiuixTheme(colors = miuixColors) {
+                CompositionLocalProvider(LocalMiuix provides true) {
+                    MaterialTheme(
+                        colorScheme = colors,
+                        shapes = MiuixShapes,
+                        content = content,
+                    )
+                }
+            }
+        } else {
+            CompositionLocalProvider(LocalMiuix provides false) {
                 MaterialTheme(
                     colorScheme = colors,
-                    shapes = MiuixShapes,
                     content = content,
                 )
             }
-        }
-    } else {
-        CompositionLocalProvider(LocalMiuix provides false) {
-            MaterialTheme(
-                colorScheme = colors,
-                content = content,
-            )
         }
     }
 }

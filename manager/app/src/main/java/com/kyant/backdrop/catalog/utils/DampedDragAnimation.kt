@@ -23,6 +23,7 @@ class DampedDragAnimation(
     val visibilityThreshold: Float,
     val initialScale: Float,
     val pressedScale: Float,
+    val reducedMotion: Boolean = false,
     val onDragStarted: DampedDragAnimation.(position: Offset) -> Unit,
     val onDragStopped: DampedDragAnimation.() -> Unit,
     val onDrag: DampedDragAnimation.(size: IntSize, dragAmount: Offset) -> Unit,
@@ -83,6 +84,14 @@ class DampedDragAnimation(
 
     fun press() {
         velocityTracker.resetTracking()
+        if (reducedMotion) {
+            animationScope.launch {
+                pressProgressAnimation.snapTo(1f)
+                scaleXAnimation.snapTo(pressedScale)
+                scaleYAnimation.snapTo(pressedScale)
+            }
+            return
+        }
         animationScope.launch {
             launch { pressProgressAnimation.animateTo(1f, pressProgressAnimationSpec) }
             launch { scaleXAnimation.animateTo(pressedScale, scaleXAnimationSpec) }
@@ -91,6 +100,15 @@ class DampedDragAnimation(
     }
 
     fun release() {
+        if (reducedMotion) {
+            animationScope.launch {
+                pressProgressAnimation.snapTo(0f)
+                scaleXAnimation.snapTo(initialScale)
+                scaleYAnimation.snapTo(initialScale)
+                velocityAnimation.snapTo(0f)
+            }
+            return
+        }
         animationScope.launch {
             awaitFrame()
             if (value != targetValue) {
@@ -107,12 +125,27 @@ class DampedDragAnimation(
 
     fun updateValue(value: Float) {
         val targetValue = value.coerceIn(valueRange)
+        if (reducedMotion) {
+            val targetValue = value.coerceIn(valueRange)
+            animationScope.launch {
+                valueAnimation.snapTo(targetValue)
+            }
+            return
+        }
         animationScope.launch {
             launch { valueAnimation.animateTo(targetValue, valueAnimationSpec) { updateVelocity() } }
         }
     }
 
     fun animateToValue(value: Float) {
+        if (reducedMotion) {
+            val targetValue = value.coerceIn(valueRange)
+            animationScope.launch {
+                valueAnimation.snapTo(targetValue)
+                velocityAnimation.snapTo(0f)
+            }
+            return
+        }
         animationScope.launch {
             mutatorMutex.mutate {
                 press()
@@ -127,6 +160,7 @@ class DampedDragAnimation(
     }
 
     private fun updateVelocity() {
+        if (reducedMotion) return
         velocityTracker.addPosition(
             Clock.System.now().toEpochMilliseconds(),
             Offset(value, 0f)

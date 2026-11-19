@@ -55,6 +55,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.core.graphics.drawable.toBitmap
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
 import java.util.Collections
 import java.util.WeakHashMap
@@ -377,12 +379,13 @@ fun PulsingDots(
     spacing: Dp = 5.dp,
     color: Color = MaterialTheme.colorScheme.primary,
 ) {
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val transition = rememberInfiniteTransition(label = "dots")
-    val phase = transition.animateFloat(
+    val animatedPhase = transition.animateFloat(
         initialValue = 0f,
-        targetValue = 3f,
+        targetValue = if (reduced) 0f else 3f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1080, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = if (reduced) Int.MAX_VALUE else 1080, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "phase",
@@ -393,7 +396,7 @@ fun PulsingDots(
         val radius = dotSize.toPx() / 2f
         val step = (dotSize + spacing).toPx()
         val centerY = size.height / 2f
-        val current = phase.value
+        val current = animatedPhase.value
         repeat(3) { index ->
             val distance = ((current - index) % 3f + 3f) % 3f
             val lift = (1f - distance).coerceIn(0f, 1f)
@@ -414,12 +417,13 @@ fun ThinProgressBar(
     trackColor: Color = color.copy(alpha = 0.16f),
     height: Dp = 2.dp,
 ) {
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val transition = rememberInfiniteTransition(label = "bar")
     val head = transition.animateFloat(
         initialValue = 0f,
-        targetValue = 1f,
+        targetValue = if (reduced) 0f else 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 1400, easing = FastOutSlowInEasing),
+            animation = tween(durationMillis = if (reduced) Int.MAX_VALUE else 1400, easing = FastOutSlowInEasing),
             repeatMode = RepeatMode.Restart,
         ),
         label = "head",
@@ -477,12 +481,16 @@ fun Spinner(
     strokeWidth: Dp = 2.dp,
     durationMillis: Int = 850,
 ) {
+    val reduced = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val transition = rememberInfiniteTransition(label = "spinner")
     val angle = transition.animateFloat(
         initialValue = 0f,
-        targetValue = 360f,
+        targetValue = if (reduced) 0f else 360f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = durationMillis, easing = LinearEasing),
+            animation = tween(
+                durationMillis = if (reduced) Int.MAX_VALUE else durationMillis,
+                easing = LinearEasing,
+            ),
             repeatMode = RepeatMode.Restart,
         ),
         label = "angle",
