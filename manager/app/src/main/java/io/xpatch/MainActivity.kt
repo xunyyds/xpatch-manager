@@ -30,13 +30,26 @@ import io.xpatch.ui.theme.XPatchTheme
 class MainActivity : ComponentActivity() {
 
     private var storageGranted by mutableStateOf(true)
+    private var onlineTaskRequest by mutableIntStateOf(-1)
 
     private var scopeSyncThread: Thread? = null
+
+    private fun handleIntent(intent: Intent?) {
+        val taskId = intent?.getLongExtra(
+            io.xpatch.notify.AppNotifications.EXTRA_ONLINE_TASK,
+            -1L,
+        ) ?: -1L
+        if (taskId > 0L) {
+            onlineTaskRequest = taskId.toInt()
+            intent?.removeExtra(io.xpatch.notify.AppNotifications.EXTRA_ONLINE_TASK)
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         CrashRecorder.install(this)
         enableEdgeToEdge()
         super.onCreate(savedInstanceState)
+        handleIntent(intent)
         io.xpatch.notify.AppNotifications.ensureChannels(this)
         io.xpatch.data.RestartCenter.init(this)
         requestNotificationPermissionIfNeeded()
@@ -47,6 +60,8 @@ class MainActivity : ComponentActivity() {
             var uiStyle by remember { mutableStateOf(initialSettings.uiStyle) }
             XPatchTheme(themeMode = themeMode, uiStyle = uiStyle) {
                 MainScaffold(
+                    onlineTaskRequest = onlineTaskRequest,
+                    onOnlineTaskHandled = { onlineTaskRequest = -1 },
                     onThemeModeChange = { mode ->
                         settingsStore.setThemeMode(mode)
                         themeMode = mode
@@ -72,6 +87,12 @@ class MainActivity : ComponentActivity() {
         if (!granted) {
             requestPermissions(arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), 1001)
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
     }
 
     override fun onResume() {

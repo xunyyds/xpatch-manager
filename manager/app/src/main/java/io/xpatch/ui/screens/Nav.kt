@@ -45,6 +45,7 @@ internal sealed interface Page {
     ) : Page
     data object Repo : Page
     data object RepoDownloads : Page
+    data object OnlineDownloads : Page
     data class RepoDetail(val module: RepoStore.RepoModule) : Page
     data object PatchHistory : Page
     data object About : Page
@@ -149,6 +150,7 @@ internal fun navKeyOf(page: Page, tab: Tab): String = when (page) {
     is Page.PatchHistory -> "history"
     is Page.Repo -> "repo"
     is Page.RepoDownloads -> "repoDownloads"
+    is Page.OnlineDownloads -> "onlineDownloads"
     is Page.RepoDetail -> "repoDetail:" + page.module.packageName
     is Page.About -> "about"
     is Page.Disclaimer -> "disclaimer"

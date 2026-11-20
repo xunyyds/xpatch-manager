@@ -1,9 +1,12 @@
 package io.xpatch.ui.theme
 
+import androidx.compose.runtime.Composable
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 object Space {
+    val xxs: Dp = 2.dp
     val xs: Dp = 4.dp
     val s: Dp = 8.dp
     val m: Dp = 12.dp
@@ -29,11 +32,57 @@ object HitArea {
     val searchHeight: Dp = 48.dp
 }
 
+object IconSize {
+    val tiny: Dp = 14.dp
+    val small: Dp = 16.dp
+    val compact: Dp = 18.dp
+    val normal: Dp = 22.dp
+    val stroke: Dp = 2.dp
+}
+
 object Radius {
+    val chip: Dp = 6.dp
     val control: Dp = 12.dp
     val card: Dp = 16.dp
     val sheet: Dp = 24.dp
+    val dialog: Dp = 28.dp
 }
+
+object DialogMetrics {
+    const val WIDTH_FRACTION: Float = 0.92f
+    const val WIDTH_MAX: Int = 480
+    const val CONTENT_FRACTION: Float = 0.6f
+    const val MIUIX_FRACTION: Float = 0.5f
+    const val MIUIX_MIN: Int = 240
+    const val LIST_FRACTION: Float = 0.62f
+    const val LOADING_FRACTION: Float = 0.18f
+}
+
+@Composable
+fun rememberScreenHeightDp(): Int = LocalConfiguration.current.screenHeightDp
+
+@Composable
+fun rememberScreenWidthDp(): Int = LocalConfiguration.current.screenWidthDp
+
+@Composable
+fun adaptiveDialogWidth(): Dp {
+    val width = LocalConfiguration.current.screenWidthDp
+    return (width * DialogMetrics.WIDTH_FRACTION).toInt()
+        .coerceAtMost(DialogMetrics.WIDTH_MAX)
+        .dp
+}
+
+@Composable
+fun adaptiveDialogContentHeight(fraction: Float = DialogMetrics.CONTENT_FRACTION): Dp {
+    val height = LocalConfiguration.current.screenHeightDp
+    return (height * fraction).toInt().dp
+}
+
+@Composable
+fun adaptiveDialogListHeight(): Dp = adaptiveDialogContentHeight(DialogMetrics.LIST_FRACTION)
+
+@Composable
+fun adaptiveLoadingHeight(): Dp = adaptiveDialogContentHeight(DialogMetrics.LOADING_FRACTION)
 
 object Motion {
     const val quickMs: Int = 120

@@ -16,6 +16,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import androidx.compose.foundation.background
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -30,6 +31,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.ArrowBack
@@ -90,6 +92,7 @@ import io.xpatch.data.ExportStore
 import io.xpatch.data.ManagerRepository
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.ModuleUpdate
+import io.xpatch.data.OnlinePackageStore
 import io.xpatch.data.PatchExportRef
 import io.xpatch.data.PatchHistoryStore
 import io.xpatch.data.PatchRecord
@@ -119,6 +122,8 @@ import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.PagePad
+import io.xpatch.ui.theme.Space
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.util.AdaptiveWidth
@@ -145,6 +150,8 @@ import kotlinx.coroutines.withContext
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScaffold(
+    onlineTaskRequest: Int = -1,
+    onOnlineTaskHandled: () -> Unit = {},
     onThemeModeChange: (Int) -> Unit = {},
     onUiStyleChange: (io.xpatch.data.UiStyle) -> Unit = {},
 ) {
@@ -281,6 +288,24 @@ fun MainScaffold(
     var repoDownloadDoneTick by remember { mutableIntStateOf(0) }
     var repoDownloadTaskId by remember { mutableStateOf<Long?>(null) }
     var repoError by remember { mutableStateOf<String?>(null) }
+    val onlineStore = remember { OnlinePackageStore(context) }
+    var onlineApp by remember { mutableStateOf<OnlinePackageStore.OnlineApp?>(null) }
+    var onlineVersions by remember { mutableStateOf<List<OnlinePackageStore.OnlineVersion>>(emptyList()) }
+    var onlinePrompt by remember { mutableStateOf<OnlinePrompt?>(null) }
+    var onlineProgress by remember { mutableStateOf<OnlineProgress?>(null) }
+    var onlineCapsule by remember { mutableStateOf(OnlineCapsuleState.HIDDEN) }
+    var onlineOnlyDownload by remember { mutableStateOf(false) }
+    var onlineFailedUrl by remember { mutableStateOf<String?>(null) }
+    var onlineFailedDetailUrl by remember { mutableStateOf("") }
+    var onlineNotice by remember { mutableStateOf<Triple<String, String, String>?>(null) }
+    var onlineTargetPending by remember { mutableStateOf<PatchTarget?>(null) }
+    var onlineUseOnlyDownload by remember { mutableStateOf(false) }
+    var onlineDownloadTick by remember { mutableIntStateOf(0) }
+    var historyTab by remember { mutableIntStateOf(0) }
+    val onlineVersionsById = remember { java.util.concurrent.ConcurrentHashMap<Long, Pair<OnlinePackageStore.OnlineApp, OnlinePackageStore.OnlineVersion>>() }
+    val onlineEntries by produceState(initialValue = emptyList<OnlinePackageStore.OnlineEntry>(), onlineDownloadTick) {
+        value = withContext(Dispatchers.IO) { onlineStore.downloads() }
+    }
     var token by remember { mutableIntStateOf(0) }
     var exportTarget by remember { mutableStateOf<ExportStore.Target?>(null) }
     var exportChecked by remember { mutableStateOf(false) }
@@ -1016,8 +1041,9 @@ fun MainScaffold(
         is Page.ModuleDetail -> current.module.label
         is Page.Repo -> "模块仓库"
         is Page.RepoDownloads -> "下载管理"
+        is Page.OnlineDownloads -> "下载管理"
         is Page.RepoDetail -> current.module.name
-        is Page.PatchHistory -> "打包历史"
+        is Page.PatchHistory -> if (historyTab == 1) "原包" else "打包历史"
         is Page.About -> "关于"
         is Page.Disclaimer -> "免责声明"
         is Page.Acknowledgements -> AcknowledgementsData.TITLE
@@ -1034,6 +1060,27 @@ fun MainScaffold(
 
     val showToast: (String) -> Unit = { message ->
         android.widget.Toast.makeText(context, message, android.widget.Toast.LENGTH_SHORT).show()
+    }
+
+    val applyOnlineTarget: (PatchTarget, java.io.File) -> Unit = apply@{ target, file ->
+        onlineCapsule = OnlineCapsuleState.DONE
+        val label = when (target) {
+            is PatchTarget.Installed -> target.app.label
+            is PatchTarget.FromFile -> target.label
+        }
+        val fromFile = PatchTarget.FromFile(
+            file = file,
+            label = label,
+            packageName = patchPackageName(target).takeIf { it.isNotBlank() },
+            versionName = patchVersionName(target),
+            versionCode = patchVersionCode(target),
+            icon = when (target) {
+                is PatchTarget.Installed -> target.app.icon
+                is PatchTarget.FromFile -> target.icon
+            },
+        )
+        nav.navigate(Page.Config(fromFile))
+        showToast("已用在线原包替换，确认后开始打包")
     }
 
     val fallbackModuleInstall: (String, java.io.File, String) -> Unit = { name, file, pkg ->
@@ -1159,6 +1206,28 @@ fun MainScaffold(
         if (percent != repoDownloadProgress) repoDownloadProgress = percent
     }
 
+    LaunchedEffect(onlineTaskRequest) {
+        if (onlineTaskRequest > 0) {
+            val id = onlineTaskRequest.toLong()
+            val task = DownloadCenter.taskOf(id)
+            if (task != null) {
+                DownloadCenter.requestOpenDialog(id)
+            }
+            onOnlineTaskHandled()
+        }
+    }
+    LaunchedEffect(Unit) {
+        DownloadCenter.openDialog.collect { id ->
+            val task = DownloadCenter.taskOf(id)
+            if (task != null && task.kind == DownloadCenter.Kind.ONLINE) {
+                val saved = onlineVersionsById[id] ?: DownloadCenter.onlineTaskOf(id)
+                if (saved != null) {
+                    onlineProgress = OnlineProgress(saved.first, saved.second, id)
+                }
+            }
+        }
+    }
+
     val downloadTasks by DownloadCenter.tasks.collectAsState()
     LaunchedEffect(downloadTasks, repoDownloadTaskId) {
         val id = repoDownloadTaskId ?: return@LaunchedEffect
@@ -1184,6 +1253,148 @@ fun MainScaffold(
                     repoDownloadTaskId = null
                     eventLog.add(event.message)
                 }
+
+                is DownloadCenter.Event.OnlineReady -> {
+                    onlineCapsule = OnlineCapsuleState.DONE
+                    onlineDownloadTick++
+                    eventLog.add("已下载原包 " + event.version.packageName + " v" + event.version.version)
+                    if (!onlineUseOnlyDownload) {
+                        onlineTargetPending?.let { target ->
+                            onlineTargetPending = null
+                            applyOnlineTarget(target, event.file)
+                        }
+                    } else {
+                        onlineUseOnlyDownload = false
+                        showToast("原包已保存到下载管理")
+                    }
+                    logs = eventLog.entries()
+                }
+
+                is DownloadCenter.Event.OnlineFailed -> {
+                    onlineCapsule = OnlineCapsuleState.HIDDEN
+                    eventLog.add("原包下载失败 " + event.version.packageName + " v" + event.version.version)
+                    logs = eventLog.entries()
+                }
+            }
+        }
+    }
+
+    fun currentVersionOf(target: PatchTarget?): String = when (target) {
+        is PatchTarget.Installed -> target.app.versionName.orEmpty()
+        is PatchTarget.FromFile -> target.versionName.orEmpty()
+        else -> ""
+    }
+
+    fun buildOnlinePrompt(
+        app: OnlinePackageStore.OnlineApp,
+        versions: List<OnlinePackageStore.OnlineVersion>,
+        target: PatchTarget? = null,
+        loading: Boolean = false,
+        error: String? = null,
+    ): OnlinePrompt {
+        val latest = versions.firstOrNull()?.version.orEmpty()
+        return OnlinePrompt(app, versions, loading, error, currentVersionOf(target), latest)
+    }
+
+    fun showOnlineNotice(title: String, message: String, rawError: String) {
+        onlineNotice = Triple(title, message, rawError)
+    }
+
+    fun resolveOnline(target: PatchTarget, showPrompt: Boolean, reportFailure: Boolean = false) {
+        val pkg = patchPackageName(target)
+        if (pkg.isBlank() || !pkg.contains('.')) return
+        scope.launch {
+            val resolveResult = runCatching { onlineStore.resolve(pkg) }
+            val app = resolveResult.getOrNull()
+            if (app == null) {
+                onlineCapsule = OnlineCapsuleState.HIDDEN
+                if (reportFailure) {
+                    val error = resolveResult.exceptionOrNull()
+                    if (error != null) {
+                        showOnlineNotice("查询在线版本失败", "无法从豌豆荚查询该包名，请检查网络后重试。", error.toString())
+                    } else {
+                        showOnlineNotice("未找到在线版本", "豌豆荚没有收录「" + pkg + "」，无法使用在线版本打包。", "未找到匹配的应用或历史版本")
+                    }
+                }
+                return@launch
+            }
+            val historyResult = runCatching { onlineStore.history(app) }
+            val versions = historyResult.getOrNull().orEmpty()
+            if (versions.isEmpty()) {
+                onlineCapsule = OnlineCapsuleState.HIDDEN
+                if (reportFailure) {
+                    val error = historyResult.exceptionOrNull()
+                    if (error != null) {
+                        showOnlineNotice("获取历史版本失败", "已找到「" + app.name + "」，但读取历史版本失败。", error.toString())
+                    } else {
+                        showOnlineNotice("没有可用历史版本", "豌豆荚上「" + app.name + "」暂时没有可下载的历史版本。", "历史版本列表为空")
+                    }
+                }
+                return@launch
+            }
+            onlineApp = app
+            onlineVersions = versions
+            onlineCapsule = OnlineCapsuleState.FOUND
+            if (showPrompt) {
+                onlinePrompt = buildOnlinePrompt(app, versions, target = target)
+            }
+        }
+    }
+
+    val openOriginal: (OnlinePackageStore.OnlineEntry) -> Unit = open@{ entry ->
+        val target = PatchTarget.FromFile(
+            file = java.io.File(entry.path),
+            label = entry.name,
+            packageName = entry.packageName,
+            versionName = entry.version,
+            versionCode = entry.size,
+        )
+        onlineApp = OnlinePackageStore.OnlineApp(entry.packageName, "", entry.name)
+        onlineTargetPending = target
+        onlineCapsule = OnlineCapsuleState.DONE
+        onlinePrompt = buildOnlinePrompt(onlineApp!!, emptyList(), target = target, loading = true)
+        scope.launch {
+            val app = runCatching { onlineStore.resolve(entry.packageName) }.getOrNull()
+            if (app != null) {
+                onlineApp = app
+                val list = runCatching { onlineStore.history(app) }
+                onlinePrompt = list.fold(
+                    onSuccess = { buildOnlinePrompt(app, it, target = target) },
+                    onFailure = { buildOnlinePrompt(app, emptyList(), target = target, error = it.message ?: "获取失败") },
+                )
+            } else {
+                onlinePrompt = null
+                showToast("已打开本地原包")
+                nav.navigate(Page.Config(target))
+            }
+        }
+    }
+
+    val useOnlineVersion: (OnlinePackageStore.OnlineVersion, Boolean) -> Unit = use@{ version, onlyDownload ->
+        val app = onlineApp ?: return@use
+        onlineUseOnlyDownload = onlyDownload
+        onlinePrompt = null
+        val cached = onlineStore.cachedApk(app.packageName, version.versionCode)
+        if (cached != null) {
+            onlineDownloadTick++
+            if (onlyDownload) {
+                showToast("该版本已在下载管理中")
+            } else {
+                val target = onlineTargetPending
+                onlineTargetPending = null
+                if (target != null) applyOnlineTarget(target, cached)
+            }
+            return@use
+        }
+        onlineCapsule = OnlineCapsuleState.DOWNLOADING
+        onlineProgress = OnlineProgress(app, version, -1L)
+        scope.launch {
+            val resolved = runCatching { onlineStore.detail(app, version) }.getOrDefault(version)
+            val wasHidden = onlineProgress == null
+            val id = DownloadCenter.startOnline(context, onlineStore, app, resolved)
+            onlineVersionsById[id] = Pair(app, resolved)
+            if (!wasHidden) {
+                onlineProgress = OnlineProgress(app, resolved, id)
             }
         }
     }
@@ -1193,6 +1404,22 @@ fun MainScaffold(
         it.kind == DownloadCenter.Kind.MODULE && it.failed == null && !it.done
     }
     val moduleDownloadPercent = moduleDownloadTask?.percent
+
+    val configTarget = nav.page as? Page.Config
+    val configPackage = configTarget?.let { patchPackageName(it.target) }.orEmpty()
+    LaunchedEffect(configPackage) {
+        if (configPackage.isNotBlank() && configPackage.contains('.')) {
+            if (onlineApp?.packageName != configPackage) {
+                onlineApp = null
+                onlinePrompt = null
+                onlineCapsule = OnlineCapsuleState.HIDDEN
+                onlineTargetPending = configTarget?.target
+                resolveOnline(configTarget!!.target, showPrompt = false)
+            }
+        } else {
+            onlineCapsule = OnlineCapsuleState.HIDDEN
+        }
+    }
 
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
@@ -1670,6 +1897,18 @@ fun MainScaffold(
                     },
                 )
 
+                is Page.OnlineDownloads -> OriginalsPanel(
+                    entries = onlineEntries,
+                    totalSize = onlineStore.cacheSize(),
+                    onOpen = { entry -> openOriginal(entry) },
+                    onDelete = { entry ->
+                        val ok = runCatching { onlineStore.removeDownload(entry.key) }.getOrDefault(false)
+                        eventLog.add(if (ok) "已删除原包 " + entry.name + " v" + entry.version else "删除失败")
+                        onlineDownloadTick++
+                        logs = eventLog.entries()
+                    },
+                )
+
                 is Page.RepoDetail -> {
                     var detailReadme by remember(current.module.packageName) { mutableStateOf<String?>(null) }
                     var detailVersions by remember(current.module.packageName) {
@@ -1851,6 +2090,41 @@ fun MainScaffold(
                         defaultSignatureId = profile.id
                         token++
                     },
+                    onlineCapsule = onlineCapsule,
+                    onlineCapsulePercent = onlineProgress?.let { downloadTasks[it.taskId]?.percent },
+                    onOnlineCapsuleClick = {
+                        when (onlineCapsule) {
+                            OnlineCapsuleState.FOUND -> {
+                                onlineTargetPending = current.target
+                                val app = onlineApp
+                                if (app != null) {
+                                    if (onlineVersions.isEmpty()) {
+                                        onlinePrompt = buildOnlinePrompt(app, emptyList(), target = current.target)
+                                        scope.launch {
+                                            val list = runCatching { onlineStore.history(app) }.getOrDefault(emptyList())
+                                            onlineVersions = list
+                                            onlinePrompt = buildOnlinePrompt(app, list, target = current.target)
+                                        }
+                                    } else {
+                                        onlinePrompt = buildOnlinePrompt(app, onlineVersions, target = current.target)
+                                    }
+                                }
+                            }
+
+                            OnlineCapsuleState.DOWNLOADING -> {
+                                onlineProgress?.let { DownloadCenter.requestOpenDialog(it.taskId) }
+                            }
+
+                            OnlineCapsuleState.DONE -> {
+                                onlineTargetPending?.let { target ->
+                                    val entry = onlineStore.findAny(patchPackageName(target))
+                                    if (entry != null) applyOnlineTarget(target, java.io.File(entry.path))
+                                } ?: run { nav.navigate(Page.OnlineDownloads) }
+                            }
+
+                            else -> Unit
+                        }
+                    },
                 )
 
                 is Page.PatchHistory -> PatchHistoryScreen(
@@ -1935,6 +2209,22 @@ fun MainScaffold(
                         }
                     },
                     onOpenSettings = { nav.select(Tab.Settings) },
+                    tabIndex = historyTab,
+                    onTabChange = { historyTab = it },
+                    originalsBadge = onlineEntries.size,
+                    originalsContent = {
+                        OriginalsPanel(
+                            entries = onlineEntries,
+                            totalSize = onlineStore.cacheSize(),
+                            onOpen = { entry -> openOriginal(entry) },
+                            onDelete = { entry ->
+                                val ok = runCatching { onlineStore.removeDownload(entry.key) }.getOrDefault(false)
+                                eventLog.add(if (ok) "已删除原包 " + entry.name + " v" + entry.version else "删除失败")
+                                onlineDownloadTick++
+                                logs = eventLog.entries()
+                            },
+                        )
+                    },
                 )
 
                 is Page.Signatures -> SignaturesScreen(
@@ -2143,6 +2433,86 @@ fun MainScaffold(
         }
     }
 
+    onlineNotice?.let { notice ->
+        OnlineNoticeDialog(
+            title = notice.first,
+            message = notice.second,
+            rawError = notice.third,
+            onDismiss = { onlineNotice = null },
+            onRetry = {
+                onlineNotice = null
+                val target = configTarget?.target ?: onlineTargetPending
+                if (target != null) resolveOnline(target, showPrompt = true, reportFailure = true)
+            },
+        )
+    }
+    onlinePrompt?.let { prompt ->
+        OnlinePromptDialog(
+            prompt = prompt,
+            cached = onlineEntries,
+            onRetry = {
+                val app = prompt.app
+                if (app.appId.isNotBlank()) {
+                    onlinePrompt = buildOnlinePrompt(app, emptyList(), target = configTarget?.target, loading = true)
+                    scope.launch {
+                        val list = runCatching { onlineStore.history(app) }
+                        onlinePrompt = list.fold(
+                            onSuccess = { buildOnlinePrompt(app, it, target = configTarget?.target) },
+                            onFailure = { buildOnlinePrompt(app, emptyList(), target = configTarget?.target, error = it.message ?: "获取失败") },
+                        )
+                    }
+                } else {
+                    configTarget?.target?.let { resolveOnline(it, showPrompt = true) }
+                }
+            },
+            onDismiss = { onlinePrompt = null },
+            onUse = { version, onlyDownload -> useOnlineVersion(version, onlyDownload) },
+        )
+    }
+    onlineProgress?.let { progress ->
+        OnlineProgressDialog(
+            progress = progress,
+            task = downloadTasks[progress.taskId],
+            onHide = { onlineProgress = null },
+            onCancel = {
+                DownloadCenter.cancel(progress.taskId)
+                onlineProgress = null
+            },
+            onRetry = {
+                val saved = onlineVersionsById[progress.taskId]
+                if (saved != null) {
+                    val id = DownloadCenter.startOnline(context, onlineStore, saved.first, saved.second)
+                    onlineVersionsById[id] = saved
+                    onlineProgress = OnlineProgress(saved.first, saved.second, id)
+                } else {
+                    onlineProgress = null
+                }
+            },
+            onFailedLink = { url ->
+                onlineFailedUrl = url
+                onlineFailedDetailUrl = progress.version.detailUrl
+            },
+            onDone = {
+                onlineProgress = null
+                val version = onlineVersionsById[progress.taskId]?.second
+                if (version != null && !onlineUseOnlyDownload) {
+                    onlineTargetPending?.let { target ->
+                        onlineStore.cachedApk(version.packageName, version.versionCode)?.let { file ->
+                            onlineTargetPending = null
+                            applyOnlineTarget(target, file)
+                        }
+                    }
+                }
+            },
+        )
+    }
+    onlineFailedUrl?.let { url ->
+        OnlineFailedLinkDialog(
+            url = url,
+            detailUrl = onlineFailedDetailUrl,
+            onDismiss = { onlineFailedUrl = null },
+        )
+    }
     startupUpdate?.let { release ->
         XPatchDialog(
             miuix = miuix,

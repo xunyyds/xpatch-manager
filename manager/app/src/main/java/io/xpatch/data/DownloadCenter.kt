@@ -1,6 +1,7 @@
 package io.xpatch.data
 
 import android.content.Context
+import org.json.JSONObject
 import io.xpatch.notify.AppNotifications
 import io.xpatch.patch.InstallHelper
 import kotlinx.coroutines.CoroutineScope
@@ -17,7 +18,7 @@ import java.util.concurrent.atomic.AtomicLong
 
 object DownloadCenter {
 
-    enum class Kind { UPDATE, MODULE }
+    enum class Kind { UPDATE, MODULE, ONLINE }
 
     data class Task(
         val id: Long,
@@ -33,6 +34,8 @@ object DownloadCenter {
     sealed interface Event {
         data class ModuleReady(val module: RepoStore.RepoModule, val file: File) : Event
         data class Failed(val module: RepoStore.RepoModule?, val message: String) : Event
+        data class OnlineReady(val packageName: String, val version: OnlinePackageStore.OnlineVersion, val file: File) : Event
+        data class OnlineFailed(val packageName: String, val version: OnlinePackageStore.OnlineVersion, val message: String) : Event
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
@@ -40,6 +43,8 @@ object DownloadCenter {
     val tasks: StateFlow<Map<Long, Task>> = _tasks
     private val _events = MutableSharedFlow<Event>(extraBufferCapacity = 16)
     val events: SharedFlow<Event> = _events
+    private val _openDialog = MutableSharedFlow<Long>(extraBufferCapacity = 8)
+    val openDialog: SharedFlow<Long> = _openDialog
 
     private val controls = ConcurrentHashMap<Long, DownloadControl>()
     private val lastNotifyAt = ConcurrentHashMap<Long, Long>()
@@ -113,6 +118,42 @@ object DownloadCenter {
         return id
     }
 
+    fun startOnline(
+        context: Context,
+        store: OnlinePackageStore,
+        app: OnlinePackageStore.OnlineApp,
+        version: OnlinePackageStore.OnlineVersion,
+    ): Long {
+        val ctx = context.applicationContext
+        appContext = ctx
+        AppNotifications.ensureChannels(ctx)
+        val id = nextId.getAndIncrement()
+        val control = DownloadControl()
+        controls[id] = control
+        val label = app.name + " v" + version.version
+        putTask(Task(id, Kind.ONLINE, "正在下载原包 " + label))
+        saveOnlineTask(app, version, id)
+        scope.launch {
+            val file = runCatching {
+                store.download(app, version, control) { percent, speed ->
+                    onProgress(id, percent, speed)
+                }
+            }.getOrNull()
+            controls.remove(id)
+            if (file != null) {
+                finishTask(id, done = true)
+                _events.emit(Event.OnlineReady(app.packageName, version, file))
+            } else if (control.cancelled) {
+                updateTask(id) { it.copy(failed = "已取消") }
+                _events.emit(Event.OnlineFailed(app.packageName, version, "已取消"))
+            } else {
+                failTask(id, "下载失败，请检查网络后重试")
+                _events.emit(Event.OnlineFailed(app.packageName, version, "下载失败"))
+            }
+        }
+        return id
+    }
+
     fun pause(id: Long) {
         val control = controls[id] ?: return
         control.paused = true
@@ -138,6 +179,58 @@ object DownloadCenter {
 
     fun taskOf(id: Long): Task? = _tasks.value[id]
 
+    fun requestOpenDialog(id: Long) {
+        if (_tasks.value[id] == null) return
+        _openDialog.tryEmit(id)
+    }
+
+    fun saveOnlineTask(app: OnlinePackageStore.OnlineApp, version: OnlinePackageStore.OnlineVersion, id: Long) {
+        val ctx = appContext ?: return
+        val key = "online_task_" + id
+        val json = JSONObject().apply {
+            put("pkg", app.packageName)
+            put("appId", app.appId)
+            put("name", app.name)
+            put("version", version.version)
+            put("code", version.versionCode)
+            put("sizeText", version.sizeText)
+            put("sizeBytes", version.sizeBytes)
+            put("releaseText", version.releaseText)
+            put("detailUrl", version.detailUrl)
+            put("downloadUrl", version.downloadUrl)
+            put("summary", version.summary)
+        }
+        ctx.getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
+            .edit().putString(key, json.toString()).apply()
+    }
+
+    fun onlineTaskOf(id: Long): Pair<OnlinePackageStore.OnlineApp, OnlinePackageStore.OnlineVersion>? {
+        val ctx = appContext ?: return null
+        val raw = ctx.getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
+            .getString("online_task_" + id, null) ?: return null
+        val json = runCatching { JSONObject(raw) }.getOrNull() ?: return null
+        val app = OnlinePackageStore.OnlineApp(
+            packageName = json.optString("pkg"),
+            appId = json.optString("appId"),
+            name = json.optString("name"),
+        )
+        val version = OnlinePackageStore.OnlineVersion(
+            packageName = json.optString("pkg"),
+            appId = json.optString("appId"),
+            version = json.optString("version"),
+            versionCode = json.optString("code"),
+            sizeText = json.optString("sizeText"),
+            sizeBytes = json.optLong("sizeBytes"),
+            releaseTime = 0L,
+            releaseText = json.optString("releaseText"),
+            summary = json.optString("summary"),
+            detailUrl = json.optString("detailUrl"),
+            downloadUrl = json.optString("downloadUrl"),
+            md5 = "",
+        )
+        return Pair(app, version)
+    }
+
     private fun onProgress(id: Long, percent: Int, speed: Long) {
         val task = _tasks.value[id] ?: return
         if (task.paused) return
@@ -161,19 +254,34 @@ object DownloadCenter {
             task.speed > 0 -> percent.toString() + "% · " + readableSpeed(task.speed)
             else -> percent.toString() + "%"
         }
-        AppNotifications.post(
-            app,
-            AppNotifications.downloadId(id),
-            AppNotifications.download(
-                context = app,
-                taskId = id,
-                title = task.title,
-                text = text ?: "",
-                percent = percent,
-                paused = task.paused,
-                indeterminate = task.percent <= 0 && !task.paused,
-            ),
-        )
+        if (task.kind == Kind.ONLINE) {
+            AppNotifications.post(
+                app,
+                AppNotifications.downloadId(id),
+                AppNotifications.onlineDownload(
+                    context = app,
+                    taskId = id,
+                    title = task.title,
+                    text = text,
+                    percent = percent,
+                    indeterminate = task.percent <= 0,
+                ),
+            )
+        } else {
+            AppNotifications.post(
+                app,
+                AppNotifications.downloadId(id),
+                AppNotifications.download(
+                    context = app,
+                    taskId = id,
+                    title = task.title,
+                    text = text ?: "",
+                    percent = percent,
+                    paused = task.paused,
+                    indeterminate = task.percent <= 0 && !task.paused,
+                ),
+            )
+        }
     }
 
     private fun putTask(task: Task) {
@@ -187,12 +295,31 @@ object DownloadCenter {
 
     private fun finishTask(id: Long, done: Boolean) {
         updateTask(id) { it.copy(done = done, percent = if (done) 100 else it.percent, speed = 0L) }
+        val app = appContext
+        val task = _tasks.value[id]
+        if (done && app != null && task?.kind == Kind.ONLINE) {
+            AppNotifications.post(
+                app,
+                AppNotifications.downloadId(id),
+                AppNotifications.onlineReady(app, id, task.title),
+            )
+        }
     }
 
     private fun failTask(id: Long, message: String) {
         updateTask(id) { it.copy(failed = message, paused = false) }
         val app = appContext
-        if (app != null) AppNotifications.cancel(app, AppNotifications.downloadId(id))
+        val task = _tasks.value[id]
+        if (app == null || message == "已取消") return
+        if (task?.kind == Kind.ONLINE) {
+            AppNotifications.post(
+                app,
+                AppNotifications.downloadId(id),
+                AppNotifications.onlineFailed(app, id, task.title, message),
+            )
+        } else {
+            AppNotifications.cancel(app, AppNotifications.downloadId(id))
+        }
     }
 
     private fun readableSpeed(bytesPerSecond: Long): String {

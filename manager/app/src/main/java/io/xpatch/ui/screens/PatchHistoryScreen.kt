@@ -39,6 +39,8 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import io.xpatch.ui.components.SegmentedControl
+import io.xpatch.ui.theme.PagePad
 import io.xpatch.data.PatchExportRef
 import io.xpatch.data.PatchRecord
 import io.xpatch.ui.components.DialogAction
@@ -57,6 +59,65 @@ import top.yukonga.miuix.kmp.theme.MiuixTheme
 
 @Composable
 internal fun PatchHistoryScreen(
+    records: List<PatchRecord>,
+    totalSize: Long,
+    limit: Int,
+    refreshing: Boolean,
+    deletePromptRequired: Boolean,
+    defaultDeleteArtifact: Boolean,
+    onRefresh: () -> Unit,
+    onInstall: (PatchRecord) -> Unit,
+    onShare: (PatchRecord) -> Unit,
+    onExport: (PatchRecord) -> Unit,
+    onDeleteExport: (PatchRecord, PatchExportRef) -> Unit,
+    onDelete: (PatchRecord, Boolean, Boolean) -> Unit,
+    onClearMissing: () -> Unit,
+    onOpenSettings: () -> Unit,
+    tabIndex: Int = 0,
+    onTabChange: (Int) -> Unit = {},
+    originalsBadge: Int = 0,
+    originalsContent: (@Composable () -> Unit)? = null,
+) {
+    val tabs = buildList {
+        add("打包历史")
+        if (originalsContent != null) add("原包" + if (originalsBadge > 0) " " + originalsBadge else "")
+    }
+    Column(Modifier.fillMaxSize()) {
+        if (originalsContent != null) {
+            SegmentedControl(
+                options = tabs,
+                selectedIndex = tabIndex,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = PagePad.horizontal, vertical = Space.s),
+                onSelect = onTabChange,
+            )
+        }
+        if (tabIndex == 1 && originalsContent != null) {
+            originalsContent()
+        } else {
+            PatchHistoryPanel(
+                records = records,
+                totalSize = totalSize,
+                limit = limit,
+                refreshing = refreshing,
+                deletePromptRequired = deletePromptRequired,
+                defaultDeleteArtifact = defaultDeleteArtifact,
+                onRefresh = onRefresh,
+                onInstall = onInstall,
+                onShare = onShare,
+                onExport = onExport,
+                onDeleteExport = onDeleteExport,
+                onDelete = onDelete,
+                onClearMissing = onClearMissing,
+                onOpenSettings = onOpenSettings,
+            )
+        }
+    }
+}
+
+@Composable
+private fun PatchHistoryPanel(
     records: List<PatchRecord>,
     totalSize: Long,
     limit: Int,

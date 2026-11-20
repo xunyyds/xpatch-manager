@@ -29,6 +29,7 @@ object AppNotifications {
     const val EXTRA_PACKAGE = "package_name"
     const val EXTRA_LABEL = "label"
     const val EXTRA_REASON = "reason"
+    const val EXTRA_ONLINE_TASK = "online_task"
 
     object NotificationIds {
         const val RESTART_BASE = 2001
@@ -120,6 +121,47 @@ object AppNotifications {
         }
         builder.addAction(0, "取消", taskAction(context, ACTION_DOWNLOAD_CANCEL, taskId))
         return builder.build()
+    }
+
+    fun onlineDownload(
+        context: Context,
+        taskId: Long,
+        title: String,
+        text: String,
+        percent: Int,
+        indeterminate: Boolean,
+    ): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_DOWNLOAD)
+            .setSmallIcon(android.R.drawable.stat_sys_download)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setOnlyAlertOnce(true)
+            .setOngoing(true)
+            .setAutoCancel(false)
+            .setContentIntent(openOnlineTaskIntent(context, taskId))
+            .setProgress(100, percent.coerceIn(0, 100), indeterminate)
+            .addAction(0, "取消", taskAction(context, ACTION_DOWNLOAD_CANCEL, taskId))
+            .build()
+    }
+
+    fun onlineFailed(context: Context, taskId: Long, title: String, text: String): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_DOWNLOAD)
+            .setSmallIcon(android.R.drawable.stat_notify_error)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setAutoCancel(true)
+            .setContentIntent(openOnlineTaskIntent(context, taskId))
+            .build()
+    }
+
+    fun onlineReady(context: Context, taskId: Long, title: String): Notification {
+        return NotificationCompat.Builder(context, CHANNEL_DOWNLOAD)
+            .setSmallIcon(android.R.drawable.stat_sys_download_done)
+            .setContentTitle(title)
+            .setContentText("原包下载完成，点击继续打包")
+            .setAutoCancel(true)
+            .setContentIntent(openOnlineTaskIntent(context, taskId))
+            .build()
     }
 
     fun installReady(context: Context, taskId: Long, title: String, apk: File): Notification {
@@ -222,6 +264,19 @@ object AppNotifications {
         return PendingIntent.getBroadcast(
             context,
             (action.hashCode() * 31 + packageName.hashCode()),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
+    }
+
+    fun openOnlineTaskIntent(context: Context, taskId: Long): PendingIntent {
+        val intent = Intent(context, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            putExtra(EXTRA_ONLINE_TASK, taskId)
+        }
+        return PendingIntent.getActivity(
+            context,
+            (EXTRA_ONLINE_TASK.hashCode() + taskId.toInt()),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )

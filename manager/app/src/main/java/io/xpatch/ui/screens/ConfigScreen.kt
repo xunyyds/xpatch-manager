@@ -158,6 +158,9 @@ internal fun ConfigScreen(
     forceOverwriteBlockReason: String,
     findReusable: (PatchOptions) -> PatchRecord?,
     onReuse: (PatchRecord) -> Unit,
+    onlineCapsule: OnlineCapsuleState? = null,
+    onlineCapsulePercent: Int? = null,
+    onOnlineCapsuleClick: () -> Unit = {},
 ) {
     var hookCore by remember { mutableStateOf(defaults.hookCore) }
     var bypass by remember { mutableStateOf(defaults.signatureBypassLevel) }
@@ -253,6 +256,20 @@ internal fun ConfigScreen(
     var reuseConfirm by remember { mutableStateOf<PatchRecord?>(null) }
 
     Column(Modifier.fillMaxSize()) {
+        if (onlineCapsule != null && onlineCapsule != OnlineCapsuleState.HIDDEN) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 4.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                OnlineStatusCapsule(
+                    percent = onlineCapsulePercent,
+                    state = onlineCapsule,
+                    onClick = onOnlineCapsuleClick,
+                )
+            }
+        }
         AppHeaderCard(icon, name, packageName)
         LazyColumn(
             Modifier.weight(1f),

@@ -29,7 +29,11 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import io.xpatch.ui.theme.DialogMetrics
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.PagePad
+import io.xpatch.ui.theme.Radius
+import io.xpatch.ui.theme.Space
 import kotlin.math.roundToInt
 
 internal data class DialogAction(
@@ -45,15 +49,22 @@ internal fun XPatchDialog(
     actions: List<DialogAction>,
     dismissible: Boolean = true,
     fixedContentHeight: Dp? = null,
+    scrollableContent: Boolean = true,
     miuix: Boolean = LocalMiuix.current,
     content: @Composable ColumnScope.() -> Unit,
 ) {
     val configuration = LocalConfiguration.current
-    val miuixMaxContentHeight = (configuration.screenHeightDp * 0.5f).roundToInt().coerceAtLeast(240)
+    val miuixMaxContentHeight = (configuration.screenHeightDp * DialogMetrics.MIUIX_FRACTION)
+        .roundToInt().coerceAtLeast(DialogMetrics.MIUIX_MIN)
     val contentHeightModifier = if (fixedContentHeight != null) {
         Modifier.height(fixedContentHeight.coerceAtMost(miuixMaxContentHeight.dp))
     } else {
         Modifier.heightIn(max = miuixMaxContentHeight.dp)
+    }
+    val scrollModifier = if (scrollableContent) {
+        Modifier.verticalScroll(rememberScrollState())
+    } else {
+        Modifier
     }
     if (miuix) {
         top.yukonga.miuix.kmp.window.WindowDialog(
@@ -63,16 +74,15 @@ internal fun XPatchDialog(
         ) {
             Column {
                 Column(
-                    contentHeightModifier
-                        .verticalScroll(rememberScrollState()),
+                    contentHeightModifier.then(scrollModifier),
                 ) {
                     content()
                 }
                 if (actions.isNotEmpty()) {
-                    Spacer(Modifier.height(20.dp))
+                    Spacer(Modifier.height(Space.l))
                     Row(
                         Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp, Alignment.End),
+                        horizontalArrangement = Arrangement.spacedBy(Space.s, Alignment.End),
                     ) {
                         actions.forEach { action ->
                             top.yukonga.miuix.kmp.basic.TextButton(
@@ -100,8 +110,10 @@ internal fun XPatchDialog(
     }
     val primary = MaterialTheme.colorScheme.primary
     val error = MaterialTheme.colorScheme.error
-    val dialogMaxWidth = (configuration.screenWidthDp * 0.92f).roundToInt().coerceAtMost(480)
-    val dialogMaxContentHeight = (configuration.screenHeightDp * 0.6f).roundToInt()
+    val dialogMaxWidth = (configuration.screenWidthDp * DialogMetrics.WIDTH_FRACTION)
+        .roundToInt().coerceAtMost(DialogMetrics.WIDTH_MAX)
+    val dialogMaxContentHeight = (configuration.screenHeightDp * DialogMetrics.CONTENT_FRACTION)
+        .roundToInt()
 
     Dialog(
         onDismissRequest = { if (dismissible) onDismiss() },
@@ -115,8 +127,8 @@ internal fun XPatchDialog(
             Modifier
                 .widthIn(max = dialogMaxWidth.dp)
                 .fillMaxWidth()
-                .padding(horizontal = 20.dp)
-                .clip(RoundedCornerShape(28.dp))
+                .padding(horizontal = PagePad.horizontal)
+                .clip(RoundedCornerShape(Radius.dialog))
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             Text(
@@ -124,22 +136,32 @@ internal fun XPatchDialog(
                 style = MaterialTheme.typography.titleMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
-                modifier = Modifier.padding(start = 24.dp, end = 24.dp, top = 22.dp, bottom = 10.dp),
+                modifier = Modifier.padding(
+                    start = Space.xl,
+                    end = Space.xl,
+                    top = Space.xl,
+                    bottom = Space.m,
+                ),
             )
             Column(
-                Modifier
-                    .heightIn(max = dialogMaxContentHeight.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(horizontal = 24.dp),
+                if (fixedContentHeight != null) {
+                    Modifier
+                        .height(fixedContentHeight.coerceAtMost(dialogMaxContentHeight.dp))
+                        .then(scrollModifier)
+                } else {
+                    Modifier
+                        .heightIn(max = dialogMaxContentHeight.dp)
+                        .then(scrollModifier)
+                }.padding(horizontal = Space.xl),
             ) {
                 content()
             }
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(Space.xs))
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalArrangement = Arrangement.spacedBy(2.dp, Alignment.End),
+                    .padding(horizontal = Space.s, vertical = Space.s),
+                horizontalArrangement = Arrangement.spacedBy(Space.xxs, Alignment.End),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 actions.forEach { action ->
@@ -162,9 +184,9 @@ private fun DialogButton(
 ) {
     Box(
         Modifier
-            .clip(RoundedCornerShape(14.dp))
+            .clip(RoundedCornerShape(Radius.control))
             .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 10.dp),
+            .padding(horizontal = Space.m, vertical = Space.m),
     ) {
         Text(
             label,
