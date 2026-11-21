@@ -52,6 +52,7 @@ import io.xpatch.data.ManagerSettings
 import io.xpatch.data.ModuleApiStore
 import io.xpatch.data.PermissionCenter
 import io.xpatch.data.SettingsStore
+import io.xpatch.data.SoftwareSource
 import io.xpatch.data.UiStyle
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.PatchLog
@@ -88,6 +89,7 @@ internal fun SettingsScreen(
     onBottomBarChange: (Int) -> Unit,
     onLiquidGlassLevelChange: (LiquidGlassLevel) -> Unit,
     onLogLevelChange: (Int) -> Unit,
+    onSoftwareSourceChange: (SoftwareSource) -> Unit,
     onPickExportDir: () -> Unit,
     onClearExportDir: () -> Unit,
     onBackup: (Set<BackupArchive.Scope>) -> Unit,
@@ -194,6 +196,15 @@ internal fun SettingsScreen(
                 }
             }
             item {
+                SettingGroup("在线版本") {
+                    SettingChoiceRow(
+                        "软件源",
+                        SoftwareSource.entries.map { it.label },
+                        SoftwareSource.entries.indexOf(settings.softwareSource),
+                    ) { index -> onSoftwareSourceChange(SoftwareSource.entries[index]) }
+                }
+            }
+            item {
                 SettingGroup("作用域") {
                     SettingSwitchItem(
                         "显示系统应用",
@@ -228,10 +239,10 @@ internal fun SettingsScreen(
             }
             item {
                 SettingGroup("备份与恢复") {
-                    SettingItem("备份数据", "", arrow = true, onClick = {
+                    SettingItem("备份数据", null, arrow = true, onClick = {
                         showBackupDialog = true
                     })
-                    SettingItem("从备份恢复", "", arrow = true, onClick = {
+                    SettingItem("从备份恢复", null, arrow = true, onClick = {
                         onRestoreBackup()
                     })
                     SettingItem(
@@ -302,7 +313,7 @@ internal fun SettingsScreen(
                 SettingGroup("签名") {
                     SettingItem(
                         "签名管理",
-                        "",
+                        null,
                         defaultSignatureName,
                         arrow = true,
                         onClick = onOpenSignatures,
@@ -316,6 +327,16 @@ internal fun SettingsScreen(
                         options = PatchLog.LEVEL_OPTIONS.map { it.second },
                         selectedIndex = settings.patchLogLevel,
                         onSelect = onLogLevelChange,
+                    )
+                }
+            }
+            item {
+                SettingGroup("在线版本") {
+                    MiuixSpinnerRow(
+                        title = "软件源",
+                        options = SoftwareSource.entries.map { it.label },
+                        selectedIndex = SoftwareSource.entries.indexOf(settings.softwareSource),
+                        onSelect = { index -> onSoftwareSourceChange(SoftwareSource.entries[index]) },
                     )
                 }
             }

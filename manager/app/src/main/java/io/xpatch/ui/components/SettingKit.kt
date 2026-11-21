@@ -94,7 +94,7 @@ internal fun SettingItem(
     if (LocalMiuix.current) {
         BasicComponent(
             title = title,
-            summary = subtitle,
+            summary = subtitle?.takeIf { it.isNotBlank() },
             enabled = enabled,
             endActions = {
                 if (value != null) {
@@ -223,7 +223,7 @@ internal fun SettingChoiceItem(
 @Composable
 private fun SettingTitles(title: String, subtitle: String?) {
     Text(title, style = MaterialTheme.typography.bodyLarge)
-    if (subtitle != null) {
+    if (!subtitle.isNullOrBlank()) {
         Text(
             subtitle,
             style = MaterialTheme.typography.bodySmall,

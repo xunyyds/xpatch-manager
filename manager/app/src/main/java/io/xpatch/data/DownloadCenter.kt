@@ -134,11 +134,13 @@ object DownloadCenter {
         putTask(Task(id, Kind.ONLINE, "正在下载原包 " + label))
         saveOnlineTask(app, version, id)
         scope.launch {
-            val file = runCatching {
+            val result = runCatching {
                 store.download(app, version, control) { percent, speed ->
                     onProgress(id, percent, speed)
                 }
-            }.getOrNull()
+            }
+            val file = result.getOrNull()
+            val failure = result.exceptionOrNull()
             controls.remove(id)
             if (file != null) {
                 finishTask(id, done = true)
@@ -147,8 +149,10 @@ object DownloadCenter {
                 updateTask(id) { it.copy(failed = "已取消") }
                 _events.emit(Event.OnlineFailed(app.packageName, version, "已取消"))
             } else {
-                failTask(id, "下载失败，请检查网络后重试")
-                _events.emit(Event.OnlineFailed(app.packageName, version, "下载失败"))
+                val message = (failure as? OnlinePackageStore.DownloadError)?.message
+                    ?: "下载失败，请检查网络后重试"
+                failTask(id, message)
+                _events.emit(Event.OnlineFailed(app.packageName, version, message))
             }
         }
         return id
@@ -199,6 +203,7 @@ object DownloadCenter {
             put("detailUrl", version.detailUrl)
             put("downloadUrl", version.downloadUrl)
             put("summary", version.summary)
+            put("source", version.source.key)
         }
         ctx.getSharedPreferences("download_tasks", Context.MODE_PRIVATE)
             .edit().putString(key, json.toString()).apply()
@@ -213,6 +218,7 @@ object DownloadCenter {
             packageName = json.optString("pkg"),
             appId = json.optString("appId"),
             name = json.optString("name"),
+            source = SoftwareSource.of(json.optString("source")),
         )
         val version = OnlinePackageStore.OnlineVersion(
             packageName = json.optString("pkg"),
@@ -227,6 +233,7 @@ object DownloadCenter {
             detailUrl = json.optString("detailUrl"),
             downloadUrl = json.optString("downloadUrl"),
             md5 = "",
+            source = SoftwareSource.of(json.optString("source")),
         )
         return Pair(app, version)
     }

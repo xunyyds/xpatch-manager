@@ -21,9 +21,12 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -46,10 +49,9 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.window.Dialog
-import androidx.compose.ui.window.DialogProperties
 import io.xpatch.data.DownloadCenter
 import io.xpatch.data.OnlinePackageStore
+import io.xpatch.data.SoftwareSource
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.PagePad
@@ -84,6 +86,8 @@ internal data class OnlineProgress(
 internal fun OnlinePromptDialog(
     prompt: OnlinePrompt,
     cached: List<OnlinePackageStore.OnlineEntry>,
+    source: SoftwareSource,
+    onSourceChange: (SoftwareSource) -> Unit,
     onRetry: () -> Unit,
     onDismiss: () -> Unit,
     onUse: (OnlinePackageStore.OnlineVersion, Boolean) -> Unit,
@@ -92,6 +96,7 @@ internal fun OnlinePromptDialog(
         mutableStateOf<OnlinePackageStore.OnlineVersion?>(null)
     }
     var query by remember(prompt.app.packageName) { mutableStateOf("") }
+    var sourceMenu by remember(prompt.app.packageName) { mutableStateOf(false) }
     val filtered = remember(prompt.versions, query) {
         if (query.isBlank()) {
             prompt.versions
@@ -133,6 +138,60 @@ internal fun OnlinePromptDialog(
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.primary,
             )
+            Spacer(Modifier.weight(1f))
+            Box {
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(Radius.chip))
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
+                        .clickable { sourceMenu = true }
+                        .padding(horizontal = Space.xs, vertical = Space.xxs),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        prompt.app.source.label,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                    Icon(
+                        Icons.Rounded.ArrowDropDown,
+                        contentDescription = "切换软件源",
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(14.dp),
+                    )
+                }
+                DropdownMenu(
+                    expanded = sourceMenu,
+                    onDismissRequest = { sourceMenu = false },
+                ) {
+                    SoftwareSource.entries.forEach { entry ->
+                        val active = entry == source
+                        DropdownMenuItem(
+                            text = {
+                                Text(
+                                    entry.label,
+                                    color = if (active) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface,
+                                )
+                            },
+                            trailingIcon = {
+                                if (active) {
+                                    Icon(
+                                        Icons.Rounded.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(18.dp),
+                                    )
+                                }
+                            },
+                            onClick = {
+                                sourceMenu = false
+                                onSourceChange(entry)
+                            },
+                        )
+                    }
+                }
+            }
         }
         Spacer(Modifier.height(Space.s))
         when {
@@ -191,7 +250,8 @@ internal fun OnlinePromptDialog(
                     )
                     Spacer(Modifier.height(Space.xs))
                     Text(
-                        filtered.size.toString() + " 个版本" + if (query.isNotBlank()) " · 已筛选" else "",
+                        filtered.size.toString() + " 个版本" +
+                            if (query.isNotBlank()) " · 已筛选" else "",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -444,6 +504,13 @@ internal fun OnlineProgressDialog(
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
+                    if (progress.version.source == SoftwareSource.WANDOUJIA) {
+                        Text(
+                            "下载源可能受限，可在设置中更换。",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
 
@@ -477,34 +544,38 @@ internal fun OnlineFailedLinkDialog(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     var copied by remember { mutableStateOf(false) }
-    val browserUrl = detailUrl.ifBlank { "https://www.wandoujia.com/" }
+    val browserUrl = detailUrl
     val usableUrl = url.ifBlank { browserUrl }
     XPatchDialog(
         onDismiss = onDismiss,
         title = "下载链接",
-        actions = listOf(
-            DialogAction("取消", onClick = onDismiss),
-            DialogAction(
-                "浏览器打开",
-                onClick = {
-                    val opened = runCatching {
-                        context.startActivity(
-                            Intent(Intent.ACTION_VIEW, android.net.Uri.parse(browserUrl))
-                                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
-                        )
-                    }.isSuccess
-                    if (!opened) {
-                        android.widget.Toast.makeText(context, "无法打开浏览器，请复制链接手动打开", android.widget.Toast.LENGTH_SHORT).show()
-                    }
-                },
-            ),
-        ),
+        actions = buildList {
+            add(DialogAction("取消", onClick = onDismiss))
+            if (browserUrl.isNotBlank()) {
+                add(
+                    DialogAction(
+                        "浏览器打开",
+                        onClick = {
+                            val opened = runCatching {
+                                context.startActivity(
+                                    Intent(Intent.ACTION_VIEW, android.net.Uri.parse(browserUrl))
+                                        .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+                                )
+                            }.isSuccess
+                            if (!opened) {
+                                android.widget.Toast.makeText(context, "无法打开浏览器，请复制链接手动打开", android.widget.Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                    ),
+                )
+            }
+        },
     ) {
         Text(
-            if (url.isBlank()) {
-                "该版本暂时取不到直链，可在豌豆荚页面手动下载。"
-            } else {
-                "自动下载失败，可复制直链手动下载；或打开豌豆荚详情页下载。"
+            when {
+                url.isBlank() && browserUrl.isBlank() -> "暂时没有可用的下载链接。"
+                url.isBlank() -> "暂时没有可用的下载链接，可打开详情页手动下载。"
+                else -> "自动下载失败，可复制链接或打开详情页手动下载。"
             },
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -667,28 +738,6 @@ internal fun OnlineDownloadEntries(
                 }
             }
             Spacer(Modifier.height(Space.s))
-        }
-    }
-}
-
-@Composable
-internal fun OnlineResolvingDialog(onDismiss: () -> Unit) {
-    Dialog(
-        onDismissRequest = onDismiss,
-        properties = DialogProperties(dismissOnBackPress = false, dismissOnClickOutside = false),
-    ) {
-        Box(
-            Modifier
-                .clip(RoundedCornerShape(Radius.card))
-                .background(MaterialTheme.colorScheme.surface)
-                .padding(Space.xl),
-            contentAlignment = Alignment.Center,
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator()
-                Spacer(Modifier.height(Space.m))
-                Text("正在解析在线版本…", style = MaterialTheme.typography.bodyMedium)
-            }
         }
     }
 }

@@ -103,6 +103,7 @@ import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.ScopeStore
 import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
+import io.xpatch.data.SoftwareSource
 import io.xpatch.data.UpdateChecker
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
@@ -301,6 +302,7 @@ fun MainScaffold(
     var onlineTargetPending by remember { mutableStateOf<PatchTarget?>(null) }
     var onlineUseOnlyDownload by remember { mutableStateOf(false) }
     var onlineDownloadTick by remember { mutableIntStateOf(0) }
+    var onlinePromptToken by remember { mutableIntStateOf(0) }
     var historyTab by remember { mutableIntStateOf(0) }
     val onlineVersionsById = remember { java.util.concurrent.ConcurrentHashMap<Long, Pair<OnlinePackageStore.OnlineApp, OnlinePackageStore.OnlineVersion>>() }
     val onlineEntries by produceState(initialValue = emptyList<OnlinePackageStore.OnlineEntry>(), onlineDownloadTick) {
@@ -1300,20 +1302,64 @@ fun MainScaffold(
         onlineNotice = Triple(title, message, rawError)
     }
 
+    fun reloadOnlinePrompt(
+        seed: OnlinePackageStore.OnlineApp,
+        target: PatchTarget?,
+        source: SoftwareSource,
+    ) {
+        val display = seed.copy(source = source)
+        onlinePromptToken++
+        val token = onlinePromptToken
+        onlineApp = display
+        onlinePrompt = buildOnlinePrompt(display, emptyList(), target = target, loading = true)
+        scope.launch {
+            val resolved = runCatching { onlineStore.resolve(seed.packageName, source) }.getOrNull()
+            if (token != onlinePromptToken || onlinePrompt == null) return@launch
+            if (resolved == null) {
+                onlineCapsule = OnlineCapsuleState.HIDDEN
+                onlinePrompt = buildOnlinePrompt(
+                    display,
+                    emptyList(),
+                    target = target,
+                    error = "这个源没有收录该应用",
+                )
+                return@launch
+            }
+            onlineApp = resolved
+            val listResult = runCatching { onlineStore.history(resolved) }
+            val list = listResult.getOrNull().orEmpty()
+            if (token != onlinePromptToken || onlinePrompt == null) return@launch
+            onlineVersions = list
+            if (list.isEmpty()) {
+                onlineCapsule = OnlineCapsuleState.HIDDEN
+                onlinePrompt = buildOnlinePrompt(
+                    resolved,
+                    emptyList(),
+                    target = target,
+                    error = listResult.exceptionOrNull()?.message ?: "这个源暂时没有可用版本",
+                )
+            } else {
+                onlineCapsule = OnlineCapsuleState.FOUND
+                onlinePrompt = buildOnlinePrompt(resolved, list, target = target)
+            }
+        }
+    }
+
     fun resolveOnline(target: PatchTarget, showPrompt: Boolean, reportFailure: Boolean = false) {
         val pkg = patchPackageName(target)
         if (pkg.isBlank() || !pkg.contains('.')) return
+        onlineCapsule = OnlineCapsuleState.CHECKING
         scope.launch {
-            val resolveResult = runCatching { onlineStore.resolve(pkg) }
+            val resolveResult = runCatching { onlineStore.resolve(pkg, settings.softwareSource) }
             val app = resolveResult.getOrNull()
             if (app == null) {
                 onlineCapsule = OnlineCapsuleState.HIDDEN
                 if (reportFailure) {
                     val error = resolveResult.exceptionOrNull()
                     if (error != null) {
-                        showOnlineNotice("查询在线版本失败", "无法从豌豆荚查询该包名，请检查网络后重试。", error.toString())
+                        showOnlineNotice("查询在线版本失败", "无法获取该应用的在线版本，请检查网络后重试。", error.toString())
                     } else {
-                        showOnlineNotice("未找到在线版本", "豌豆荚没有收录「" + pkg + "」，无法使用在线版本打包。", "未找到匹配的应用或历史版本")
+                        showOnlineNotice("未找到在线版本", "没有找到「" + pkg + "」的在线版本。", "在线源未收录该应用")
                     }
                 }
                 return@launch
@@ -1325,9 +1371,9 @@ fun MainScaffold(
                 if (reportFailure) {
                     val error = historyResult.exceptionOrNull()
                     if (error != null) {
-                        showOnlineNotice("获取历史版本失败", "已找到「" + app.name + "」，但读取历史版本失败。", error.toString())
+                        showOnlineNotice("获取历史版本失败", "已找到「" + app.name + "」，但读取版本列表失败。", error.toString())
                     } else {
-                        showOnlineNotice("没有可用历史版本", "豌豆荚上「" + app.name + "」暂时没有可下载的历史版本。", "历史版本列表为空")
+                        showOnlineNotice("没有可用版本", "「" + app.name + "」暂时没有可下载的版本。", "版本列表为空")
                     }
                 }
                 return@launch
@@ -1352,9 +1398,10 @@ fun MainScaffold(
         onlineApp = OnlinePackageStore.OnlineApp(entry.packageName, "", entry.name)
         onlineTargetPending = target
         onlineCapsule = OnlineCapsuleState.DONE
+        onlinePromptToken++
         onlinePrompt = buildOnlinePrompt(onlineApp!!, emptyList(), target = target, loading = true)
         scope.launch {
-            val app = runCatching { onlineStore.resolve(entry.packageName) }.getOrNull()
+            val app = runCatching { onlineStore.resolve(entry.packageName, settings.softwareSource) }.getOrNull()
             if (app != null) {
                 onlineApp = app
                 val list = runCatching { onlineStore.history(app) }
@@ -1372,6 +1419,7 @@ fun MainScaffold(
 
     val useOnlineVersion: (OnlinePackageStore.OnlineVersion, Boolean) -> Unit = use@{ version, onlyDownload ->
         val app = onlineApp ?: return@use
+        onlinePromptToken++
         onlineUseOnlyDownload = onlyDownload
         onlinePrompt = null
         val cached = onlineStore.cachedApk(app.packageName, version.versionCode)
@@ -1407,7 +1455,7 @@ fun MainScaffold(
 
     val configTarget = nav.page as? Page.Config
     val configPackage = configTarget?.let { patchPackageName(it.target) }.orEmpty()
-    LaunchedEffect(configPackage) {
+    LaunchedEffect(configPackage, settings.softwareSource) {
         if (configPackage.isNotBlank() && configPackage.contains('.')) {
             if (onlineApp?.packageName != configPackage) {
                 onlineApp = null
@@ -1756,6 +1804,15 @@ fun MainScaffold(
                             settingsStore.setPatchLogLevel(it)
                             settings = settings.copy(patchLogLevel = it)
                         },
+                        onSoftwareSourceChange = { source ->
+                            settingsStore.setSoftwareSource(source)
+                            settings = settings.copy(softwareSource = source)
+                            onlinePromptToken++
+                            onlineApp = null
+                            onlineVersions = emptyList()
+                            onlinePrompt = null
+                            onlineCapsule = OnlineCapsuleState.HIDDEN
+                        },
                         onThemeChange = {
                             settingsStore.setThemeMode(it)
                             settings = settings.copy(themeMode = it)
@@ -2095,6 +2152,7 @@ fun MainScaffold(
                     onOnlineCapsuleClick = {
                         when (onlineCapsule) {
                             OnlineCapsuleState.FOUND -> {
+                                onlinePromptToken++
                                 onlineTargetPending = current.target
                                 val app = onlineApp
                                 if (app != null) {
@@ -2450,22 +2508,16 @@ fun MainScaffold(
         OnlinePromptDialog(
             prompt = prompt,
             cached = onlineEntries,
-            onRetry = {
-                val app = prompt.app
-                if (app.appId.isNotBlank()) {
-                    onlinePrompt = buildOnlinePrompt(app, emptyList(), target = configTarget?.target, loading = true)
-                    scope.launch {
-                        val list = runCatching { onlineStore.history(app) }
-                        onlinePrompt = list.fold(
-                            onSuccess = { buildOnlinePrompt(app, it, target = configTarget?.target) },
-                            onFailure = { buildOnlinePrompt(app, emptyList(), target = configTarget?.target, error = it.message ?: "获取失败") },
-                        )
-                    }
-                } else {
-                    configTarget?.target?.let { resolveOnline(it, showPrompt = true) }
-                }
+            source = settings.softwareSource,
+            onSourceChange = { source ->
+                settingsStore.setSoftwareSource(source)
+                settings = settings.copy(softwareSource = source)
+                reloadOnlinePrompt(prompt.app, onlineTargetPending ?: configTarget?.target, source)
             },
-            onDismiss = { onlinePrompt = null },
+            onRetry = {
+                reloadOnlinePrompt(prompt.app, onlineTargetPending ?: configTarget?.target, settings.softwareSource)
+            },
+            onDismiss = { onlinePromptToken++; onlinePrompt = null },
             onUse = { version, onlyDownload -> useOnlineVersion(version, onlyDownload) },
         )
     }

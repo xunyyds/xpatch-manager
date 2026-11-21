@@ -31,6 +31,17 @@ enum class LiquidGlassLevel(val index: Int, val label: String) {
     }
 }
 
+enum class SoftwareSource(val key: String, val label: String) {
+    AUTO("auto", "自动"),
+    WANDOUJIA("wandoujia", "豌豆荚"),
+    APPCHINA("appchina", "应用汇"),
+    ;
+
+    companion object {
+        fun of(key: String): SoftwareSource = entries.firstOrNull { it.key == key } ?: AUTO
+    }
+}
+
 data class ManagerSettings(
     val themeMode: Int,
     val signatureBypassLevel: Int,
@@ -58,6 +69,7 @@ data class ManagerSettings(
     val injectObfuscate: Boolean = false,
     val injectKeepCrashPermission: Boolean = false,
     val patchLogLevel: Int = SettingsStore.LOG_LEVEL_DEFAULT,
+    val softwareSource: SoftwareSource = SoftwareSource.AUTO,
 )
 
 class SettingsStore(context: Context) {
@@ -95,6 +107,7 @@ class SettingsStore(context: Context) {
         injectObfuscate = prefs.getBoolean(KEY_INJECT_OBFUSCATE, false),
         injectKeepCrashPermission = prefs.getBoolean(KEY_INJECT_KEEP_CRASH_PERMISSION, false),
         patchLogLevel = PatchLog.normalize(prefs.getInt(KEY_LOG_LEVEL, LOG_LEVEL_DEFAULT)),
+        softwareSource = SoftwareSource.of(prefs.getString(KEY_SOFTWARE_SOURCE, "").orEmpty()),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -169,6 +182,9 @@ class SettingsStore(context: Context) {
     fun setPatchLogLevel(level: Int) =
         prefs.edit().putInt(KEY_LOG_LEVEL, PatchLog.normalize(level)).apply()
 
+    fun setSoftwareSource(source: SoftwareSource) =
+        prefs.edit().putString(KEY_SOFTWARE_SOURCE, source.key).apply()
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
@@ -229,6 +245,7 @@ class SettingsStore(context: Context) {
         private const val KEY_INJECT_OBFUSCATE = "inject_obfuscate"
         private const val KEY_INJECT_KEEP_CRASH_PERMISSION = "inject_keep_crash_permission"
         private const val KEY_LOG_LEVEL = "patch_log_level"
+        private const val KEY_SOFTWARE_SOURCE = "software_source"
         const val LOG_LEVEL_DEFAULT = PatchLog.LEVEL_NORMAL
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1

@@ -8,15 +8,20 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLDecoder
+import java.net.URLEncoder
+import java.text.SimpleDateFormat
 import java.util.Locale
 import java.util.regex.Pattern
 
 class OnlinePackageStore(private val context: Context) {
 
+    class DownloadError(message: String) : Exception(message)
+
     data class OnlineApp(
         val packageName: String,
         val appId: String,
         val name: String,
+        val source: SoftwareSource = SoftwareSource.WANDOUJIA,
     )
 
     data class OnlineVersion(
@@ -32,6 +37,7 @@ class OnlinePackageStore(private val context: Context) {
         val detailUrl: String,
         val downloadUrl: String,
         val md5: String,
+        val source: SoftwareSource = SoftwareSource.WANDOUJIA,
     )
 
     data class OnlineEntry(
@@ -61,6 +67,11 @@ class OnlinePackageStore(private val context: Context) {
         val detailUrl: String,
     )
 
+    private data class AppChinaPayload(
+        val appName: String,
+        val versions: List<OnlineVersion>,
+    )
+
     private val indexFile: File
         get() = File(context.filesDir, "online-packages.json")
 
@@ -71,20 +82,45 @@ class OnlinePackageStore(private val context: Context) {
     @Volatile
     private var indexCache: Map<String, IndexRecord>? = null
 
-    suspend fun resolve(packageName: String): OnlineApp? = withContext(Dispatchers.IO) {
+    suspend fun resolve(
+        packageName: String,
+        source: SoftwareSource = SoftwareSource.AUTO,
+    ): OnlineApp? = withContext(Dispatchers.IO) {
         val pkg = packageName.trim()
         if (!PACKAGE_RE.matcher(pkg).matches()) return@withContext null
-        val url = ALIAS_URL + pkg
-        val (finalUrl, html) = request(url)
+        when (source) {
+            SoftwareSource.APPCHINA -> resolveAppChina(pkg)
+            SoftwareSource.WANDOUJIA -> resolveWandoujia(pkg)
+            SoftwareSource.AUTO -> runCatching { resolveAppChina(pkg) }.getOrNull()
+                ?: resolveWandoujia(pkg)
+        }
+    }
+
+    private fun resolveWandoujia(pkg: String): OnlineApp? {
+        val (finalUrl, html) = request(ALIAS_URL + pkg)
         val appId = findGroup(APP_ID_RE, finalUrl, 1)
             ?: findGroup(APP_ID_RE, html, 1)
-            ?: return@withContext null
-        if (!appId.matches(Regex("\\d+"))) return@withContext null
+            ?: return null
+        if (!appId.matches(Regex("\\d+"))) return null
         val name = extractName(html, pkg)
-        OnlineApp(packageName = pkg, appId = appId, name = name)
+        return OnlineApp(packageName = pkg, appId = appId, name = name)
+    }
+
+    private fun resolveAppChina(pkg: String): OnlineApp? {
+        val payload = appChinaPayload(pkg, 1, requireDownloadable = false)
+        val latest = payload.versions.firstOrNull() ?: return null
+        return OnlineApp(
+            packageName = pkg,
+            appId = latest.versionCode,
+            name = payload.appName.ifBlank { pkg },
+            source = SoftwareSource.APPCHINA,
+        )
     }
 
     suspend fun history(app: OnlineApp): List<OnlineVersion> = withContext(Dispatchers.IO) {
+        if (app.source == SoftwareSource.APPCHINA) {
+            return@withContext appChinaPayload(app.packageName, APPCHINA_PAGE_SIZE).versions
+        }
         val html = runCatching { request(HISTORY_URL + app.appId + HISTORY_PATH).second }.getOrDefault("")
         val merged = LinkedHashMap<String, OnlineVersion>()
         parseHistory(html, app).forEach { merged.putIfAbsent(it.versionCode, it) }
@@ -99,6 +135,10 @@ class OnlinePackageStore(private val context: Context) {
     }
 
     suspend fun detail(app: OnlineApp, item: OnlineVersion): OnlineVersion = withContext(Dispatchers.IO) {
+        if (item.source == SoftwareSource.APPCHINA) {
+            return@withContext appChinaPayload(app.packageName, APPCHINA_PAGE_SIZE).versions
+                .firstOrNull { it.versionCode == item.versionCode } ?: item
+        }
         val page = runCatching { request(item.detailUrl) }.getOrNull()
         if (page == null) {
             return@withContext item.copy(
@@ -150,11 +190,14 @@ class OnlinePackageStore(private val context: Context) {
         val safeVersion = safe(version.version.ifBlank { version.versionCode })
         val fileName = app.packageName + "_" + safeVersion + "_" + version.versionCode + ".apk"
         val target = File(dir, fileName)
-        val resolved = if (version.downloadUrl.isBlank()) detail(app, version) else version
-        val url = resolved.downloadUrl.ifBlank {
-            error("该版本没有可用的下载链接")
+        val resolved = if (version.source == SoftwareSource.APPCHINA || version.downloadUrl.isBlank()) {
+            detail(app, version)
+        } else {
+            version
         }
-        val ok = Downloader.download(listOf(url), target, control, USER_AGENT) { progress ->
+        val url = resolved.downloadUrl.ifBlank { throw DownloadError("该版本没有可用的下载链接") }
+        val finalUrl = if (resolved.source == SoftwareSource.APPCHINA) appChinaFinalUrl(url) else url
+        val ok = Downloader.download(listOf(finalUrl), target, control, USER_AGENT) { progress ->
             val percent = if (progress.total > 0) {
                 ((progress.read * 100) / progress.total).toInt().coerceIn(0, 100)
             } else {
@@ -162,11 +205,16 @@ class OnlinePackageStore(private val context: Context) {
             }
             onProgress(percent, progress.bytesPerSecond)
         }
-        if (!ok) error("下载失败：" + app.name + " v" + version.version)
-        if (version.sizeBytes > 0L && target.length() != version.sizeBytes) {
-            error("安装包大小与页面标注不一致，已停止")
+        if (!ok) throw DownloadError("下载失败：" + app.name + " v" + version.version)
+        if (resolved.sizeBytes > 0L && target.length() != resolved.sizeBytes) {
+            throw DownloadError("安装包大小与页面标注不一致，已停止")
         }
-        recordDownload(app, version, target)
+        val expectedMd5 = resolved.md5.trim().lowercase(Locale.US)
+        if (expectedMd5.isNotBlank() && !expectedMd5.equals(md5Of(target), ignoreCase = true)) {
+            target.delete()
+            throw DownloadError("安装包校验失败，请重试")
+        }
+        recordDownload(app, resolved, target)
         target
     }
 
@@ -314,6 +362,118 @@ class OnlinePackageStore(private val context: Context) {
         } finally {
             connection.disconnect()
         }
+    }
+
+    private fun appChinaPayload(pkg: String, size: Int, requireDownloadable: Boolean = true): AppChinaPayload {
+        val params = JSONObject().apply {
+            put("apiVer", 23)
+            put("guid", APPCHINA_GUID)
+            put("imei", APPCHINA_DEVICE)
+            put("type", "app.pastdetails")
+            put("id", 0)
+            put("packagename", pkg)
+            put("start", 0)
+            put("size", size)
+            put("clientTime", System.currentTimeMillis())
+            put("imglevel", 3)
+            put("gpuType", 4)
+            put("clientVersionCode", 30061345)
+            put("channel", "ac.ex.360")
+        }
+        val body = "deviceId=" + encode(APPCHINA_DEVICE) +
+            "&referer=" + encode(APPCHINA_GUID) +
+            "&api=market.MarketAPI" +
+            "&param=" + encode(params.toString())
+        val connection = URL(APPCHINA_API).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 30_000
+            connection.requestMethod = "POST"
+            connection.doOutput = true
+            connection.setRequestProperty("User-Agent", USER_AGENT)
+            connection.setRequestProperty("Content-Type", "application/x-www-form-urlencoded")
+            connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = connection.responseCode
+            require(code in 200..299) { "应用汇请求失败：HTTP $code" }
+            val text = connection.inputStream.bufferedReader().use { it.readText() }
+            val json = JSONObject(text)
+            val array = json.optJSONArray("list")
+            val out = ArrayList<OnlineVersion>(array?.length() ?: 0)
+            var name = ""
+            if (array != null) {
+                for (index in 0 until array.length()) {
+                    val item = array.optJSONObject(index) ?: continue
+                    val versionName = item.optString("versionName")
+                    val versionCode = item.optString("versionCode")
+                    val apkUrl = item.optString("apkUrl")
+                    if (versionName.isBlank() || versionCode.isBlank()) continue
+                    if (requireDownloadable) {
+                        if (apkUrl.isBlank()) continue
+                        if (item.optBoolean("closeDownload") || item.optInt("closeDownload") != 0) continue
+                        if (item.optBoolean("offShelf") || item.optInt("offShelf") != 0) continue
+                    }
+                    if (name.isBlank()) name = item.optString("name")
+                    val bytes = item.optLong("size")
+                    val date = item.optString("lastUpdate").ifBlank { item.optString("createTime") }
+                    out.add(
+                        OnlineVersion(
+                            packageName = pkg,
+                            appId = versionCode,
+                            version = versionName,
+                            versionCode = versionCode,
+                            sizeText = if (bytes > 0L) bytesToSizeText(bytes) else "",
+                            sizeBytes = bytes,
+                            releaseTime = parseDateText(date),
+                            releaseText = date,
+                            summary = item.optString("shorDesc"),
+                            detailUrl = APPCHINA_DETAIL_URL + pkg,
+                            downloadUrl = apkUrl,
+                            md5 = item.optString("md5"),
+                            source = SoftwareSource.APPCHINA,
+                        ),
+                    )
+                }
+            }
+            out.sortByDescending { it.versionCode.toLongOrNull() ?: 0L }
+            return AppChinaPayload(name, out)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun appChinaFinalUrl(raw: String): String {
+        val start = httpsOf(raw)
+        val connection = URL(start).openConnection() as HttpURLConnection
+        try {
+            connection.connectTimeout = 15_000
+            connection.readTimeout = 20_000
+            connection.instanceFollowRedirects = false
+            connection.setRequestProperty("User-Agent", USER_AGENT)
+            connection.connect()
+            val code = connection.responseCode
+            if (code !in 300..399) return start
+            val location = connection.getHeaderField("Location") ?: return start
+            return httpsOf(location)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun httpsOf(value: String): String = when {
+        value.startsWith("http://") -> "https://" + value.removePrefix("http://")
+        value.startsWith("//") -> "https:" + value
+        else -> value
+    }
+
+    private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8")
+
+    private fun parseDateText(text: String): Long {
+        if (text.isBlank()) return 0L
+        return runCatching {
+            SimpleDateFormat("yyyy-MM-dd", Locale.US).apply {
+                timeZone = java.util.TimeZone.getTimeZone("Asia/Shanghai")
+            }.parse(text)?.time ?: 0L
+        }.getOrDefault(0L)
     }
 
     private fun parseHistory(html: String, app: OnlineApp): List<OnlineVersion> {
@@ -500,6 +660,21 @@ class OnlinePackageStore(private val context: Context) {
         .replace(Regex("[ \t]+"), " ")
         .replace(Regex("\n\\s*\n+"), "\n")
 
+    private fun md5Of(file: File): String = runCatching {
+        val digest = java.security.MessageDigest.getInstance("MD5")
+        file.inputStream().use { input ->
+            val buffer = ByteArray(256 * 1024)
+            while (true) {
+                val read = input.read(buffer)
+                if (read < 0) break
+                digest.update(buffer, 0, read)
+            }
+        }
+        digest.digest().joinToString("") { byte ->
+            ((byte.toInt() and 0xFF) + 0x100).toString(16).substring(1)
+        }
+    }.getOrDefault("")
+
     private fun safe(value: String): String =
         value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 
@@ -508,6 +683,11 @@ class OnlinePackageStore(private val context: Context) {
         const val HISTORY_URL = "https://www.wandoujia.com/apps/"
         const val HISTORY_PATH = "/history"
         const val DETAIL_URL = "https://www.wandoujia.com/apps/"
+        const val APPCHINA_API = "https://mobile.appchina.com/market/api"
+        const val APPCHINA_DETAIL_URL = "https://www.appchina.com/app/"
+        const val APPCHINA_GUID = "06b15137-908f-4f51-b035-e296d5fda1b6"
+        const val APPCHINA_DEVICE = "869394021134371"
+        const val APPCHINA_PAGE_SIZE = 100
         const val USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 
         val PACKAGE_RE = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*(\\.[A-Za-z_][A-Za-z0-9_]*)+$")
