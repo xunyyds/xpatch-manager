@@ -1706,7 +1706,7 @@ class ApkPatcher(private val context: Context) {
         const val MODULE_CRASH_PERMISSION = "io.xpatch.permission.MODULE_CRASH"
         const val ATTR_FACTORY_NAME = "appComponentFactory"
         const val ATTR_NAME = "name"
-        const val RUNTIME_VERSION = 42
+        const val RUNTIME_VERSION = 43
 
         val SIG_MODES = setOf("off", "java", "java_file", "deep")
         const val SIG_MODE_DEFAULT = "java"

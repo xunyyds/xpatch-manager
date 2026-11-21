@@ -145,11 +145,6 @@ public final class AppInfoHooks {
         }
         String factory = originalFactory();
         info.appComponentFactory = factory;
-        String source = AppEnv.source_apk_path;
-        if (source != null && source.length() > 0) {
-            info.sourceDir = source;
-            info.publicSourceDir = source;
-        }
     }
 
     private static Class<?> loadClass(String name) {

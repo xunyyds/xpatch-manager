@@ -109,12 +109,24 @@ PathClassLoader(模块APK, 模块APK!/lib/<abi>/)
 - 内置签名与签名校验（覆盖安装需要与原应用签名一致）；
 - 多用户/多开场景下的安装引导。
 
-### 原生重定向层
+### 文件层：只虚拟化字节，不改写路径
 
-当前版本跳过了原生重定向层，功能主体（hook、模块、原生库）不受影响，但以下场景需要它：
+签名校验按读取方式分两类：读 Java 签名 API，或按 APK 路径读字节/取元数据。第二类由
+`hook_core.so` 的 `io_redirect` 在 libc 层接管，**Java 侧不再返回伪造路径**：
 
-- 应用自校验读取自身 APK 时，需要把读取重定向到原始（未补丁）APK；
-- 部分完整性校验依赖真实 APK 的哈希/签名。
+| 入口 | 处理 |
+| --- | --- |
+| `open` / `openat` / `fopen` / `openat2` | 目标为本包 APK 时改读内嵌原包 |
+| `stat` / `lstat` / `fstatat` | 目标为本包 APK 时把 `st_size` 改成原包大小 |
+| `statx`（API 30+） | 目标为本包 APK 时把 `stx_size` 改成原包大小 |
+| `open("/proc/self/maps")` 等 | 过滤 `hook_core`、`/xp/` 等行后换成匿名 memfd |
 
-替代实现方向：以可审计的 ELF/GOT 操作库重建，或改用不依赖重定向的加载路径
-（例如在类加载器层解决资源与 dex 来源）。
+`Context.getPackageCodePath()`、`getPackageResourcePath()`、`ApplicationInfo.sourceDir`
+一律保持真实值。这不是遗漏，而是刻意约束：宿主用这些路径构建 `AssetManager` / 资源表、
+按路径装载自己的代码，改写后路径与系统已建好的资源栈不一致，会直接闪退或资源错位。
+快手极速版的 `ArscLoadHacker`（把 `assets/kwai_res/core_res` 的全量资源表换进
+`AssetManager`）就是按 `getPackageCodePath()` 做键，路径一被改写就替换失败，
+`HomeActivity` 首次 inflate 立刻 `Resources$NotFoundException`。
+
+需要继续加固时，扩展的是 native 侧入口（`access` / `readlink` 等），
+而不是把 Java 路径改回原包。

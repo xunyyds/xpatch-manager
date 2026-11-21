@@ -36,14 +36,30 @@ public class SignBypass {
     }
 
     static String selfPath() {
-        return FileLayerHooks.canonicalPath(AppEnv.selfApk);
+        return canonicalPath(AppEnv.selfApk);
     }
 
     static String targetPath(String raw) {
-        String canonical = FileLayerHooks.canonicalPath(raw);
+        String canonical = canonicalPath(raw);
         if (canonical == null) {
             return null;
         }
         return new File(canonical).isFile() ? canonical : null;
+    }
+
+    static String canonicalPath(String path) {
+        if (path == null || path.trim().length() == 0) {
+            return null;
+        }
+        File file = new File(path.trim());
+        try {
+            return file.getCanonicalPath();
+        } catch (Throwable th) {
+            try {
+                return file.getAbsolutePath();
+            } catch (Throwable ignored) {
+                return null;
+            }
+        }
     }
 }

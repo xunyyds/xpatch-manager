@@ -10,7 +10,7 @@ public final class SourceReconstructor {
     }
 
     public static String rebuild() {
-        XpHook.log0(TAG, "没有内嵌原包，文件层不启用");
+        XpHook.log0(TAG, "没有内嵌原包，native 重定向不启用");
         return null;
     }
 }

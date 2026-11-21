@@ -7,7 +7,7 @@ import io.xpatch.hook.AppEnv;
 import io.xpatch.utils.AppUtils;
 
 public class CoreEntry {
-    public static final int RUNTIME_VERSION = 42;
+    public static final int RUNTIME_VERSION = 43;
 
     public static void loadAppInPack(ClassLoader classLoader, ApplicationInfo applicationInfo) {
         AppEnv.processName = AppUtils.getProcessName();

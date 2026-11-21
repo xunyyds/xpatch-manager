@@ -23,7 +23,6 @@ import io.xpatch.core.remote.RemoteAccessBridge;
 import io.xpatch.core.signbypass.AppInfoHooks;
 import io.xpatch.core.signbypass.CheckSignaturesBypass;
 import io.xpatch.core.signbypass.DeferredSignHooks;
-import io.xpatch.core.signbypass.FileLayerHooks;
 import io.xpatch.core.signbypass.InstallSourceHooks;
 import io.xpatch.core.signbypass.PMSignBypass;
 import io.xpatch.core.signbypass.SignBypass;
@@ -142,7 +141,7 @@ public class XpInit {
                 if (initHookCore()) {
                     NativeLoader.markLoadedByHookCore();
                 } else {
-                    XpHook.log0(TAG, "hook_core.dex 未能初始化：Java 层过签与文件层仍可用，native 特性降级");
+                    XpHook.log0(TAG, "hook_core.dex 未能初始化：Java 层过签仍可用，native 特性降级");
                 }
             }
         });
@@ -297,7 +296,7 @@ public class XpInit {
     private static void installSignBypass() {
         String mode = AppEnv.sig_mode;
         if (AppEnv.SIG_MODE_OFF.equals(mode)) {
-            XpHook.log0(TAG, "签名伪装已关闭（sig_mode=off）：跳过 native / 签名 / 文件层安装");
+            XpHook.log0(TAG, "签名伪装已关闭（sig_mode=off）：跳过 native / 签名安装");
             return;
         }
         if (!AppEnv.sig_mode_explicit && AppEnv.sign_bypass_type <= 0) {
@@ -319,10 +318,10 @@ public class XpInit {
             String loadedPath = NativeLoader.loadedPath();
             XpHook.log0(TAG, "hook_core 已加载：" + (loadedPath == null ? "未知路径" : loadedPath));
         } else {
-            XpHook.log0(TAG, "hook_core 未加载：native 层（seccomp / 文件层重定向）将降级");
+            XpHook.log0(TAG, "hook_core 未加载：native 层（seccomp / IO 重定向）将降级");
         }
 
-        boolean fileLayerWanted = wantsFileLayer(mode);
+        boolean nativeRedirectWanted = wantsNativeRedirect(mode);
         String sourcePath = AppEnv.source_apk_path;
         boolean hasSourceApk = sourcePath != null && sourcePath.length() > 0;
 
@@ -355,8 +354,7 @@ public class XpInit {
             } catch (Throwable th) {
                 XpHook.log0(TAG, "PackageInfo 层签名伪装安装失败：" + Log.getStackTraceString(th));
             }
-            boolean wantsNativeRedirect = fileLayerWanted || AppEnv.sign_bypass_type == 2;
-            if (wantsNativeRedirect) {
+            if (nativeRedirectWanted) {
                 boolean redirectEnabled = false;
                 try {
                     redirectEnabled = SignBypass.enable();
@@ -372,17 +370,7 @@ public class XpInit {
                             + "，原包=" + (hasSourceApk ? "有" : "无"));
                 }
             }
-            if (fileLayerWanted) {
-                try {
-                    boolean fileLayer = FileLayerHooks.install();
-                    XpHook.log0(TAG, fileLayer
-                            ? "文件层路径重定向已启用：" + FileLayerHooks.installedTarget()
-                                    + "（hook 数=" + FileLayerHooks.hookedCount() + "）"
-                            : "文件层未启用：" + FileLayerHooks.lastError());
-                } catch (Throwable th) {
-                    XpHook.log0(TAG, "文件层路径重定向失败：" + Log.getStackTraceString(th));
-                }
-            }
+            XpHook.log0(TAG, "路径层保持真实：codePath/resourcePath/sourceDir 不改写（宿主按路径构建资源表）");
             scheduleDeferredSignHooks();
             probeSignatureBypass();
             installed = true;
@@ -420,10 +408,11 @@ public class XpInit {
         }
     }
 
-    private static boolean wantsFileLayer(String mode) {
+    private static boolean wantsNativeRedirect(String mode) {
         return AppEnv.SIG_MODE_JAVA_FILE.equals(mode)
                 || AppEnv.SIG_MODE_DEEP.equals(mode)
                 || AppEnv.sign_bypass_type == 1
+                || AppEnv.sign_bypass_type == 2
                 || AppEnv.sign_bypass_type == 4;
     }
 

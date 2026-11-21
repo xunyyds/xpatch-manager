@@ -76,7 +76,7 @@ private val BYPASS_MODES = listOf(
     BypassMode(
         key = "none",
         name = "None（关闭）",
-        desc = "关闭签名伪装：不安装任何签名 hook，也不接管文件层。应用只要校验签名就会失败。",
+        desc = "关闭签名伪装：不安装任何签名 hook，也不接管文件读写。应用只要校验签名就会失败。",
         sigMode = SettingsStore.SIG_MODE_OFF,
         bypassLevel = 3,
     ),
@@ -113,21 +113,21 @@ private val BYPASS_MODES = listOf(
     BypassMode(
         key = "file",
         name = "File（+ 文件层）",
-        desc = "在 Strict 之上把代码/资源路径重定向到原始安装包，处理按 APK 文件路径读签名的校验",
+        desc = "在 Strict 之上接管文件读写：按 APK 路径读到的字节与文件大小都是原包，处理按文件读取签名的校验；路径本身保持真实，不影响宿主用路径构建资源表",
         sigMode = SettingsStore.SIG_MODE_JAVA_FILE,
         bypassLevel = 2,
     ),
     BypassMode(
         key = "seccomp",
         name = "Seccomp（native 重定向）",
-        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件层；不含 hasSigningCertificate 严格校验",
+        desc = "在 Java 层之上用 native 层 openat 重定向替换签名块读取，并同时接管文件读写；不含 hasSigningCertificate 严格校验",
         sigMode = SettingsStore.SIG_MODE_JAVA,
         bypassLevel = 1,
     ),
     BypassMode(
         key = "extreme",
         name = "Extreme（最高档）",
-        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件层路径重定向 + dobby/inline 混合 native 重定向三层叠加",
+        desc = "最高档：严格签名校验（hasSigningCertificate）+ 文件读写接管（open/openat/fopen/openat2/stat）+ dobby/inline 混合 native 重定向三层叠加",
         sigMode = SettingsStore.SIG_MODE_DEEP,
         bypassLevel = 3,
     ),

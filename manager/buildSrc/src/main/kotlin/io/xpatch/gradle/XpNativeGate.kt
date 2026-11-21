@@ -27,7 +27,6 @@ object XpNativeGate {
         "Lio/xpatch/core/signbypass/LevelPltSignBypass;",
         "Lio/xpatch/core/signbypass/PMSignBypass;",
         "Lio/xpatch/core/signbypass/SignatureFacade;",
-        "Lio/xpatch/core/signbypass/FileLayerHooks;",
         "Lio/xpatch/core/module/ModuleLoader;",
         "Lio/xpatch/core/module/LocalStoreModuleProvider;",
     )
