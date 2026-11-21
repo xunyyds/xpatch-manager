@@ -15,7 +15,6 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,7 +25,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Search
@@ -58,6 +57,7 @@ import androidx.core.graphics.drawable.toBitmap
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import java.util.Collections
 import java.util.WeakHashMap
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -82,7 +82,7 @@ fun AppIcon(drawable: Drawable?, size: Int = 48) {
     Box(
         modifier = Modifier
             .size(size.dp)
-            .clip(RoundedCornerShape(size.dp * 0.3f))
+            .clip(xpShape(size.dp * 0.3f))
             .background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center,
     ) {
@@ -217,7 +217,7 @@ fun SearchField(
             .fillMaxWidth()
             .padding(horizontal = 16.dp, vertical = 4.dp)
             .height(48.dp)
-            .clip(RoundedCornerShape(if (miuix) 14.dp else 24.dp))
+            .clip(xpShape(if (miuix) 14.dp else 24.dp))
             .background(container)
             .padding(start = 12.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -252,7 +252,7 @@ fun SearchField(
             Box(
                 Modifier
                     .size(48.dp)
-                    .clip(RoundedCornerShape(24.dp))
+                    .clip(xpShape(24.dp))
                     .clickable { onValueChange("") },
                 contentAlignment = Alignment.Center,
             ) {
@@ -296,7 +296,7 @@ fun Chip(
         Box(
             Modifier
                 .then(if (fill) Modifier.fillMaxWidth() else Modifier)
-                .clip(RoundedCornerShape(12.dp))
+                .clip(xpShape(12.dp))
                 .background(container)
                 .clickable { onClick() }
                 .padding(horizontal = 12.dp, vertical = 9.dp),
@@ -314,7 +314,7 @@ fun Chip(
         return
     }
     Surface(
-        shape = RoundedCornerShape(20.dp),
+        shape = xpShape(20.dp),
         color = if (selected) MaterialTheme.colorScheme.secondaryContainer
         else MaterialTheme.colorScheme.surface,
         tonalElevation = 0.dp,
@@ -528,7 +528,7 @@ fun RefreshCircle(
     Box(
         modifier = modifier
             .size(38.dp)
-            .clip(RoundedCornerShape(19.dp))
+            .clip(xpShape(19.dp))
             .background(containerColor),
         contentAlignment = Alignment.Center,
     ) {

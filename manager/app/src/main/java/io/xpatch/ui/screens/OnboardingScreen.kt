@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
 import androidx.compose.material3.MaterialTheme
@@ -40,6 +39,7 @@ import androidx.compose.ui.unit.dp
 import io.xpatch.data.PermissionCenter
 import io.xpatch.patch.ShizukuBridge
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import top.yukonga.miuix.kmp.basic.TextButton as MiuixTextButton
@@ -195,7 +195,7 @@ private fun PermissionRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(if (miuix) 16.dp else 20.dp))
+            .clip(xpShape(if (miuix) 16.dp else 20.dp))
             .background(card)
             .padding(horizontal = 16.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -216,7 +216,7 @@ private fun PermissionRow(
         Spacer(Modifier.width(12.dp))
         Box(
             Modifier
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .background(if (granted) grantedColor else Color.Transparent)
                 .padding(horizontal = 10.dp, vertical = 5.dp),
         ) {
@@ -270,7 +270,7 @@ private fun OnboardingButton(
         Button(
             onClick = onClick,
             modifier = modifier.height(48.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = xpShape(16.dp),
         ) {
             Text(label)
         }
@@ -278,7 +278,7 @@ private fun OnboardingButton(
         OutlinedButton(
             onClick = onClick,
             modifier = modifier.height(48.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = xpShape(16.dp),
         ) {
             Text(label)
         }

@@ -23,13 +23,19 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.KeyboardArrowRight
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -43,6 +49,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
@@ -55,15 +62,8 @@ import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.Checkbox
-import androidx.compose.material3.IconButton
-import androidx.compose.material.icons.rounded.KeyboardArrowRight
-import androidx.compose.ui.draw.rotate
 
 private val LOG_LAYER_LABELS = LogLayer.entries.map { it.label }
 private val LOG_VIEW_LABELS = LogViewMode.entries.map { it.label }
@@ -128,7 +128,7 @@ internal fun FilterPanel(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(xpShape(8.dp))
                         .combinedClickable(
                             onClick = { appPickerOpen = true },
                             onLongClick = null,
@@ -217,7 +217,7 @@ internal fun AppFilterDialog(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(12.dp))
+                    .clip(xpShape(12.dp))
                     .toggleable(
                         value = checked,
                         onValueChange = {
@@ -231,7 +231,7 @@ internal fun AppFilterDialog(
                 Box(
                     Modifier
                         .size(20.dp)
-                        .clip(RoundedCornerShape(6.dp))
+                        .clip(xpShape(6.dp))
                         .background(
                             if (checked) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -374,7 +374,7 @@ private fun DetailBody(
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
+                .clip(xpShape(12.dp))
                 .background(MaterialTheme.colorScheme.primaryContainer)
                 .combinedClickable(onClick = { onCopy(entry) }, onLongClick = null)
                 .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -411,7 +411,7 @@ private fun DetailNavigation(
         style = MaterialTheme.typography.labelSmall,
         color = secondary,
         modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .combinedClickable(onClick = onDismiss, onLongClick = null)
             .padding(vertical = 6.dp),
     )
@@ -428,7 +428,7 @@ private fun NavigatorRow(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .combinedClickable(
                 onClick = { entry?.let { onClick(it) } },
                 onLongClick = null,

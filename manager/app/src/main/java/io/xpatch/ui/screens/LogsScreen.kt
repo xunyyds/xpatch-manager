@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -19,11 +20,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.MoreVert
@@ -50,22 +49,23 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
-import java.io.File
 import io.xpatch.data.RuntimeLogStore
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.SearchField
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
+import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -461,7 +461,7 @@ internal fun LogsScreen(
                 style = MaterialTheme.typography.labelMedium,
                 color = MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(xpShape(10.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer)
                     .padding(horizontal = 14.dp, vertical = 8.dp),
             )
@@ -637,7 +637,7 @@ private fun TopBarIcon(
     Box(
         Modifier
             .size(44.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .clip(xpShape(12.dp))
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -682,7 +682,7 @@ private fun LogsPill(
     Box(
         Modifier
             .heightIn(min = 32.dp)
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .background(container)
             .combinedClickable(onClick = onClick, onLongClick = null)
             .padding(horizontal = 11.dp, vertical = 6.dp),
@@ -794,7 +794,7 @@ internal fun LoadMoreFooter(
 
             hasMore -> Box(
                 Modifier
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(xpShape(10.dp))
                     .combinedClickable(onClick = onLoadMore, onLongClick = null)
                     .padding(horizontal = 12.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center,
@@ -821,7 +821,7 @@ internal fun TinyTextButton(text: String, onClick: () -> Unit) {
     Box(
         Modifier
             .heightIn(min = 32.dp)
-            .clip(RoundedCornerShape(8.dp))
+            .clip(xpShape(8.dp))
             .combinedClickable(onClick = onClick, onLongClick = null)
             .padding(horizontal = 8.dp, vertical = 6.dp),
         contentAlignment = Alignment.Center,
@@ -955,7 +955,7 @@ private fun RuntimeLogList(
                     modifier = Modifier
                         .align(Alignment.BottomEnd)
                         .padding(end = 16.dp, bottom = 24.dp)
-                        .clip(RoundedCornerShape(18.dp))
+                        .clip(xpShape(18.dp))
                         .background(MaterialTheme.colorScheme.secondaryContainer)
                         .combinedClickable(onClick = onJumpLatest, onLongClick = null)
                         .padding(horizontal = 14.dp, vertical = 9.dp),
@@ -1034,7 +1034,7 @@ private fun LogStateCard(
             Spacer(Modifier.height(14.dp))
             Row(
                 Modifier
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(xpShape(14.dp))
                     .background(MaterialTheme.colorScheme.primaryContainer)
                     .combinedClickable(onClick = onAction, onLongClick = null)
                     .padding(horizontal = 16.dp, vertical = 11.dp),
@@ -1103,7 +1103,7 @@ private fun EmptyResultCard(
         Spacer(Modifier.height(16.dp))
         Row(
             Modifier
-                .clip(RoundedCornerShape(14.dp))
+                .clip(xpShape(14.dp))
                 .background(MaterialTheme.colorScheme.primaryContainer)
                 .combinedClickable(onClick = onReset, onLongClick = null)
                 .padding(horizontal = 18.dp, vertical = 11.dp),
@@ -1147,7 +1147,7 @@ private fun ModuleHeaderRow(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 5.dp)
-            .clip(RoundedCornerShape(18.dp))
+            .clip(xpShape(18.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Row(
@@ -1164,7 +1164,7 @@ private fun ModuleHeaderRow(
                 color = if (group.framework) MaterialTheme.colorScheme.onTertiaryContainer
                 else MaterialTheme.colorScheme.onPrimaryContainer,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(6.dp))
+                    .clip(xpShape(6.dp))
                     .background(
                         if (group.framework) MaterialTheme.colorScheme.tertiaryContainer
                         else MaterialTheme.colorScheme.primaryContainer,

@@ -11,7 +11,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +44,7 @@ import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import io.xpatch.ui.theme.xpShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -112,7 +112,7 @@ internal fun MarkdownView(blocks: List<MdBlock>, modifier: Modifier = Modifier) 
     if (blocks.isEmpty()) return
     Surface(
         modifier = modifier.fillMaxWidth(),
-        shape = RoundedCornerShape(16.dp),
+        shape = xpShape(16.dp),
         color = MaterialTheme.colorScheme.surfaceContainer,
     ) {
         SelectionContainer {
@@ -131,10 +131,10 @@ internal fun LazyListScope.markdownItems(blocks: List<MdBlock>, horizontalPaddin
     blocks.forEachIndexed { index, block ->
         item(key = "md:" + index) {
             val shape = when {
-                blocks.size == 1 -> RoundedCornerShape(16.dp)
-                index == 0 -> RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp)
-                index == blocks.lastIndex -> RoundedCornerShape(bottomStart = 16.dp, bottomEnd = 16.dp)
-                else -> RoundedCornerShape(0.dp)
+                blocks.size == 1 -> xpShape(16.dp)
+                index == 0 -> xpShape(topStart = 16.dp, topEnd = 16.dp)
+                index == blocks.lastIndex -> xpShape(bottomStart = 16.dp, bottomEnd = 16.dp)
+                else -> xpShape(0.dp)
             }
             Box(
                 Modifier
@@ -235,7 +235,7 @@ private fun MdCodeBlock(code: String) {
     Column(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHighest)
             .horizontalScroll(scroll)
             .padding(horizontal = 12.dp, vertical = 10.dp),
@@ -281,7 +281,7 @@ private fun MdTable(block: MdBlock.Table) {
         Column(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .background(MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.7f))
                 .horizontalScroll(scroll),
         ) {

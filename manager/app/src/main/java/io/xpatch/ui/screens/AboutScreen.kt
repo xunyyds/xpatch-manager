@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -42,15 +41,16 @@ import io.xpatch.data.UpdateChecker
 import io.xpatch.patch.InstallHelper
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.DialogAction
+import io.xpatch.ui.components.MarkdownView
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.SettingItem
 import io.xpatch.ui.components.SettingSwitchItem
 import io.xpatch.ui.components.XPatchDialog
-import io.xpatch.ui.components.MarkdownView
 import io.xpatch.ui.components.rememberMarkdownBlocks
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import io.xpatch.ui.util.rememberListBottomPadding
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
@@ -294,7 +294,7 @@ private fun AboutPill(text: String, color: Color) {
         style = MaterialTheme.typography.labelMedium,
         color = color,
         modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .background(color.copy(alpha = 0.12f))
             .padding(horizontal = 10.dp, vertical = 4.dp),
     )

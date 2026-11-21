@@ -20,9 +20,8 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
-import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Sort
 import androidx.compose.material3.HorizontalDivider
@@ -42,27 +41,30 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.kyant.shapes.Capsule
+import com.kyant.shapes.RoundedCornerStyle
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
-import io.xpatch.ui.components.SwitchableEntryRow
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.RowDivider
+import io.xpatch.ui.components.SearchField
 import io.xpatch.ui.components.SortMenu
 import io.xpatch.ui.components.SortOption
-import io.xpatch.ui.components.SearchField
+import io.xpatch.ui.components.SwitchableEntryRow
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
+import java.text.Collator
+import java.util.Locale
+import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.preference.ArrowPreference
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import kotlinx.coroutines.delay
-import java.text.Collator
-import java.util.Locale
 
 @Composable
 internal fun ModuleScopeScreen(
@@ -357,7 +359,7 @@ internal fun AppScopeScreen(
                             Box(
                                 Modifier
                                     .size(42.dp)
-                                    .clip(RoundedCornerShape(14.dp))
+                                    .clip(xpShape(14.dp))
                                     .background(
                                         if (miuix) MiuixTheme.colorScheme.surfaceContainerHighest
                                         else MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -551,7 +553,7 @@ internal fun RecommendBadge() {
         color = primary,
         modifier = Modifier
             .padding(start = 6.dp)
-            .clip(RoundedCornerShape(6.dp))
+            .clip(xpShape(6.dp))
             .background(primary.copy(alpha = 0.14f))
             .padding(horizontal = 6.dp, vertical = 2.dp),
     )
@@ -672,7 +674,7 @@ private fun ScopeFilterRow(
             }
             Box(
                 Modifier
-                    .clip(RoundedCornerShape(50))
+                    .clip(Capsule(RoundedCornerStyle.Continuous))
                     .background(container)
                     .clickable { onSelect(index) }
                     .padding(horizontal = 12.dp, vertical = 6.dp),

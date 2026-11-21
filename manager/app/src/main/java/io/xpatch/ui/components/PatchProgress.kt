@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -39,6 +38,7 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.distinctUntilChanged
@@ -86,7 +86,7 @@ internal fun PatchProgressDialog(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 28.dp)
-                .clip(RoundedCornerShape(24.dp))
+                .clip(xpShape(24.dp))
                 .background(surface)
                 .padding(18.dp),
         ) {
@@ -97,7 +97,7 @@ internal fun PatchProgressDialog(
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(4.dp)
-                    .clip(RoundedCornerShape(2.dp)),
+                    .clip(xpShape(2.dp)),
                 color = if (failed != null) error else primary,
                 trackColor = secondary.copy(alpha = 0.2f),
             )
@@ -113,7 +113,7 @@ internal fun PatchProgressDialog(
                             color = secondary,
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(xpShape(10.dp))
                                 .background(secondary.copy(alpha = 0.08f))
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                         )
@@ -250,7 +250,7 @@ private fun TypewriterLogs(
                     .roundToInt()
                     .dp,
             )
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .background(secondary.copy(alpha = 0.08f)),
         contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp),
         verticalArrangement = Arrangement.spacedBy(3.dp),
@@ -296,7 +296,7 @@ private fun ActionLabel(
         style = MaterialTheme.typography.labelLarge,
         color = color,
         modifier = Modifier
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .clickable { onClick() }
             .padding(horizontal = 10.dp, vertical = 8.dp),
     )

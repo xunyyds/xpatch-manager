@@ -18,19 +18,18 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.Icon
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -65,6 +64,7 @@ import io.xpatch.ui.components.SettingSwitchItem
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import top.yukonga.miuix.kmp.basic.DropdownItem
@@ -553,7 +553,7 @@ internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Un
         TextButton(
             onClick = { expanded = true },
             enabled = levels.isNotEmpty(),
-            shape = RoundedCornerShape(10.dp),
+            shape = xpShape(10.dp),
             contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp),
         ) {
             Text(
@@ -569,7 +569,7 @@ internal fun ApiSelector(module: ModuleInfo, current: Int, onChange: (Int) -> Un
             expanded = expanded,
             onDismissRequest = { expanded = false },
             containerColor = surface,
-            shape = RoundedCornerShape(16.dp),
+            shape = xpShape(16.dp),
         ) {
             levels.forEach { level ->
                 DropdownMenuItem(
@@ -632,7 +632,7 @@ private fun HistoryLimitDialog(
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 placeholder = { Text("1 - 500") },
-                shape = RoundedCornerShape(12.dp),
+                shape = xpShape(12.dp),
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             )
         }
@@ -705,7 +705,7 @@ private fun BackupScopeDialog(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
+                    .clip(xpShape(10.dp))
                     .clickable {
                         selected = toggleBackupScope(selected, scope)
                     }

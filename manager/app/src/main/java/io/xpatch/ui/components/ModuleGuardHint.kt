@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.Icon
@@ -28,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.ModuleGuardStore
+import io.xpatch.ui.theme.xpShape
 
 @Composable
 internal fun ModuleGuardHintBanner(
@@ -38,7 +38,7 @@ internal fun ModuleGuardHintBanner(
 ) {
     if (events.isEmpty()) return
     val first = events.first()
-    val shape = RoundedCornerShape(16.dp)
+    val shape = xpShape(16.dp)
     val primary = MaterialTheme.colorScheme.primary
     val container = MaterialTheme.colorScheme.primaryContainer
     val title = if (events.size == 1) {
@@ -68,7 +68,7 @@ internal fun ModuleGuardHintBanner(
         Box(
             modifier = Modifier
                 .size(30.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .background(container),
             contentAlignment = Alignment.Center,
         ) {
@@ -99,7 +99,7 @@ internal fun ModuleGuardHintBanner(
         Spacer(Modifier.width(8.dp))
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .background(container)
                 .clickable { onView(first) }
                 .padding(horizontal = 10.dp, vertical = 7.dp),
@@ -113,7 +113,7 @@ internal fun ModuleGuardHintBanner(
         }
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .clickable { onHide() }
                 .semantics { contentDescription = "忽略全部 ${events.size} 条模块保护事件" }
                 .padding(horizontal = 8.dp, vertical = 7.dp),

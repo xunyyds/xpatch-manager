@@ -19,7 +19,6 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -44,6 +43,7 @@ import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -118,7 +118,7 @@ internal fun BottomSheet(
                             }
                         }
                     }
-                    .clip(RoundedCornerShape(topStart = 26.dp, topEnd = 26.dp))
+                    .clip(xpShape(topStart = 26.dp, topEnd = 26.dp))
                     .background(
                         if (miuix) MiuixTheme.colorScheme.surface
                         else MaterialTheme.colorScheme.surface,
@@ -157,7 +157,7 @@ internal fun BottomSheet(
                         Modifier
                             .width(38.dp)
                             .height(4.dp)
-                            .clip(RoundedCornerShape(2.dp))
+                            .clip(xpShape(2.dp))
                             .background(
                                 MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.35f),
                             ),
@@ -187,7 +187,7 @@ internal fun SheetHeader(
             style = MaterialTheme.typography.labelLarge,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier
-                .clip(RoundedCornerShape(8.dp))
+                .clip(xpShape(8.dp))
                 .clickable {
                     onReset()
                     onDismiss()

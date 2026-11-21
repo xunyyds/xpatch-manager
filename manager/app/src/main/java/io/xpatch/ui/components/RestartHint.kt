@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Refresh
@@ -28,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.RestartCenter
+import io.xpatch.ui.theme.xpShape
 
 @Composable
 internal fun RestartHintBanner(
@@ -38,7 +38,7 @@ internal fun RestartHintBanner(
     modifier: Modifier = Modifier,
 ) {
     if (requests.isEmpty()) return
-    val shape = RoundedCornerShape(16.dp)
+    val shape = xpShape(16.dp)
     val primary = MaterialTheme.colorScheme.primary
     val container = MaterialTheme.colorScheme.primaryContainer
     val title = when {
@@ -67,7 +67,7 @@ internal fun RestartHintBanner(
         Box(
             modifier = Modifier
                 .size(30.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .background(container),
             contentAlignment = Alignment.Center,
         ) {
@@ -98,7 +98,7 @@ internal fun RestartHintBanner(
         Spacer(Modifier.width(8.dp))
         Box(
             modifier = Modifier
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .background(container)
                 .clickable { onRestart() }
                 .padding(horizontal = 12.dp, vertical = 7.dp),
@@ -113,7 +113,7 @@ internal fun RestartHintBanner(
         Box(
             modifier = Modifier
                 .size(32.dp)
-                .clip(RoundedCornerShape(10.dp))
+                .clip(xpShape(10.dp))
                 .clickable { onHide() },
             contentAlignment = Alignment.Center,
         ) {
@@ -157,7 +157,7 @@ internal fun RestartListRows(
                 }
                 Box(
                     modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(xpShape(10.dp))
                         .background(MaterialTheme.colorScheme.primaryContainer)
                         .clickable { onRestart(request) }
                         .padding(horizontal = 12.dp, vertical = 6.dp),

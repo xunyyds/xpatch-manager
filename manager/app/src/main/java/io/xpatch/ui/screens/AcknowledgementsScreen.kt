@@ -16,7 +16,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.OpenInNew
@@ -38,6 +37,7 @@ import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Radius
 import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.xpShape
 import io.xpatch.ui.util.rememberListBottomPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -59,7 +59,7 @@ internal fun AcknowledgementsScreen(modifier: Modifier = Modifier) {
             Column(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(Radius.card))
+                    .clip(xpShape(Radius.card))
                     .background(ackContainer()),
             ) {
                 AcknowledgementsData.entries.forEachIndexed { index, entry ->
@@ -88,7 +88,7 @@ private fun AcknowledgementsIntroCard(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(if (miuix) Radius.card else Radius.sheet))
+            .clip(xpShape(if (miuix) Radius.card else Radius.sheet))
             .background(container)
             .padding(Space.l),
         verticalAlignment = Alignment.Top,
@@ -173,7 +173,7 @@ private fun AcknowledgementsFooter(uriHandler: androidx.compose.ui.platform.UriH
         )
         Row(
             modifier = Modifier
-                .clip(RoundedCornerShape(Radius.control))
+                .clip(xpShape(Radius.control))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = ripple(color = primary),

@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -41,8 +40,8 @@ import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
 import io.xpatch.ui.components.GroupHeader
-import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.ModuleGuardHintBanner
+import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.RestartHintBanner
 import io.xpatch.ui.components.RestartListRows
 import io.xpatch.ui.components.RowDivider

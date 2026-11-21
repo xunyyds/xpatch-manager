@@ -15,7 +15,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Gavel
 import androidx.compose.material3.Icon
@@ -29,6 +28,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import io.xpatch.ui.util.rememberListBottomPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -65,7 +65,7 @@ internal fun DisclaimerIntroCard(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(if (miuix) 16.dp else 24.dp))
+            .clip(xpShape(if (miuix) 16.dp else 24.dp))
             .background(container)
             .padding(18.dp),
         verticalAlignment = Alignment.Top,

@@ -3,7 +3,6 @@ package io.xpatch.ui.theme
 import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
@@ -115,12 +114,12 @@ private val MiuixDark = darkColorScheme(
     onErrorContainer = Color(0xFFFFDAD6),
 )
 
-private val MiuixShapes = Shapes(
-    extraSmall = RoundedCornerShape(8.dp),
-    small = RoundedCornerShape(12.dp),
-    medium = RoundedCornerShape(16.dp),
-    large = RoundedCornerShape(16.dp),
-    extraLarge = RoundedCornerShape(24.dp),
+private val XpShapes = Shapes(
+    extraSmall = xpCornerShape(8.dp),
+    small = xpCornerShape(12.dp),
+    medium = xpCornerShape(16.dp),
+    large = xpCornerShape(16.dp),
+    extraLarge = xpCornerShape(24.dp),
 )
 
 @Composable
@@ -190,7 +189,7 @@ fun XPatchTheme(
                 CompositionLocalProvider(LocalMiuix provides true) {
                     MaterialTheme(
                         colorScheme = colors,
-                        shapes = MiuixShapes,
+                        shapes = XpShapes,
                         content = content,
                     )
                 }

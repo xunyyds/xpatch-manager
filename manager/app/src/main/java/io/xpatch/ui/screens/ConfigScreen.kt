@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.DropdownMenu
@@ -51,6 +50,8 @@ import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
+import java.io.File
 import kotlinx.coroutines.delay
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
 import top.yukonga.miuix.kmp.basic.ButtonDefaults
@@ -58,7 +59,6 @@ import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import top.yukonga.miuix.kmp.basic.TextField as MiuixTextField
 import top.yukonga.miuix.kmp.theme.MiuixTheme
-import java.io.File
 
 internal const val NO_SIGN_ID = "__no_sign__"
 
@@ -386,7 +386,7 @@ internal fun ConfigScreen(
                 Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp, vertical = 4.dp)
-                    .clip(RoundedCornerShape(16.dp))
+                    .clip(xpShape(16.dp))
                     .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
                     .padding(horizontal = 14.dp, vertical = 10.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -547,7 +547,7 @@ private fun AppHeaderCard(icon: android.graphics.drawable.Drawable?, name: Strin
         modifier = Modifier
             .fillMaxWidth()
             .padding(16.dp),
-        shape = RoundedCornerShape(20.dp),
+        shape = xpShape(20.dp),
         colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
     ) {
         Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -724,7 +724,7 @@ private fun VersionRow(
                 modifier = Modifier.weight(1f),
                 singleLine = true,
                 placeholder = { Text(placeholder, style = MaterialTheme.typography.bodyMedium) },
-                shape = RoundedCornerShape(12.dp),
+                shape = xpShape(12.dp),
             )
         }
     }
@@ -885,7 +885,7 @@ private fun StartButton(busy: Boolean, onClick: () -> Unit) {
             .fillMaxWidth()
             .padding(16.dp)
             .height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+        shape = xpShape(16.dp),
     ) {
         Text(if (busy) "正在打包…" else "开始 Patch", style = MaterialTheme.typography.titleMedium)
     }

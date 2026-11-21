@@ -15,11 +15,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ArrowDropDown
 import androidx.compose.material.icons.rounded.Check
@@ -49,23 +51,23 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.kyant.shapes.Capsule
+import com.kyant.shapes.RoundedCornerStyle
 import io.xpatch.data.DownloadCenter
 import io.xpatch.data.OnlinePackageStore
 import io.xpatch.data.SoftwareSource
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.XPatchDialog
-import io.xpatch.ui.theme.PagePad
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.heightIn
-import io.xpatch.ui.theme.HitArea
-import io.xpatch.ui.theme.Space
-import io.xpatch.ui.theme.Radius
-import io.xpatch.ui.theme.IconSize
-import io.xpatch.ui.theme.adaptiveDialogListHeight
-import io.xpatch.ui.theme.adaptiveLoadingHeight
 import io.xpatch.ui.format.formatTime
 import io.xpatch.ui.format.readableSize
+import io.xpatch.ui.theme.HitArea
+import io.xpatch.ui.theme.IconSize
+import io.xpatch.ui.theme.PagePad
+import io.xpatch.ui.theme.Radius
+import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.adaptiveDialogListHeight
+import io.xpatch.ui.theme.adaptiveLoadingHeight
+import io.xpatch.ui.theme.xpShape
 
 internal data class OnlinePrompt(
     val app: OnlinePackageStore.OnlineApp,
@@ -142,7 +144,7 @@ internal fun OnlinePromptDialog(
             Box {
                 Row(
                     Modifier
-                        .clip(RoundedCornerShape(Radius.chip))
+                        .clip(xpShape(Radius.chip))
                         .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f))
                         .clickable { sourceMenu = true }
                         .padding(horizontal = Space.xs, vertical = Space.xxs),
@@ -278,7 +280,7 @@ internal fun OnlinePromptDialog(
                         Row(
                             Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(Radius.control))
+                                .clip(xpShape(Radius.control))
                                 .background(
                                     if (isSelected) {
                                         MaterialTheme.colorScheme.primary.copy(alpha = 0.1f)
@@ -389,7 +391,7 @@ private fun VersionBadge(text: String, color: androidx.compose.ui.graphics.Color
         color = color,
         maxLines = 1,
         modifier = Modifier
-            .clip(RoundedCornerShape(Radius.chip))
+            .clip(xpShape(Radius.chip))
             .background(color.copy(alpha = 0.12f))
             .padding(horizontal = Space.xs, vertical = Space.xxs),
     )
@@ -623,7 +625,7 @@ internal fun OnlineStatusCapsule(
     }
     Box(
         modifier
-            .clip(RoundedCornerShape(50))
+            .clip(Capsule(RoundedCornerStyle.Continuous))
             .background(container)
             .clickable { onClick() }
             .padding(horizontal = Space.m, vertical = Space.s)
@@ -706,7 +708,7 @@ internal fun OnlineDownloadEntries(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(Radius.control))
+                    .clip(xpShape(Radius.control))
                     .background(MaterialTheme.colorScheme.surfaceContainerLow)
                     .clickable { onOpen(entry) }
                     .padding(horizontal = Space.m, vertical = Space.m),

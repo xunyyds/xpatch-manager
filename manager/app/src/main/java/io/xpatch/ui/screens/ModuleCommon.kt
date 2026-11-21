@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
@@ -41,6 +40,7 @@ import io.xpatch.ui.theme.HitArea
 import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.Radius
 import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -163,7 +163,7 @@ private fun MissingEntryRow(count: Int, onClick: () -> Unit, modifier: Modifier 
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = HitArea.minimum)
-            .clip(RoundedCornerShape(Radius.control))
+            .clip(xpShape(Radius.control))
             .clickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = ripple(color = primary),

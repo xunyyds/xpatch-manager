@@ -1,17 +1,17 @@
 package io.xpatch.ui.screens
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
-import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -25,16 +25,6 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.unit.IntOffset
-import kotlin.math.roundToInt
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Download
@@ -63,14 +53,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import io.xpatch.ui.theme.AnimationQuality
-import io.xpatch.ui.theme.LocalAnimationQuality
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import io.xpatch.data.ModuleUpdate
@@ -88,6 +84,10 @@ import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.components.markdownItems
 import io.xpatch.ui.components.rememberMarkdownBlocks
 import io.xpatch.ui.format.formatTime
+import io.xpatch.ui.theme.AnimationQuality
+import io.xpatch.ui.theme.LocalAnimationQuality
+import io.xpatch.ui.theme.xpShape
+import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
@@ -370,7 +370,7 @@ internal fun RepoPageScreen(
             Box {
                 Row(
                     Modifier
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(xpShape(12.dp))
                         .clickable { filterSheet = true }
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -405,7 +405,7 @@ internal fun RepoPageScreen(
             Box {
                 Row(
                     Modifier
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(xpShape(12.dp))
                         .clickable { sortMenu = true }
                         .padding(horizontal = 12.dp, vertical = 7.dp),
                     verticalAlignment = Alignment.CenterVertically,
@@ -717,7 +717,7 @@ internal fun RepoModuleRow(
         Column(
             Modifier
                 .weight(1f)
-                .clip(RoundedCornerShape(8.dp))
+                .clip(xpShape(8.dp))
                 .clickable { onOpen() }
                 .padding(start = 0.dp, end = 4.dp, top = 2.dp, bottom = 2.dp),
         ) {
@@ -860,7 +860,7 @@ private fun RepoFilterSheet(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(xpShape(8.dp))
                             .clickable { onClearScope() }
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
@@ -870,7 +870,7 @@ private fun RepoFilterSheet(
                     style = MaterialTheme.typography.labelLarge,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
+                        .clip(xpShape(8.dp))
                         .clickable { onPickScope() }
                         .padding(horizontal = 8.dp, vertical = 6.dp),
                 )
@@ -891,7 +891,7 @@ private fun RepoFilterSheet(
                         style = MaterialTheme.typography.labelLarge,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(xpShape(8.dp))
                             .clickable { onClearAuthor() }
                             .padding(horizontal = 8.dp, vertical = 6.dp),
                     )
@@ -1000,7 +1000,7 @@ internal fun DownloadsScreen(
                         Column(
                             Modifier
                                 .fillMaxWidth()
-                                .clip(RoundedCornerShape(8.dp))
+                                .clip(xpShape(8.dp))
                                 .clickable(enabled = module != null) { module?.let(onOpenDetail) }
                                 .padding(vertical = 2.dp),
                         ) {
@@ -1094,7 +1094,7 @@ internal fun RepoDetailScreen(
                     Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    shape = RoundedCornerShape(20.dp),
+                    shape = xpShape(20.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
                 ) {
                     Column(Modifier.padding(20.dp)) {
@@ -1158,7 +1158,7 @@ internal fun RepoDetailScreen(
                         Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 20.dp)
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(xpShape(10.dp))
                             .clickable {
                                 showVersions = true
                                 if (versions.isEmpty() && !versionsLoading) onLoadVersions()
@@ -1218,7 +1218,7 @@ internal fun RepoDetailScreen(
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 8.dp)
                 .height(52.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = xpShape(16.dp),
         ) {
             if (busy) PulsingDots() else Text(actionLabel)
         }
@@ -1228,7 +1228,7 @@ internal fun RepoDetailScreen(
                 .fillMaxWidth()
                 .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
                 .height(48.dp),
-            shape = RoundedCornerShape(16.dp),
+            shape = xpShape(16.dp),
         ) {
             Text("在仓库中查看")
         }
@@ -1288,7 +1288,7 @@ private fun RepoVersionsDialog(
                     Row(
                         Modifier
                             .fillMaxWidth()
-                            .clip(RoundedCornerShape(8.dp))
+                            .clip(xpShape(8.dp))
                             .clickable(enabled = !busy && !isCurrent) { onPick(version) }
                             .padding(horizontal = 4.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -1375,7 +1375,7 @@ private fun TagBadge(text: String, enabled: Boolean) {
                 } else {
                     Color.Gray.copy(alpha = 0.08f)
                 },
-                RoundedCornerShape(8.dp),
+                xpShape(8.dp),
             )
             .padding(horizontal = 8.dp, vertical = 4.dp),
     )

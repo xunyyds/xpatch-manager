@@ -13,7 +13,6 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Button
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
@@ -33,6 +32,7 @@ import io.xpatch.data.SignatureStore
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -454,7 +454,7 @@ internal fun ExtendenAddButton(onClick: () -> Unit) {
             .fillMaxWidth()
             .padding(16.dp)
             .height(52.dp),
-        shape = RoundedCornerShape(16.dp),
+        shape = xpShape(16.dp),
     ) {
         Text("添加自定义签名", style = MaterialTheme.typography.titleMedium)
     }

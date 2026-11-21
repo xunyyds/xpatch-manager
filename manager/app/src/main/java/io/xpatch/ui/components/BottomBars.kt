@@ -10,7 +10,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
@@ -28,8 +27,8 @@ import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.catalog.components.LiquidBottomTab
 import com.kyant.backdrop.catalog.components.LiquidBottomTabs
-import io.xpatch.ui.screens.Tab
 import io.xpatch.data.LiquidGlassLevel
+import io.xpatch.ui.screens.Tab
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
@@ -93,8 +92,7 @@ internal fun LiquidBar(
     val miuix = LocalMiuix.current
     val lowPower = LocalAnimationQuality.current == AnimationQuality.REDUCED
     val primary = if (miuix) MiuixTheme.colorScheme.primary else MaterialTheme.colorScheme.primary
-    val idle = if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
-    else MaterialTheme.colorScheme.onSurfaceVariant
+    val idle = if (miuix) MiuixTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurface
     Box(
         Modifier
             .fillMaxWidth()

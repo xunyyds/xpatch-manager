@@ -10,8 +10,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
-import androidx.compose.ui.semantics.Role
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -24,10 +22,12 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
+import io.xpatch.ui.theme.xpShape
 
 @Composable
 fun JellySwitch(
@@ -112,7 +112,7 @@ fun JellySwitch(
         modifier = modifier
             .width(trackWidth)
             .height(trackHeight)
-            .clip(RoundedCornerShape(trackHeight / 2))
+            .clip(xpShape(trackHeight / 2))
             .background(lerpColor(offColor, onColor, trackColor.value))
             .toggleable(
                 value = checked,
@@ -133,7 +133,7 @@ fun JellySwitch(
                 .offset(x = left)
                 .width(knobWidth)
                 .height(knob)
-                .clip(RoundedCornerShape(knob / 2))
+                .clip(xpShape(knob / 2))
                 .background(Color.White),
         )
     }

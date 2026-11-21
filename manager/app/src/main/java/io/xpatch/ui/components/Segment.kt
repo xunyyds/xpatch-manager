@@ -7,7 +7,6 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -20,6 +19,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.basic.Text as MiuixText
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -31,7 +31,7 @@ internal fun SegmentedControl(
     onSelect: (Int) -> Unit,
 ) {
     val miuix = LocalMiuix.current
-    val shape = RoundedCornerShape(if (miuix) 14.dp else 10.dp)
+    val shape = xpShape(if (miuix) 14.dp else 10.dp)
     val track = if (miuix) MiuixTheme.colorScheme.surfaceContainerHigh
     else MaterialTheme.colorScheme.surfaceContainerHigh
     Row(

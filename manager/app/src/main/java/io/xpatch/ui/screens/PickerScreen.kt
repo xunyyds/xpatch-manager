@@ -16,12 +16,10 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import io.xpatch.ui.components.JellySwitch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
@@ -39,6 +37,7 @@ import io.xpatch.model.AppInfo
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
 import io.xpatch.ui.components.GroupHeader
+import io.xpatch.ui.components.JellySwitch
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SortMenu
 import io.xpatch.ui.components.SortOption
@@ -46,6 +45,7 @@ import io.xpatch.ui.components.StickySearchBar
 import io.xpatch.ui.components.TrailingText
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.xpShape
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -175,7 +175,7 @@ internal fun PickerScreen(
                     else MaterialTheme.colorScheme.onSurfaceVariant
                     Row(
                         Modifier
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(xpShape(10.dp))
                             .background(chip)
                             .clickable { open() }
                             .padding(horizontal = 10.dp, vertical = 7.dp),
@@ -269,7 +269,7 @@ internal fun PickerScreen(
                     Modifier
                         .align(Alignment.CenterEnd)
                         .padding(end = 3.dp)
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(xpShape(14.dp))
                         .background(
                             if (miuix) MiuixTheme.colorScheme.surfaceContainerHighest
                             else MaterialTheme.colorScheme.surfaceContainerHighest,
@@ -286,7 +286,7 @@ internal fun PickerScreen(
                             color = if (active) MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                             modifier = Modifier
-                                .clip(RoundedCornerShape(10.dp))
+                                .clip(xpShape(10.dp))
                                 .clickable { scope.launch { listState.scrollToItem(header) } }
                                 .padding(horizontal = 5.dp, vertical = 1.dp),
                         )

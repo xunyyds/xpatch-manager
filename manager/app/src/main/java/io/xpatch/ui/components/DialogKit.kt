@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -34,6 +33,7 @@ import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Radius
 import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.xpShape
 import kotlin.math.roundToInt
 
 internal data class DialogAction(
@@ -128,7 +128,7 @@ internal fun XPatchDialog(
                 .widthIn(max = dialogMaxWidth.dp)
                 .fillMaxWidth()
                 .padding(horizontal = PagePad.horizontal)
-                .clip(RoundedCornerShape(Radius.dialog))
+                .clip(xpShape(Radius.dialog))
                 .background(MaterialTheme.colorScheme.surface),
         ) {
             Text(
@@ -184,7 +184,7 @@ private fun DialogButton(
 ) {
     Box(
         Modifier
-            .clip(RoundedCornerShape(Radius.control))
+            .clip(xpShape(Radius.control))
             .clickable { onClick() }
             .padding(horizontal = Space.m, vertical = Space.m),
     ) {

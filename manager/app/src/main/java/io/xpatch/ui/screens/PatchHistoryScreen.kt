@@ -17,7 +17,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
@@ -39,21 +38,22 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import io.xpatch.ui.components.SegmentedControl
-import io.xpatch.ui.theme.PagePad
 import io.xpatch.data.PatchExportRef
 import io.xpatch.data.PatchRecord
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.RowDivider
+import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.HitArea
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Radius
 import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -305,7 +305,7 @@ private fun HistoryEntryBody(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(Radius.control))
+                    .clip(xpShape(Radius.control))
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = if (infoOverflow) ripple(color = primary) else null,
@@ -352,7 +352,7 @@ private fun HistoryEntryBody(
             Row(
                 Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
+                    .clip(xpShape(8.dp))
                     .clickable { exportsOpen = !exportsOpen }
                     .padding(vertical = 6.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -430,7 +430,7 @@ private fun HistoryBadge(text: String, color: Color) {
         color = color,
         maxLines = 1,
         modifier = Modifier
-            .clip(RoundedCornerShape(8.dp))
+            .clip(xpShape(8.dp))
             .background(color.copy(alpha = 0.12f))
             .padding(horizontal = 8.dp, vertical = 3.dp),
     )
@@ -532,7 +532,7 @@ private fun CheckLine(
     Row(
         Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
+            .clip(xpShape(10.dp))
             .clickable { onCheckedChange(!checked) }
             .padding(vertical = 2.dp),
         verticalAlignment = Alignment.CenterVertically,

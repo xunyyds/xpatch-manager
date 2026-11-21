@@ -52,10 +52,11 @@ import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
 import com.kyant.shapes.Capsule
+import com.kyant.shapes.RoundedCornerStyle
 import io.xpatch.data.LiquidGlassLevel
-import kotlinx.coroutines.launch
 import kotlin.math.abs
 import kotlin.math.sign
+import kotlinx.coroutines.launch
 
 @Composable
 private fun liquidBlurRadius(level: LiquidGlassLevel, lowPower: Boolean): Dp {
@@ -202,7 +203,7 @@ fun LiquidBottomTabs(
                 }
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { Capsule() },
+                    shape = { Capsule(RoundedCornerStyle.Continuous) },
                     effects = {
                         if (!isTransparent) {
                             vibrancy()
@@ -241,7 +242,7 @@ fun LiquidBottomTabs(
                     }
                     .drawBackdrop(
                         backdrop = backdrop,
-                        shape = { Capsule() },
+                        shape = { Capsule(RoundedCornerStyle.Continuous) },
                         effects = {
                             if (!isTransparent) {
                                 val progress = dampedDragAnimation.pressProgress
@@ -278,7 +279,7 @@ fun LiquidBottomTabs(
                 .then(dampedDragAnimation.modifier)
                 .drawBackdrop(
                     backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
-                    shape = { Capsule() },
+                    shape = { Capsule(RoundedCornerStyle.Continuous) },
                     effects = {
                         if (!isTransparent) {
                             val progress = dampedDragAnimation.pressProgress
@@ -291,11 +292,11 @@ fun LiquidBottomTabs(
                     },
                     highlight = {
                         val progress = dampedDragAnimation.pressProgress
-                        Highlight.Default.copy(alpha = progress)
+                        Highlight.Default.copy(alpha = 0.35f + progress)
                     },
                     shadow = {
                         val progress = dampedDragAnimation.pressProgress
-                        Shadow(alpha = progress)
+                        Shadow(alpha = 0.08f + progress)
                     },
                     innerShadow = {
                         val progress = dampedDragAnimation.pressProgress
@@ -312,18 +313,23 @@ fun LiquidBottomTabs(
                         scaleY *= 1f - (velocity * 0.25f).fastCoerceIn(-0.2f, 0.2f)
                     },
                     onDrawSurface = {
+                        val progress = dampedDragAnimation.pressProgress
+                        drawRect(
+                            if (isLightTheme) {
+                                Color.White.copy(alpha = 0.28f - 0.08f * progress)
+                            } else {
+                                Color.White.copy(alpha = 0.14f - 0.04f * progress)
+                            }
+                        )
                         if (!isTransparent) {
-                            val progress = dampedDragAnimation.pressProgress
                             drawRect(
-                                if (isLightTheme) Color.Black.copy(0.1f)
-                                else Color.White.copy(0.1f),
-                                alpha = 1f - progress
+                                if (isLightTheme) Color.Black.copy(alpha = 0.03f * progress)
+                                else Color.Black.copy(alpha = 0.10f * progress)
                             )
-                            drawRect(Color.Black.copy(alpha = 0.03f * progress))
                         }
                     }
                 )
-                .height(56.dp)
+                .height(48.dp)
                 .fillMaxWidth(1f / tabsCount)
         )
     }
