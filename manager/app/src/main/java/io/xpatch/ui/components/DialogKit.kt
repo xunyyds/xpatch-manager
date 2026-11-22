@@ -33,6 +33,7 @@ import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Radius
 import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import kotlin.math.roundToInt
 
@@ -128,8 +129,8 @@ internal fun XPatchDialog(
                 .widthIn(max = dialogMaxWidth.dp)
                 .fillMaxWidth()
                 .padding(horizontal = PagePad.horizontal)
-                .clip(xpShape(Radius.dialog))
-                .background(MaterialTheme.colorScheme.surface),
+                .clip(ShapeTokens.dialog)
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
         ) {
             Text(
                 title,

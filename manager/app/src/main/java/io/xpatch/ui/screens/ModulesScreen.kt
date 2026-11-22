@@ -73,7 +73,7 @@ internal fun ModulesScreen(
                         Modifier
                             .fillMaxWidth()
                             .clickable { onOpenRepo() }
-                            .padding(horizontal = 20.dp, vertical = 14.dp),
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text("模块仓库", style = MaterialTheme.typography.bodyLarge, modifier = Modifier.weight(1f))

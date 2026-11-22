@@ -31,7 +31,9 @@ import androidx.compose.ui.unit.dp
 import io.xpatch.data.SignatureStore
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.GroupHeader
+import io.xpatch.ui.components.appTextFieldColors
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.basic.Button as MiuixButton
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
@@ -286,19 +288,23 @@ private fun ImportFormCard(
             Text(title, style = MaterialTheme.typography.titleMedium)
             Spacer(Modifier.height(10.dp))
             Text(nameLabel, style = MaterialTheme.typography.labelMedium)
-            androidx.compose.material3.OutlinedTextField(
+            androidx.compose.material3.TextField(
                 value = nameValue,
                 onValueChange = onNameChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                shape = ShapeTokens.input,
+                colors = appTextFieldColors(),
             )
             Spacer(Modifier.height(8.dp))
             Text(passwordLabel, style = MaterialTheme.typography.labelMedium)
-            androidx.compose.material3.OutlinedTextField(
+            androidx.compose.material3.TextField(
                 value = passwordValue,
                 onValueChange = onPasswordChange,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
+                shape = ShapeTokens.input,
+                colors = appTextFieldColors(),
                 visualTransformation = androidx.compose.ui.text.input.PasswordVisualTransformation(),
             )
             Spacer(Modifier.height(6.dp))

@@ -43,7 +43,6 @@ import androidx.compose.ui.text.withLink
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.xpatch.ui.theme.xpShape
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -174,7 +173,7 @@ internal fun MarkdownBlock(block: MdBlock, modifier: Modifier = Modifier) {
 
             is MdBlock.Paragraph -> Text(
                 text = mdInline(block.text),
-                style = MaterialTheme.typography.bodyMedium.copy(lineHeight = 22.sp),
+                style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
 
@@ -216,13 +215,13 @@ private fun MdListRow(item: MdListItem, style: TextStyle) {
     ) {
         Text(
             text = item.marker,
-            style = style.copy(lineHeight = 21.sp),
+            style = style,
             color = MaterialTheme.colorScheme.primary,
             modifier = Modifier.width(if (item.marker.length > 2) 28.dp else 20.dp),
         )
         Text(
             text = mdInline(item.text),
-            style = style.copy(lineHeight = 21.sp),
+            style = style,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.weight(1f),
         )
@@ -242,10 +241,7 @@ private fun MdCodeBlock(code: String) {
     ) {
         Text(
             text = code,
-            style = MaterialTheme.typography.bodySmall.copy(
-                fontFamily = FontFamily.Monospace,
-                lineHeight = 18.sp,
-            ),
+            style = MaterialTheme.typography.bodySmall.copy(fontFamily = FontFamily.Monospace),
             color = MaterialTheme.colorScheme.onSurface,
             softWrap = false,
         )
@@ -308,7 +304,7 @@ private fun MdTableRow(cells: List<String>, cellWidth: Dp, header: Boolean) {
             ) {
                 Text(
                     text = mdInline(cell),
-                    style = MaterialTheme.typography.bodySmall.copy(lineHeight = 18.sp),
+                    style = MaterialTheme.typography.bodySmall,
                     color = if (header) {
                         MaterialTheme.colorScheme.onSurface
                     } else {

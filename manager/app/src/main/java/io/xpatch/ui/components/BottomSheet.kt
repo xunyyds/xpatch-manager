@@ -32,7 +32,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -43,6 +42,7 @@ import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import kotlinx.coroutines.launch
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -89,7 +89,7 @@ internal fun BottomSheet(
         Box(
             Modifier
                 .fillMaxSize()
-                .background(Color.Black.copy(alpha = if (dragging) 0.36f else 0.28f))
+                .background(MaterialTheme.colorScheme.scrim.copy(alpha = if (dragging) 0.36f else 0.28f))
                 .clickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = null,
@@ -118,10 +118,10 @@ internal fun BottomSheet(
                             }
                         }
                     }
-                    .clip(xpShape(topStart = 26.dp, topEnd = 26.dp))
+                    .clip(if (miuix) xpShape(topStart = 26.dp, topEnd = 26.dp) else ShapeTokens.sheet)
                     .background(
                         if (miuix) MiuixTheme.colorScheme.surface
-                        else MaterialTheme.colorScheme.surface,
+                        else MaterialTheme.colorScheme.surfaceContainerLow,
                     )
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
@@ -129,7 +129,12 @@ internal fun BottomSheet(
                     ) { }
                     .navigationBarsPadding()
                     .verticalScroll(rememberScrollState())
-                    .padding(start = 18.dp, end = 18.dp, top = 8.dp, bottom = 12.dp),
+                    .padding(
+                        start = if (miuix) 18.dp else 24.dp,
+                        end = if (miuix) 18.dp else 24.dp,
+                        top = 8.dp,
+                        bottom = 12.dp,
+                    ),
             ) {
                 Box(
                     Modifier

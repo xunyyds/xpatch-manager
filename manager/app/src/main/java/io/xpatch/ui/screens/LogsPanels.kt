@@ -62,6 +62,7 @@ import io.xpatch.ui.components.SegmentedControl
 import io.xpatch.ui.components.SheetHeader
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 
@@ -753,7 +754,8 @@ private fun ClearSection(
 ) {
     Card(
         modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        shape = ShapeTokens.card,
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
     ) {
         Row(
             Modifier.fillMaxWidth().padding(start = 8.dp, end = 8.dp),

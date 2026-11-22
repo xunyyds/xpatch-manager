@@ -9,7 +9,7 @@ import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.BlendMode
-import androidx.compose.ui.graphics.Color
+import io.xpatch.ui.theme.GlassHighlight
 import androidx.compose.ui.graphics.ShaderBrush
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.util.fastCoerceIn
@@ -64,13 +64,13 @@ half4 main(float2 coord) {
             if (progress > 0f) {
                 if (shader != null) {
                     drawRect(
-                        Color.White.copy(0.08f * progress),
+                        GlassHighlight.copy(0.08f * progress),
                         blendMode = BlendMode.Plus
                     )
                     shader.apply {
                         val position = position(size, positionAnimation.value)
                         setFloatUniform("size", size.width, size.height)
-                        setColorUniform("color", Color.White.copy(0.15f * progress))
+                        setColorUniform("color", GlassHighlight.copy(0.15f * progress))
                         setFloatUniform("radius", size.minDimension * 1.5f)
                         setFloatUniform(
                             "position",
@@ -84,7 +84,7 @@ half4 main(float2 coord) {
                     )
                 } else {
                     drawRect(
-                        Color.White.copy(0.25f * progress),
+                        GlassHighlight.copy(0.25f * progress),
                         blendMode = BlendMode.Plus
                     )
                 }

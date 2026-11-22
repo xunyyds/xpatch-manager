@@ -11,8 +11,6 @@ class ConfigBackup(private val context: Context) {
     private val signatureStore = SignatureStore(context)
     private val settingsStore = SettingsStore(context)
 
-    data class ImportResult(val success: Boolean, val message: String)
-
     fun exportSettings(): JSONObject {
         val settings = settingsStore.load()
         return JSONObject().apply {
@@ -216,100 +214,6 @@ class ConfigBackup(private val context: Context) {
             signatureStore.setDefaultProfile(SignatureStore.BUILTIN_XPATCH)
         }
         return restored
-    }
-
-    fun importLegacy(json: String): ImportResult {
-        val root = runCatching { JSONObject(json) }.getOrElse {
-            return ImportResult(false, "文件格式不正确：" + it.message)
-        }
-        var scopeCount = 0
-        var apiCount = 0
-
-        scopeStore.clearAll()
-        apiStore.clearAll()
-        try {
-            root.optJSONObject("scope")?.let { scope ->
-                scope.keys().forEach { module ->
-                    val apps = scope.optJSONArray(module) ?: return@forEach
-                    for (index in 0 until apps.length()) {
-                        apps.optString(index).takeIf { it.isNotBlank() }?.let { app ->
-                            scopeStore.setInScope(module, app, true)
-                            scopeCount++
-                        }
-                    }
-                }
-            }
-
-            root.optJSONObject("moduleApi")?.let { api ->
-                api.keys().forEach { key ->
-                    val parts = key.split(":")
-                    if (parts.size == 2) {
-                        apiStore.setApi(parts[0], parts[1], api.optInt(key, 0))
-                        apiCount++
-                    }
-                }
-            }
-
-            root.optString("defaultSignature").takeIf { it.isNotEmpty() }?.let { id ->
-                if (signatureStore.allProfiles().any { it.id == id }) {
-                    signatureStore.setDefaultProfile(id)
-                }
-            }
-
-            root.optJSONObject("settings")?.let { settings ->
-                if (settings.has("themeMode")) settingsStore.setThemeMode(settings.optInt("themeMode", 0))
-                if (settings.has("showSystemApps")) {
-                    settingsStore.setShowSystemApps(settings.optBoolean("showSystemApps", false))
-                }
-                if (settings.has("bypassLevel")) {
-                    settingsStore.setSignatureBypassLevel(
-                        settings.optInt("bypassLevel", DEFAULT_BYPASS_LEVEL),
-                    )
-                }
-                if (settings.has("injectSignature")) {
-                    settingsStore.setInjectSignature(settings.optBoolean("injectSignature", true))
-                }
-                if (settings.has("fileProvider")) {
-                    settingsStore.setFileProvider(settings.optBoolean("fileProvider", false))
-                }
-                if (settings.has("sigMode")) {
-                    settingsStore.setSigMode(settings.optString("sigMode", SettingsStore.SIG_MODE_DEFAULT))
-                }
-                if (settings.has("forceOverwrite")) {
-                    settingsStore.setForceOverwrite(settings.optBoolean("forceOverwrite", false))
-                }
-                if (settings.has("injectObfuscate")) {
-                    settingsStore.setInjectObfuscate(settings.optBoolean("injectObfuscate", false))
-                }
-                if (settings.has("injectKeepCrashPermission")) {
-                    settingsStore.setInjectKeepCrashPermission(
-                        settings.optBoolean("injectKeepCrashPermission", false),
-                    )
-                }
-                if (settings.has("uiStyle")) {
-                    settingsStore.setUiStyle(UiStyle.of(settings.optInt("uiStyle", UiStyle.MATERIAL3.index)))
-                }
-                if (settings.has("bottomBarStyle")) {
-                    settingsStore.setBottomBarStyle(
-                        settings.optInt("bottomBarStyle", SettingsStore.BOTTOM_BAR_STANDARD),
-                    )
-                }
-                if (settings.has("liquidGlassLevel")) {
-                    settingsStore.setLiquidGlassLevel(
-                        LiquidGlassLevel.of(
-                            settings.optInt("liquidGlassLevel", SettingsStore.LIQUID_GLASS_ENHANCED),
-                        ),
-                    )
-                }
-                HookCore.entries.getOrNull(settings.optInt("hookCore", 0))?.let {
-                    settingsStore.setHookCore(it)
-                }
-            }
-        } finally {
-            scopeStore.invalidate()
-        }
-
-        return ImportResult(true, "已恢复 $scopeCount 条作用域、$apiCount 条 API 配置")
     }
 
     private companion object {

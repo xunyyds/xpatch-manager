@@ -25,15 +25,19 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Inbox
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextFieldColors
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
@@ -57,6 +61,7 @@ import androidx.core.graphics.drawable.toBitmap
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import java.util.Collections
 import java.util.WeakHashMap
@@ -82,8 +87,11 @@ fun AppIcon(drawable: Drawable?, size: Int = 48) {
     Box(
         modifier = Modifier
             .size(size.dp)
-            .clip(xpShape(size.dp * 0.3f))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
+            .clip(if (LocalMiuix.current) xpShape(size.dp * 0.3f) else ShapeTokens.badge)
+            .background(
+                if (LocalMiuix.current) MaterialTheme.colorScheme.surfaceVariant
+                else MaterialTheme.colorScheme.surfaceContainerHigh,
+            ),
         contentAlignment = Alignment.Center,
     ) {
         if (bitmap != null) {
@@ -119,10 +127,10 @@ fun EntryRow(
     }
     Row(
         modifier = modifier.padding(
-            start = if (miuix) 16.dp else 20.dp,
-            end = if (miuix) 16.dp else 20.dp,
-            top = 12.dp,
-            bottom = 12.dp,
+            start = if (miuix) 16.dp else 24.dp,
+            end = if (miuix) 16.dp else 24.dp,
+            top = if (miuix) 12.dp else 16.dp,
+            bottom = if (miuix) 12.dp else 16.dp,
         ),
         verticalAlignment = Alignment.CenterVertically,
     ) {
@@ -198,6 +206,17 @@ fun EntryRow(
 }
 
 @Composable
+fun appTextFieldColors(): TextFieldColors = TextFieldDefaults.colors(
+    focusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+    disabledContainerColor = MaterialTheme.colorScheme.surfaceContainerHighest.copy(alpha = 0.5f),
+    focusedIndicatorColor = Color.Transparent,
+    unfocusedIndicatorColor = Color.Transparent,
+    disabledIndicatorColor = Color.Transparent,
+    errorIndicatorColor = Color.Transparent,
+)
+
+@Composable
 fun SearchField(
     value: String,
     onValueChange: (String) -> Unit,
@@ -219,7 +238,7 @@ fun SearchField(
             .height(48.dp)
             .clip(xpShape(if (miuix) 14.dp else 24.dp))
             .background(container)
-            .padding(start = 12.dp, end = 4.dp),
+            .padding(start = if (miuix) 12.dp else 8.dp, end = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(
@@ -277,7 +296,7 @@ fun GroupHeader(text: String) {
         text,
         style = MaterialTheme.typography.labelLarge,
         color = MaterialTheme.colorScheme.primary,
-        modifier = Modifier.padding(start = 24.dp, top = 18.dp, bottom = 6.dp),
+        modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 8.dp),
     )
 }
 
@@ -314,16 +333,18 @@ fun Chip(
         return
     }
     Surface(
-        shape = xpShape(20.dp),
+        shape = CircleShape,
         color = if (selected) MaterialTheme.colorScheme.secondaryContainer
-        else MaterialTheme.colorScheme.surface,
+        else MaterialTheme.colorScheme.surfaceContainerHigh,
+        contentColor = if (selected) MaterialTheme.colorScheme.onSecondaryContainer
+        else MaterialTheme.colorScheme.onSurfaceVariant,
         tonalElevation = 0.dp,
         onClick = onClick,
     ) {
         Text(
             text,
             style = MaterialTheme.typography.labelLarge,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
+            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
         )
     }
 }
@@ -331,7 +352,7 @@ fun Chip(
 @Composable
 fun RowDivider(startPadding: Dp = Dp.Unspecified) {
     val resolved = if (startPadding == Dp.Unspecified) {
-        if (LocalMiuix.current) 72.dp else 82.dp
+        if (LocalMiuix.current) 72.dp else 86.dp
     } else {
         startPadding
     }
@@ -342,32 +363,66 @@ fun RowDivider(startPadding: Dp = Dp.Unspecified) {
     } else {
         HorizontalDivider(
             modifier = Modifier.padding(start = resolved),
-            color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f),
+            color = MaterialTheme.colorScheme.outlineVariant,
         )
     }
 }
 
 @Composable
-fun EmptyState(text: String) {
-    Box(
+fun EmptyState(text: String, action: (@Composable () -> Unit)? = null) {
+    if (LocalMiuix.current) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(vertical = 72.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                MiuixText(
+                    text,
+                    style = MiuixTheme.textStyles.body2,
+                    color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                    textAlign = TextAlign.Center,
+                )
+                if (action != null) {
+                    Spacer(Modifier.height(16.dp))
+                    action()
+                }
+            }
+        }
+        return
+    }
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 72.dp),
-        contentAlignment = Alignment.Center,
+            .padding(horizontal = 24.dp, vertical = 56.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        if (LocalMiuix.current) {
-            MiuixText(
-                text,
-                style = MiuixTheme.textStyles.body2,
-                color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
-                textAlign = TextAlign.Center,
+        Box(
+            modifier = Modifier
+                .size(72.dp)
+                .clip(xpShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                Icons.Rounded.Inbox,
+                contentDescription = null,
+                modifier = Modifier.size(34.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-        } else {
-            Text(
-                text,
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        }
+        Spacer(Modifier.height(20.dp))
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center,
+        )
+        if (action != null) {
+            Spacer(Modifier.height(20.dp))
+            action()
         }
     }
 }

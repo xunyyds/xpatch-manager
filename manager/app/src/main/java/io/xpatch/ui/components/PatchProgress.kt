@@ -34,7 +34,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import io.xpatch.ui.theme.LocalMiuix
@@ -109,7 +108,7 @@ internal fun PatchProgressDialog(
                     if (!resultPath.isNullOrBlank()) {
                         Text(
                             resultPath,
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                            style = MaterialTheme.typography.labelSmall,
                             color = secondary,
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -259,7 +258,7 @@ private fun TypewriterLogs(
             val fresh = index == shown - 1
             Text(
                 line,
-                style = MaterialTheme.typography.labelSmall.copy(fontSize = 11.sp),
+                style = MaterialTheme.typography.labelSmall,
                 color = if (fresh) primary else secondary,
                 modifier = Modifier.fillMaxWidth(),
             )

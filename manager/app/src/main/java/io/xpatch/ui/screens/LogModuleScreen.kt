@@ -39,7 +39,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -224,7 +223,7 @@ private fun ModuleSummaryCard(
 
 @Composable
 private fun LevelChip(level: LogLevel, count: Int) {
-    val dot = levelColors(level).first
+    val dot = levelColor(level)
     Row(
         Modifier
             .clip(xpShape(8.dp))
@@ -404,15 +403,15 @@ private fun FilterChip(
     selected: Boolean,
     onClick: () -> Unit,
 ) {
-    val accent = level?.let { levelColors(it).first } ?: MaterialTheme.colorScheme.primary
+    val accent = level?.let { levelColor(it) } ?: MaterialTheme.colorScheme.primary
     val container = if (selected) accent.copy(alpha = 0.18f) else MaterialTheme.colorScheme.surfaceContainerHigh
     val content = if (selected) accent else MaterialTheme.colorScheme.onSurfaceVariant
     Row(
         Modifier
-            .clip(xpShape(10.dp))
+            .clip(CircleShape)
             .background(container)
             .combinedClickable(onClick = onClick, onLongClick = null)
-            .padding(horizontal = 11.dp, vertical = 7.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (level != null && level != LogLevel.All) {

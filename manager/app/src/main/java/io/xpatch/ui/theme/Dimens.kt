@@ -1,8 +1,11 @@
 package io.xpatch.ui.theme
 
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 
 object Space {
@@ -44,8 +47,6 @@ object Radius {
     val chip: Dp = 6.dp
     val control: Dp = 12.dp
     val card: Dp = 16.dp
-    val sheet: Dp = 24.dp
-    val dialog: Dp = 28.dp
 }
 
 object DialogMetrics {
@@ -89,4 +90,10 @@ object Motion {
     const val normalMs: Int = 160
     const val containerMs: Int = 220
     const val containerExitMs: Int = 180
+
+    val fadeIn = tween<Float>(durationMillis = normalMs, easing = FastOutSlowInEasing)
+    val fadeOut = tween<Float>(durationMillis = quickMs, easing = FastOutSlowInEasing)
+    val control = tween<Float>(durationMillis = normalMs, easing = FastOutSlowInEasing)
+    val spatialEnter = tween<IntOffset>(durationMillis = containerMs, easing = FastOutSlowInEasing)
+    val spatialExit = tween<IntOffset>(durationMillis = containerExitMs, easing = FastOutSlowInEasing)
 }

@@ -30,12 +30,15 @@ internal sealed interface PatchTarget {
     ) : PatchTarget
 }
 
-internal data class InstallBlock(val packageName: String, val fromRepo: Boolean)
+internal data class InstallBlock(val packageName: String)
+
 
 internal sealed interface Page {
     data object Home : Page
     data object Picker : Page
     data object Signatures : Page
+    data object AppearanceSettings : Page
+    data object Releases : Page
     data class Config(val target: PatchTarget) : Page
     data class ModuleScope(val module: ModuleInfo) : Page
     data class AppScope(val app: AppInfo) : Page
@@ -147,6 +150,8 @@ internal fun navKeyOf(page: Page, tab: Tab): String = when (page) {
     is Page.Home -> "home:" + tab.name
     is Page.Picker -> "picker"
     is Page.Signatures -> "signatures"
+    is Page.AppearanceSettings -> "appearanceSettings"
+    is Page.Releases -> "releases"
     is Page.PatchHistory -> "history"
     is Page.Repo -> "repo"
     is Page.RepoDownloads -> "repoDownloads"

@@ -32,6 +32,7 @@ object UpdateChecker {
         val apkSize: Long,
         val htmlUrl: String,
         val prerelease: Boolean = false,
+        val publishedAt: String = "",
     )
 
     sealed interface CheckResult {
@@ -53,7 +54,14 @@ object UpdateChecker {
     private const val RACE_TIMEOUT_MS = 6500L
     private const val FAN_OUT_DELAY_MS = 1000L
     private const val CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000L
+    private const val HISTORY_CACHE_MS = 5 * 60 * 1000L
     private const val USER_AGENT = "XPatch/" + BuildConfig.VERSION_NAME
+
+    @Volatile
+    private var historyCache: List<ReleaseInfo> = emptyList()
+
+    @Volatile
+    private var historyCachedAt: Long = 0L
 
     suspend fun check(context: Context, force: Boolean = false): CheckResult = withContext(Dispatchers.IO) {
         val store = SettingsStore(context)
@@ -77,6 +85,21 @@ object UpdateChecker {
             ?: return@withContext CheckResult.Failed("更新信息解析失败")
         store.setUpdateCheckCache(now, body)
         judge(release)
+    }
+
+    suspend fun history(context: Context, force: Boolean = false): List<ReleaseInfo> = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        if (!force && historyCache.isNotEmpty() && now - historyCachedAt < HISTORY_CACHE_MS) {
+            return@withContext historyCache
+        }
+        val store = SettingsStore(context)
+        val body = fetchBody(store, GITHUB_API_LIST) { parseReleaseList(it).isNotEmpty() }
+            ?: throw IllegalStateException("网络不可用，或所有源均失败，请稍后重试")
+        val releases = parseReleaseList(body)
+            .sortedWith { a, b -> compareVersion(b.version, a.version) }
+        historyCache = releases
+        historyCachedAt = now
+        releases
     }
 
     suspend fun download(
@@ -192,8 +215,16 @@ object UpdateChecker {
         }
 
     private suspend fun fetchLatest(store: SettingsStore, beta: Boolean): String? {
-        val preferred = store.load().updateGoodSource
         val api = if (beta) GITHUB_API_LIST else GITHUB_API
+        return fetchBody(store, api) { parseBest(it, beta) != null }
+    }
+
+    private suspend fun fetchBody(
+        store: SettingsStore,
+        api: String,
+        valid: (String) -> Boolean,
+    ): String? {
+        val preferred = store.load().updateGoodSource
         val urls = buildList {
             if (preferred.isNotBlank()) add(preferred + api)
             add(api)
@@ -208,7 +239,7 @@ object UpdateChecker {
                 if (stop.get()) return@launch
                 val body = runCatching { httpGet(url) }.getOrNull() ?: return@launch
                 if (stop.get()) return@launch
-                if (parseBest(body, beta) != null && stop.compareAndSet(false, true)) {
+                if (valid(body) && stop.compareAndSet(false, true)) {
                     store.setUpdateGoodSource(url.removeSuffix(api))
                     hit.trySend(body)
                 }
@@ -252,6 +283,17 @@ object UpdateChecker {
         return usable.maxWithOrNull { a, b -> compareVersion(a.version, b.version) }
     }
 
+    private fun parseReleaseList(body: String): List<ReleaseInfo> {
+        val list = runCatching {
+            val array = org.json.JSONArray(body)
+            (0 until array.length()).mapNotNull { index ->
+                array.optJSONObject(index)?.let { parseReleaseObject(it) }
+            }
+        }.getOrNull()
+        if (!list.isNullOrEmpty()) return list
+        return listOfNotNull(parseReleaseObject(body))
+    }
+
     private fun parseRelease(body: String): ReleaseInfo? = parseReleaseObject(body)
 
     private fun parseReleaseObject(body: String): ReleaseInfo? = runCatching {
@@ -284,6 +326,7 @@ object UpdateChecker {
             apkSize = apkSize,
             htmlUrl = root.optString("html_url"),
             prerelease = root.optBoolean("prerelease", false),
+            publishedAt = root.optString("published_at"),
         )
     }.getOrNull()
 

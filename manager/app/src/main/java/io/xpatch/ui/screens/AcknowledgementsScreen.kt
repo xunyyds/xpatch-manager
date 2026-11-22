@@ -37,6 +37,7 @@ import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Radius
 import io.xpatch.ui.theme.Space
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import io.xpatch.ui.util.rememberListBottomPadding
 import top.yukonga.miuix.kmp.theme.MiuixTheme
@@ -88,7 +89,7 @@ private fun AcknowledgementsIntroCard(modifier: Modifier = Modifier) {
     Row(
         modifier = modifier
             .fillMaxWidth()
-            .clip(xpShape(if (miuix) Radius.card else Radius.sheet))
+            .clip(if (miuix) xpShape(Radius.card) else ShapeTokens.card)
             .background(container)
             .padding(Space.l),
         verticalAlignment = Alignment.Top,

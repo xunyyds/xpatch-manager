@@ -999,7 +999,7 @@ private fun OperationLogList(
                 key = { index -> "op:" + index + ":" + operations[index].hashCode() },
             ) { index ->
                 OperationRow(
-                    line = highlightMatches(operations[index], query),
+                    line = highlightMatches(operations[index], query, MaterialTheme.colorScheme.primary),
                     onCopy = { onCopy(operations[index]) },
                 )
             }
@@ -1239,11 +1239,12 @@ internal fun LogEntryItem(
             if (truncated) append("，可展开查看全文")
         }
     }
-    val body = remember(entry.id, expanded, query) {
-        highlightMatches(if (expanded) entry.message else summaryOf(entry), query)
+    val highlight = MaterialTheme.colorScheme.primary
+    val body = remember(entry.id, expanded, query, highlight) {
+        highlightMatches(if (expanded) entry.message else summaryOf(entry), query, highlight)
     }
-    val detailText = remember(entry.id, expanded, query) {
-        if (expanded && entry.hasDetail) highlightMatches(entry.detail, query) else null
+    val detailText = remember(entry.id, expanded, query, highlight) {
+        if (expanded && entry.hasDetail) highlightMatches(entry.detail, query, highlight) else null
     }
     Column(
         Modifier

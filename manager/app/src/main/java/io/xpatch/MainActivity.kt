@@ -21,6 +21,7 @@ import io.xpatch.data.EventLog
 import io.xpatch.data.CrashRecorder
 import io.xpatch.data.ScopeFileWriter
 import io.xpatch.data.SettingsStore
+import io.xpatch.data.ThemeColor
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.screens.MainScaffold
@@ -58,7 +59,16 @@ class MainActivity : ComponentActivity() {
         setContent {
             var themeMode by remember { mutableIntStateOf(initialSettings.themeMode) }
             var uiStyle by remember { mutableStateOf(initialSettings.uiStyle) }
-            XPatchTheme(themeMode = themeMode, uiStyle = uiStyle) {
+            var themeColor by remember { mutableStateOf(initialSettings.themeColor) }
+            var dynamicColor by remember { mutableStateOf(initialSettings.dynamicColor) }
+            var oledDark by remember { mutableStateOf(initialSettings.oledDark) }
+            XPatchTheme(
+                themeMode = themeMode,
+                uiStyle = uiStyle,
+                themeColor = themeColor,
+                dynamicColor = dynamicColor,
+                oledDark = oledDark,
+            ) {
                 MainScaffold(
                     onlineTaskRequest = onlineTaskRequest,
                     onOnlineTaskHandled = { onlineTaskRequest = -1 },
@@ -69,6 +79,15 @@ class MainActivity : ComponentActivity() {
                     onUiStyleChange = { style ->
                         settingsStore.setUiStyle(style)
                         uiStyle = style
+                    },
+                    onThemeColorChange = { color ->
+                        themeColor = color
+                    },
+                    onDynamicColorChange = { enabled ->
+                        dynamicColor = enabled
+                    },
+                    onOledDarkChange = { enabled ->
+                        oledDark = enabled
                     },
                 )
                 StorageAccessGate(

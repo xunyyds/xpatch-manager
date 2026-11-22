@@ -51,8 +51,10 @@ import com.kyant.backdrop.effects.vibrancy
 import com.kyant.backdrop.highlight.Highlight
 import com.kyant.backdrop.shadow.InnerShadow
 import com.kyant.backdrop.shadow.Shadow
-import com.kyant.shapes.Capsule
-import com.kyant.shapes.RoundedCornerStyle
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.material3.MaterialTheme
+import io.xpatch.ui.theme.GlassHighlight
+import io.xpatch.ui.theme.GlassShade
 import io.xpatch.data.LiquidGlassLevel
 import kotlin.math.abs
 import kotlin.math.sign
@@ -81,10 +83,10 @@ fun LiquidBottomTabs(
     lowPower: Boolean = false,
     content: @Composable RowScope.() -> Unit
 ) {
-    val isLightTheme = accentColor.isUnspecified && !isSystemInDarkTheme()
+    val isLightTheme = !isSystemInDarkTheme()
     val resolvedAccent =
         if (accentColor.isUnspecified) {
-            if (isLightTheme) Color(0xFF0088FF) else Color(0xFF0091FF)
+            MaterialTheme.colorScheme.primary
         } else {
             accentColor
         }
@@ -92,7 +94,7 @@ fun LiquidBottomTabs(
     val isTransparent = blurRadius <= 0.dp
     val baseContainer =
         if (containerColor.isUnspecified) {
-            if (isLightTheme) Color(0xFFFAFAFA) else Color(0xFF121212)
+            MaterialTheme.colorScheme.surface
         } else {
             containerColor
         }
@@ -203,7 +205,7 @@ fun LiquidBottomTabs(
                 }
                 .drawBackdrop(
                     backdrop = backdrop,
-                    shape = { Capsule(RoundedCornerStyle.Continuous) },
+                    shape = { CircleShape },
                     effects = {
                         if (!isTransparent) {
                             vibrancy()
@@ -242,7 +244,7 @@ fun LiquidBottomTabs(
                     }
                     .drawBackdrop(
                         backdrop = backdrop,
-                        shape = { Capsule(RoundedCornerStyle.Continuous) },
+                        shape = { CircleShape },
                         effects = {
                             if (!isTransparent) {
                                 val progress = dampedDragAnimation.pressProgress
@@ -279,7 +281,7 @@ fun LiquidBottomTabs(
                 .then(dampedDragAnimation.modifier)
                 .drawBackdrop(
                     backdrop = rememberCombinedBackdrop(backdrop, tabsBackdrop),
-                    shape = { Capsule(RoundedCornerStyle.Continuous) },
+                    shape = { CircleShape },
                     effects = {
                         if (!isTransparent) {
                             val progress = dampedDragAnimation.pressProgress
@@ -316,15 +318,15 @@ fun LiquidBottomTabs(
                         val progress = dampedDragAnimation.pressProgress
                         drawRect(
                             if (isLightTheme) {
-                                Color.White.copy(alpha = 0.28f - 0.08f * progress)
+                                GlassHighlight.copy(alpha = 0.28f - 0.08f * progress)
                             } else {
-                                Color.White.copy(alpha = 0.14f - 0.04f * progress)
+                                GlassHighlight.copy(alpha = 0.14f - 0.04f * progress)
                             }
                         )
                         if (!isTransparent) {
                             drawRect(
-                                if (isLightTheme) Color.Black.copy(alpha = 0.03f * progress)
-                                else Color.Black.copy(alpha = 0.10f * progress)
+                                if (isLightTheme) GlassShade.copy(alpha = 0.03f * progress)
+                                else GlassShade.copy(alpha = 0.10f * progress)
                             )
                         }
                     }

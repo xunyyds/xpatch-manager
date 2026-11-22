@@ -37,10 +37,10 @@ import androidx.compose.material.icons.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Download
 import androidx.compose.material.icons.rounded.History
 import androidx.compose.material.icons.rounded.Settings
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButtonDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -50,7 +50,6 @@ import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
@@ -114,7 +113,6 @@ import io.xpatch.patch.ShizukuBridge
 import io.xpatch.patch.ShizukuInstaller
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.LiquidBar
-import io.xpatch.ui.components.MiuixBottomBar
 import io.xpatch.ui.components.PatchProgress
 import io.xpatch.ui.components.PatchProgressDialog
 import io.xpatch.ui.components.StandardBottomBar
@@ -124,6 +122,7 @@ import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.Motion
 import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Space
 import io.xpatch.ui.util.AdaptiveWidth
@@ -154,6 +153,9 @@ fun MainScaffold(
     onOnlineTaskHandled: () -> Unit = {},
     onThemeModeChange: (Int) -> Unit = {},
     onUiStyleChange: (io.xpatch.data.UiStyle) -> Unit = {},
+    onThemeColorChange: (io.xpatch.data.ThemeColor) -> Unit = {},
+    onDynamicColorChange: (Boolean) -> Unit = {},
+    onOledDarkChange: (Boolean) -> Unit = {},
 ) {
     val context = LocalContext.current
     val repository = remember { ManagerRepository(context) }
@@ -332,11 +334,6 @@ fun MainScaffold(
                     withContext(Dispatchers.Main) { logs = entries }
                 } else {
                     repository.acknowledgeScopeSync(appPackage, version)
-                    if (result.dataViaShizuku) {
-                        eventLog.add("已通过 Shizuku 清理 " + appPackage + " 的遗留 data 作用域")
-                        val entries = eventLog.entries()
-                        withContext(Dispatchers.Main) { logs = entries }
-                    }
                 }
             }
         }
@@ -600,6 +597,9 @@ fun MainScaffold(
                                 settings = reloaded
                                 onThemeModeChange(reloaded.themeMode)
                                 onUiStyleChange(reloaded.uiStyle)
+                                onThemeColorChange(reloaded.themeColor)
+                                onDynamicColorChange(reloaded.dynamicColor)
+                                onOledDarkChange(reloaded.oledDark)
                                 signatures = signatureStore.allProfiles()
                                 defaultSignatureId = signatureStore.defaultProfileId()
                                 repository.invalidate()
@@ -655,11 +655,7 @@ fun MainScaffold(
             ),
         ) {
             Text(
-                if (preview.legacy) {
-                    "旧版配置文件"
-                } else {
-                    "ZIP 备份 · XPatch " + preview.versionName
-                },
+                "ZIP 备份 · XPatch " + preview.versionName,
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.Medium,
             )
@@ -671,19 +667,12 @@ fun MainScaffold(
                 )
             }
             Spacer(Modifier.height(8.dp))
-            if (preview.legacy) {
+            preview.scopes.forEach { item ->
+                val count = preview.counts[item.key] ?: 0
                 Text(
-                    "包含作用域、模块 API 与默认签名。",
+                    "· " + item.title + (if (count > 0) " " + count + " 项" else ""),
                     style = MaterialTheme.typography.bodySmall,
                 )
-            } else {
-                preview.scopes.forEach { item ->
-                    val count = preview.counts[item.key] ?: 0
-                    Text(
-                        "· " + item.title + (if (count > 0) " " + count + " 项" else ""),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
             }
             Spacer(Modifier.height(8.dp))
             Text(
@@ -1002,28 +991,6 @@ fun MainScaffold(
         }
     }
 
-    LaunchedEffect(nav.tab, logsState.tab, logsState.timeOrder) {
-        if (nav.tab != Tab.Logs || logsState.tab != LogsTab.Runtime) return@LaunchedEffect
-        if (logsState.timeOrder != TimeOrder.NewestFirst) return@LaunchedEffect
-        snapshotFlow {
-            val info = logsState.runtimeList.layoutInfo
-            Triple(
-                info.visibleItemsInfo.firstOrNull()?.index ?: logsState.runtimeList.firstVisibleItemIndex,
-                info.visibleItemsInfo.lastOrNull()?.index ?: -1,
-                info.totalItemsCount,
-            )
-        }
-            .distinctUntilChanged()
-            .collect { (first, last, total) ->
-                val nearBottom = total > 0 && last >= total - 2
-                val allVisible = total > 0 && first == 0 && last >= total - 1
-                if ((first > 0 || allVisible) && nearBottom && logsRuntime.hasMore &&
-                    !logsLoadingMore && !logsRuntime.loading
-                ) {
-                    loadMoreRuntimeLogs()
-                }
-            }
-    }
 
     BackHandler(enabled = nav.canBack) { nav.back() }
 
@@ -1036,6 +1003,8 @@ fun MainScaffold(
         }
         is Page.Picker -> "选择应用"
         is Page.Signatures -> "签名管理"
+        is Page.AppearanceSettings -> "外观"
+        is Page.Releases -> "更新日志"
         is Page.Config -> "Patch 配置"
         is Page.ModuleScope -> current.module.label
         is Page.AppScope -> current.app.label
@@ -1054,7 +1023,7 @@ fun MainScaffold(
 
     val backdrop = rememberLayerBackdrop()
     val miuixBehavior = if (miuix) MiuixScrollBehavior() else null
-    val m3Behavior = if (miuix) null else TopAppBarDefaults.enterAlwaysScrollBehavior()
+    val m3Behavior = if (miuix) null else TopAppBarDefaults.pinnedScrollBehavior()
     val scrollConnection = miuixBehavior?.nestedScrollConnection
         ?: m3Behavior?.nestedScrollConnection
         ?: object : androidx.compose.ui.input.nestedscroll.NestedScrollConnection {}
@@ -1088,7 +1057,7 @@ fun MainScaffold(
         if (!InstallHelper.canInstall(context)) {
             eventLog.add("缺少「安装未知应用」权限，已停止安装 " + name)
             showToast("需要安装权限，请授权后重试")
-            installBlocked = InstallBlock(pkg, true)
+            installBlocked = InstallBlock(pkg)
             logs = eventLog.entries()
         } else {
             val launched = runCatching { InstallHelper.openWith(context, file) }.getOrDefault(false)
@@ -1111,7 +1080,7 @@ fun MainScaffold(
         if (!InstallHelper.canInstall(context)) {
             eventLog.add("缺少「安装未知应用」权限，已停止安装 " + outcome.packageName)
             showToast("需要安装权限，请授权后重试")
-            installBlocked = InstallBlock(outcome.packageName, false)
+            installBlocked = InstallBlock(outcome.packageName)
             logs = eventLog.entries()
             return@fallback
         }
@@ -1468,6 +1437,135 @@ fun MainScaffold(
         }
     }
 
+    val renderSettings: @Composable (Boolean) -> Unit = { appearancePage ->
+        SettingsScreen(
+            settings = settings,
+            defaultSignatureName = signatures.firstOrNull { it.id == defaultSignatureId }?.name ?: "XPatch",
+            exportLabel = exportTarget?.label ?: settings.exportTreeLabel,
+            exportLost = exportChecked && settings.exportTreeUri.isNotBlank() && exportTarget == null,
+            shizukuReady = shizukuReady,
+            shizukuAvailable = shizukuAvailable,
+            onRequestShizuku = {
+                val wasReady = shizukuReady
+                shizukuAvailable = ShizukuBridge.isAvailable()
+                shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
+                if (shizukuReady) {
+                    if (!wasReady) eventLog.add("Shizuku 已授权")
+                    token++
+                } else if (!shizukuAvailable) {
+                    failure = "未检测到 Shizuku。请先安装并启动 Shizuku，或使用「打开方式」自行选择安装器。"
+                } else {
+                    ShizukuBridge.requestPermission { granted ->
+                        shizukuReady = granted
+                        eventLog.add(if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝")
+                        token++
+                    }
+                }
+            },
+            onRecheckShizuku = {
+                val wasReady = shizukuReady
+                val wasAvailable = shizukuAvailable
+                shizukuAvailable = ShizukuBridge.isAvailable()
+                shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
+                if (shizukuReady != wasReady || shizukuAvailable != wasAvailable) {
+                    eventLog.add(
+                        when {
+                            shizukuReady -> "Shizuku 已授权"
+                            shizukuAvailable -> "Shizuku 可用但未授权"
+                            else -> "未检测到 Shizuku"
+                        },
+                    )
+                }
+                token++
+            },
+            onOpenSignatures = { nav.navigate(Page.Signatures) },
+            onLogLevelChange = {
+                settingsStore.setPatchLogLevel(it)
+                settings = settings.copy(patchLogLevel = it)
+            },
+            onSoftwareSourceChange = { source ->
+                settingsStore.setSoftwareSource(source)
+                settings = settings.copy(softwareSource = source)
+                onlinePromptToken++
+                onlineApp = null
+                onlineVersions = emptyList()
+                onlinePrompt = null
+                onlineCapsule = OnlineCapsuleState.HIDDEN
+            },
+            onThemeChange = {
+                settingsStore.setThemeMode(it)
+                settings = settings.copy(themeMode = it)
+                onThemeModeChange(it)
+            },
+            onUiStyleChange = {
+                settingsStore.setUiStyle(it)
+                settings = settings.copy(uiStyle = it)
+                onUiStyleChange(it)
+            },
+            onThemeColorChange = {
+                settingsStore.setThemeColor(it)
+                settings = settings.copy(themeColor = it)
+                onThemeColorChange(it)
+            },
+            onDynamicColorChange = {
+                settingsStore.setDynamicColor(it)
+                settings = settings.copy(dynamicColor = it)
+                onDynamicColorChange(it)
+            },
+            onOledDarkChange = {
+                settingsStore.setOledDark(it)
+                settings = settings.copy(oledDark = it)
+                onOledDarkChange(it)
+            },
+            onShowSystemChange = {
+                settingsStore.setShowSystemApps(it)
+                settings = settings.copy(showSystemApps = it)
+                token++
+            },
+            onBottomBarChange = {
+                settingsStore.setBottomBarStyle(it)
+                settings = settings.copy(bottomBarStyle = it)
+            },
+            onLiquidGlassLevelChange = {
+                settingsStore.setLiquidGlassLevel(it)
+                settings = settings.copy(liquidGlassLevel = it)
+            },
+
+            onPickExportDir = { exportDirLauncher.launch(null) },
+            onClearExportDir = {
+                val previous = settings.exportTreeUri
+                settingsStore.clearExportTree()
+                settings = settings.copy(exportTreeUri = "", exportTreeLabel = "")
+                token++
+                scope.launch(Dispatchers.IO) { exportStore.release(previous) }
+            },
+            onBackup = { scopes ->
+                pendingBackupScopeKeys = ArrayList(scopes.map { it.key })
+                backupLauncher.launch(backupArchive.defaultFileName())
+            },
+            onRestoreBackup = {
+                restoreLauncher.launch(arrayOf("application/zip", "application/json", "*/*"))
+            },
+            onHistoryLimitChange = { limit ->
+                settingsStore.setPatchHistoryLimit(limit)
+                settings = settings.copy(patchHistoryLimit = limit)
+                historyTick++
+            },
+            onDeleteArtifactChange = { delete ->
+                settingsStore.setDeleteArtifactOnRemove(delete)
+                settings = settings.copy(deleteArtifactOnRemove = delete)
+            },
+            onSkipDeletePromptChange = { skip ->
+                settingsStore.setSkipArtifactDeletePrompt(skip)
+                settings = settings.copy(skipArtifactDeletePrompt = skip)
+            },
+            onOpenDisclaimer = { nav.navigate(Page.Disclaimer) },
+            onOpenAbout = { nav.navigate(Page.About) },
+            appearancePage = appearancePage,
+            onOpenAppearance = { nav.navigate(Page.AppearanceSettings) },
+        )
+    }
+
     Scaffold(
         containerColor = MaterialTheme.colorScheme.background,
         topBar = {
@@ -1541,7 +1639,8 @@ fun MainScaffold(
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = MaterialTheme.colorScheme.background,
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        scrolledContainerColor = MaterialTheme.colorScheme.surfaceContainerHigh,
                     ),
                 )
             }
@@ -1550,6 +1649,13 @@ fun MainScaffold(
             if (nav.page is Page.Home && nav.tab == Tab.Home) {
                 ExtendedFloatingActionButton(
                     onClick = { showAddDialog = true },
+                    shape = CircleShape,
+                    elevation = FloatingActionButtonDefaults.elevation(
+                        defaultElevation = 2.dp,
+                        pressedElevation = 4.dp,
+                        focusedElevation = 2.dp,
+                        hoveredElevation = 2.dp,
+                    ),
                     icon = { Icon(Icons.Rounded.Add, contentDescription = null) },
                     text = { Text("添加应用") },
                 )
@@ -1594,9 +1700,11 @@ fun MainScaffold(
                     if (reducedMotion) {
                         fadeIn(snap()) togetherWith fadeOut(snap())
                     } else {
-                        (slideInHorizontally(animationSpec = tween(160)) { it / 6 } + fadeIn(tween(160)))
+                        (slideInHorizontally(animationSpec = Motion.spatialEnter) { it / 8 } +
+                            fadeIn(Motion.fadeIn))
                             .togetherWith(
-                                slideOutHorizontally(animationSpec = tween(120)) { -it / 6 } + fadeOut(tween(120)),
+                                slideOutHorizontally(animationSpec = Motion.spatialExit) { -it / 8 } +
+                                    fadeOut(Motion.fadeOut),
                             )
                     }
                 },
@@ -1635,6 +1743,7 @@ fun MainScaffold(
                                 requestCatalogRefresh(true, true)
                             }
                         },
+                        onAdd = { showAddDialog = true },
                         onOpen = { nav.navigate(Page.AppScope(it)) },
                         onOpenGuardLogs = { app, module ->
                             logsState.tab = LogsTab.Runtime
@@ -1758,114 +1867,7 @@ fun MainScaffold(
                         },
                     )
 
-                    Tab.Settings -> SettingsScreen(
-                        settings = settings,
-                        defaultSignatureName = signatures.firstOrNull { it.id == defaultSignatureId }?.name ?: "XPatch",
-                        exportLabel = exportTarget?.label ?: settings.exportTreeLabel,
-                        exportLost = exportChecked && settings.exportTreeUri.isNotBlank() && exportTarget == null,
-                        shizukuReady = shizukuReady,
-                        shizukuAvailable = shizukuAvailable,
-                        onRequestShizuku = {
-                            val wasReady = shizukuReady
-                            shizukuAvailable = ShizukuBridge.isAvailable()
-                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
-                            if (shizukuReady) {
-                                if (!wasReady) eventLog.add("Shizuku 已授权")
-                                token++
-                            } else if (!shizukuAvailable) {
-                                failure = "未检测到 Shizuku。请先安装并启动 Shizuku，或使用「打开方式」自行选择安装器。"
-                            } else {
-                                ShizukuBridge.requestPermission { granted ->
-                                    shizukuReady = granted
-                                    eventLog.add(if (granted) "Shizuku 已授权" else "Shizuku 授权被拒绝")
-                                    token++
-                                }
-                            }
-                        },
-                        onRecheckShizuku = {
-                            val wasReady = shizukuReady
-                            val wasAvailable = shizukuAvailable
-                            shizukuAvailable = ShizukuBridge.isAvailable()
-                            shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
-                            if (shizukuReady != wasReady || shizukuAvailable != wasAvailable) {
-                                eventLog.add(
-                                    when {
-                                        shizukuReady -> "Shizuku 已授权"
-                                        shizukuAvailable -> "Shizuku 可用但未授权"
-                                        else -> "未检测到 Shizuku"
-                                    },
-                                )
-                            }
-                            token++
-                        },
-                        onOpenSignatures = { nav.navigate(Page.Signatures) },
-                        onLogLevelChange = {
-                            settingsStore.setPatchLogLevel(it)
-                            settings = settings.copy(patchLogLevel = it)
-                        },
-                        onSoftwareSourceChange = { source ->
-                            settingsStore.setSoftwareSource(source)
-                            settings = settings.copy(softwareSource = source)
-                            onlinePromptToken++
-                            onlineApp = null
-                            onlineVersions = emptyList()
-                            onlinePrompt = null
-                            onlineCapsule = OnlineCapsuleState.HIDDEN
-                        },
-                        onThemeChange = {
-                            settingsStore.setThemeMode(it)
-                            settings = settings.copy(themeMode = it)
-                            onThemeModeChange(it)
-                        },
-                        onUiStyleChange = {
-                            settingsStore.setUiStyle(it)
-                            settings = settings.copy(uiStyle = it)
-                            onUiStyleChange(it)
-                        },                        onShowSystemChange = {
-                            settingsStore.setShowSystemApps(it)
-                            settings = settings.copy(showSystemApps = it)
-                            token++
-                        },
-                        onBottomBarChange = {
-                            settingsStore.setBottomBarStyle(it)
-                            settings = settings.copy(bottomBarStyle = it)
-                        },
-                        onLiquidGlassLevelChange = {
-                            settingsStore.setLiquidGlassLevel(it)
-                            settings = settings.copy(liquidGlassLevel = it)
-                        },
-
-                        onPickExportDir = { exportDirLauncher.launch(null) },
-                        onClearExportDir = {
-                            val previous = settings.exportTreeUri
-                            settingsStore.clearExportTree()
-                            settings = settings.copy(exportTreeUri = "", exportTreeLabel = "")
-                            token++
-                            scope.launch(Dispatchers.IO) { exportStore.release(previous) }
-                        },
-                        onBackup = { scopes ->
-                            pendingBackupScopeKeys = ArrayList(scopes.map { it.key })
-                            backupLauncher.launch(backupArchive.defaultFileName())
-                        },
-                        onRestoreBackup = {
-                            restoreLauncher.launch(arrayOf("application/zip", "application/json", "*/*"))
-                        },
-                        onHistoryLimitChange = { limit ->
-                            settingsStore.setPatchHistoryLimit(limit)
-                            settings = settings.copy(patchHistoryLimit = limit)
-                            historyTick++
-                        },
-                        onDeleteArtifactChange = { delete ->
-                            settingsStore.setDeleteArtifactOnRemove(delete)
-                            settings = settings.copy(deleteArtifactOnRemove = delete)
-                        },
-                        onSkipDeletePromptChange = { skip ->
-                            settingsStore.setSkipArtifactDeletePrompt(skip)
-                            settings = settings.copy(skipArtifactDeletePrompt = skip)
-                        },
-                        onOpenDisclaimer = { nav.navigate(Page.Disclaimer) },
-                        onOpenAbout = { nav.navigate(Page.About) },
-                    )
+                    Tab.Settings -> renderSettings(false)
                 }
 
                 is Page.Repo -> RepoPageScreen(
@@ -2299,9 +2301,12 @@ fun MainScaffold(
                     onOpenPicker = { },
                 )
 
+                is Page.AppearanceSettings -> renderSettings(true)
+                is Page.Releases -> ReleasesScreen()
                 is Page.About -> AboutScreen(
                     onOpenDisclaimer = { nav.navigate(Page.Disclaimer) },
                     onOpenAcknowledgements = { nav.navigate(Page.Acknowledgements) },
+                    onOpenReleases = { nav.navigate(Page.Releases) },
                 )
                 is Page.Disclaimer -> DisclaimerScreen()
                 is Page.Acknowledgements -> AcknowledgementsScreen()
@@ -2738,18 +2743,22 @@ fun MainScaffold(
                 },
             ),
         ) {
-            Text(
-                if (outcome.forceOverwrite) {
-                    "该产物使用「" + pendingInstallProfileName + "」签名，与已安装应用签名不同。\n" +
-                        "「继续安装」会先保留数据卸载原应用，再安装新包（需要 Shizuku）。\n" +
-                        "「卸载原应用」调用系统卸载，数据会被删除。\n\n"
+            Column {
+                Text(
+                    "签名：" + pendingInstallProfileName,
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                Spacer(Modifier.height(10.dp))
+                InstallFact(label = "数据", value = if (outcome.forceOverwrite) "保留" else "删除且不可恢复")
+                InstallFact(label = "方式", value = if (outcome.forceOverwrite) {
+                    "保留数据卸载原应用后安装新包"
                 } else {
-                    "「" + pendingInstallProfileName + "」证书与已安装应用的签名不同，直接覆盖安装会失败。\n" +
-                        "「卸载原应用」调用系统卸载，卸载完成后自动继续安装（数据会被删除）。\n" +
-                        "也可以改用其他签名重新打包。\n\n"
-                },
-                style = MaterialTheme.typography.bodySmall,
-            )
+                    "卸载原应用后自动继续安装"
+                })
+                if (outcome.forceOverwrite) {
+                    InstallFact(label = "条件", value = "需要 Shizuku")
+                }
+            }
         }
     }
 
@@ -2775,12 +2784,10 @@ fun MainScaffold(
                 },
             ),
         ) {
-            Text(
-                "将调用系统卸载界面。" +
-                    "卸载会连同该应用的全部数据一起删除，且无法恢复。\n\n" +
-                    "如果希望保留数据，请取消并改用「强行覆盖安装」（需要 Shizuku）。",
-                style = MaterialTheme.typography.bodySmall,
-            )
+            Column {
+                InstallFact(label = "数据", value = "删除且不可恢复")
+                InstallFact(label = "方式", value = "调用系统卸载")
+            }
         }
     }
 
@@ -2798,13 +2805,8 @@ fun MainScaffold(
             ),
         ) {
             Text(
-                if (pending.fromRepo) {
-                    "系统尚未允许 XPatch 安装应用，点「去授权」开启后即可安装 " +
-                        pending.packageName + "。\n授权返回后会自动继续。"
-                } else {
-                    "系统尚未允许 XPatch 安装应用，点「去授权」开启后即可安装 " +
-                        pending.packageName + "。\n授权返回后会自动继续安装，打包结果会保留。"
-                },
+                "系统尚未允许 XPatch 安装应用，点「去授权」开启后即可安装 " +
+                    pending.packageName + "。",
                 style = MaterialTheme.typography.bodyMedium,
             )
         }
@@ -2835,6 +2837,25 @@ fun MainScaffold(
             Text(message, style = MaterialTheme.typography.bodySmall)
         }
     }
+}
+
+@Composable
+private fun InstallFact(label: String, value: String) {
+    Row(Modifier.fillMaxWidth()) {
+        Text(
+            label + "：",
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.width(40.dp),
+        )
+        Text(
+            value,
+            style = MaterialTheme.typography.bodySmall,
+            color = if (label == "数据") MaterialTheme.colorScheme.error
+            else MaterialTheme.colorScheme.onSurface,
+        )
+    }
+    Spacer(Modifier.height(6.dp))
 }
 
 private fun failureTitleOf(message: String): String = when {
@@ -2919,8 +2940,8 @@ private fun DownloadAction(
                     .align(Alignment.TopEnd)
                     .padding(top = 6.dp, end = 6.dp)
                     .size(8.dp)
-                    .clip(androidx.compose.foundation.shape.CircleShape)
-                    .background(androidx.compose.ui.graphics.Color(0xFFE5484D)),
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.error),
             )
         }
     }

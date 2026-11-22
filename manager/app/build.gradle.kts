@@ -72,9 +72,9 @@ dependencies {
     implementation("androidx.compose.animation:animation:1.12.1")
     implementation("androidx.compose.material3:material3:1.5.0-beta02")
     implementation("androidx.compose.material:material-icons-extended:1.7.8")
+    implementation("androidx.graphics:graphics-shapes:1.0.1")
     implementation("com.android.tools.build:apksig:8.7.2")
     implementation("io.github.kyant0:backdrop:2.0.1")
-    implementation("io.github.kyant0:shapes:1.2.1")
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")
     implementation("top.yukonga.miuix.kmp:miuix-ui-android:0.9.4") {

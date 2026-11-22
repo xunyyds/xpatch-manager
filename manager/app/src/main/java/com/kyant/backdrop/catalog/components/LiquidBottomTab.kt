@@ -14,8 +14,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.dp
-import com.kyant.shapes.Capsule
-import com.kyant.shapes.RoundedCornerStyle
+import androidx.compose.foundation.shape.CircleShape
 
 internal val LocalLiquidBottomTabScale =
     staticCompositionLocalOf { { 1f } }
@@ -29,7 +28,7 @@ fun RowScope.LiquidBottomTab(
     val scale = LocalLiquidBottomTabScale.current
     Column(
         modifier
-            .clip(Capsule(RoundedCornerStyle.Continuous))
+            .clip(CircleShape)
             .clickable(
                 interactionSource = null,
                 indication = null,

@@ -68,7 +68,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import io.xpatch.data.ModuleUpdate
 import io.xpatch.data.RepoStore
 import io.xpatch.ui.components.BottomSheet
@@ -86,6 +85,7 @@ import io.xpatch.ui.components.rememberMarkdownBlocks
 import io.xpatch.ui.format.formatTime
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.xpShape
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
@@ -816,9 +816,9 @@ private fun RepoFilterSheet(
         Spacer(Modifier.height(12.dp))
         PanelRow("框架支持") {
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = chip89, onClick = { onChip89(!chip89) }, label = { Text("XP89") })
-                FilterChip(selected = chip100, onClick = { onChip100(!chip100) }, label = { Text("XP100") })
-                FilterChip(selected = chipLsp, onClick = { onChipLsp(!chipLsp) }, label = { Text("LSPatch") })
+                FilterChip(shape = CircleShape, selected = chip89, onClick = { onChip89(!chip89) }, label = { Text("XP89") })
+                FilterChip(shape = CircleShape, selected = chip100, onClick = { onChip100(!chip100) }, label = { Text("XP100") })
+                FilterChip(shape = CircleShape, selected = chipLsp, onClick = { onChipLsp(!chipLsp) }, label = { Text("LSPatch") })
             }
         }
         PanelRow("更新时间") {
@@ -836,6 +836,7 @@ private fun RepoFilterSheet(
             FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 listOf(0 to "已安装", 1 to "可更新", 2 to "已下载", 3 to "未安装").forEach { (code, label) ->
                     FilterChip(
+                        shape = CircleShape,
                         selected = code in statuses,
                         onClick = {
                             onStatuses(if (code in statuses) statuses - code else statuses + code)
@@ -1094,8 +1095,8 @@ internal fun RepoDetailScreen(
                     Modifier
                         .fillMaxWidth()
                         .padding(16.dp),
-                    shape = xpShape(20.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer),
+                    shape = ShapeTokens.card,
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerLow),
                 ) {
                     Column(Modifier.padding(20.dp)) {
                         Text(module.name, style = MaterialTheme.typography.titleMedium)

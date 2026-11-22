@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.selection.toggleable
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -27,6 +28,10 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
+import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.SwitchKnob
+import io.xpatch.ui.theme.SwitchTrackOff
+import io.xpatch.ui.theme.SwitchTrackOn
 import io.xpatch.ui.theme.xpShape
 
 @Composable
@@ -96,8 +101,10 @@ fun JellySwitch(
         if (animateOnSettle) settledCallback.value?.invoke()
     }
 
-    val offColor = Color(0xFFC7CBD1)
-    val onColor = Color(0xFF34C759)
+    val miuix = LocalMiuix.current
+    val offColor = if (miuix) SwitchTrackOff else MaterialTheme.colorScheme.surfaceContainerHighest
+    val onColor = if (miuix) SwitchTrackOn else MaterialTheme.colorScheme.primary
+    val knobColor = if (miuix) SwitchKnob else MaterialTheme.colorScheme.onPrimary
     val interaction = remember { MutableInteractionSource() }
 
     val progress = knobX.value
@@ -134,7 +141,7 @@ fun JellySwitch(
                 .width(knobWidth)
                 .height(knob)
                 .clip(xpShape(knob / 2))
-                .background(Color.White),
+                .background(knobColor),
         )
     }
 }

@@ -32,7 +32,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -51,12 +51,11 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.kyant.shapes.Capsule
-import com.kyant.shapes.RoundedCornerStyle
 import io.xpatch.data.DownloadCenter
 import io.xpatch.data.OnlinePackageStore
 import io.xpatch.data.SoftwareSource
 import io.xpatch.ui.components.DialogAction
+import io.xpatch.ui.components.appTextFieldColors
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.format.formatTime
 import io.xpatch.ui.format.readableSize
@@ -64,6 +63,7 @@ import io.xpatch.ui.theme.HitArea
 import io.xpatch.ui.theme.IconSize
 import io.xpatch.ui.theme.PagePad
 import io.xpatch.ui.theme.Radius
+import io.xpatch.ui.theme.ShapeTokens
 import io.xpatch.ui.theme.Space
 import io.xpatch.ui.theme.adaptiveDialogListHeight
 import io.xpatch.ui.theme.adaptiveLoadingHeight
@@ -235,7 +235,7 @@ internal fun OnlinePromptDialog(
 
             else -> {
                 Column(Modifier.fillMaxSize()) {
-                    OutlinedTextField(
+                    TextField(
                         value = query,
                         onValueChange = { query = it },
                         placeholder = {
@@ -248,6 +248,8 @@ internal fun OnlinePromptDialog(
                         },
                         singleLine = true,
                         textStyle = MaterialTheme.typography.labelMedium,
+                        shape = ShapeTokens.input,
+                colors = appTextFieldColors(),
                         modifier = Modifier.fillMaxWidth(),
                     )
                     Spacer(Modifier.height(Space.xs))
@@ -417,11 +419,13 @@ internal fun OnlineNoticeDialog(
         Spacer(Modifier.height(Space.m))
         Text("原始信息", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
         Spacer(Modifier.height(Space.xs))
-        OutlinedTextField(
+        TextField(
             value = rawError,
             onValueChange = {},
             readOnly = true,
             maxLines = 5,
+            shape = ShapeTokens.input,
+                colors = appTextFieldColors(),
             modifier = Modifier.fillMaxWidth(),
         )
     }
@@ -583,11 +587,13 @@ internal fun OnlineFailedLinkDialog(
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
         Spacer(Modifier.height(Space.m))
-        OutlinedTextField(
+        TextField(
             value = usableUrl,
             onValueChange = {},
             readOnly = true,
             maxLines = 4,
+            shape = ShapeTokens.input,
+                colors = appTextFieldColors(),
             modifier = Modifier.fillMaxWidth(),
         )
         Spacer(Modifier.height(Space.xs))
@@ -625,7 +631,7 @@ internal fun OnlineStatusCapsule(
     }
     Box(
         modifier
-            .clip(Capsule(RoundedCornerStyle.Continuous))
+            .clip(CircleShape)
             .background(container)
             .clickable { onClick() }
             .padding(horizontal = Space.m, vertical = Space.s)

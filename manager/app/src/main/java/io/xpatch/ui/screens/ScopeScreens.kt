@@ -6,6 +6,7 @@ import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,8 +42,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.kyant.shapes.Capsule
-import com.kyant.shapes.RoundedCornerStyle
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
 import io.xpatch.ui.components.AppIcon
@@ -674,7 +673,7 @@ private fun ScopeFilterRow(
             }
             Box(
                 Modifier
-                    .clip(Capsule(RoundedCornerStyle.Continuous))
+                    .clip(CircleShape)
                     .background(container)
                     .clickable { onSelect(index) }
                     .padding(horizontal = 12.dp, vertical = 6.dp),

@@ -1,10 +1,8 @@
 package io.xpatch.ui.screens
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -57,6 +55,7 @@ internal fun HomeScreen(
     apps: List<AppInfo>,
     refreshing: Boolean,
     onRefresh: () -> Unit,
+    onAdd: () -> Unit,
     onOpen: (AppInfo) -> Unit,
     onOpenGuardLogs: (String, String) -> Unit,
 ) {
@@ -105,7 +104,9 @@ internal fun HomeScreen(
                 }
                 if (apps.isEmpty()) {
                     item {
-                        EmptyState("还没有已打包的应用\n点右下角「添加应用」开始\n下拉可刷新")
+                        EmptyState("还没有已打包的应用") {
+                            HomeAddButton(onAdd)
+                        }
                     }
                 } else {
                     item { GroupHeader("已打包 ${apps.size} 个应用") }
@@ -149,6 +150,26 @@ internal fun HomeScreen(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun HomeAddButton(onClick: () -> Unit) {
+    if (LocalMiuix.current) {
+        top.yukonga.miuix.kmp.basic.Button(
+            onClick = onClick,
+            modifier = Modifier.height(44.dp),
+        ) {
+            Text("添加应用")
+        }
+        return
+    }
+    androidx.compose.material3.Button(
+        onClick = onClick,
+        modifier = Modifier.height(44.dp),
+        shape = io.xpatch.ui.theme.xpShape(16.dp),
+    ) {
+        Text("添加应用")
     }
 }
 

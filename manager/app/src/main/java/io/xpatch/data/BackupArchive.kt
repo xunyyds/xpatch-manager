@@ -45,7 +45,6 @@ class BackupArchive(private val context: Context) {
     data class Result(val bytes: Long, val entries: Int, val skipped: List<String>)
 
     data class Preview(
-        val legacy: Boolean,
         val createdAt: Long,
         val versionName: String,
         val scopes: List<Scope>,
@@ -65,7 +64,7 @@ class BackupArchive(private val context: Context) {
             .format(java.util.Date()) + ".zip"
 
     suspend fun inspect(file: File): Preview? = withContext(Dispatchers.IO) {
-        if (isZip(file)) manifestOf(file) else legacyPreview(file)
+        manifestOf(file)
     }
 
     suspend fun write(
@@ -182,7 +181,6 @@ class BackupArchive(private val context: Context) {
 
     suspend fun restore(file: File, onProgress: (String) -> Unit = {}): RestoreResult =
         withContext(Dispatchers.IO) {
-            if (!isZip(file)) return@withContext restoreLegacy(file)
             if (manifestOf(file) == null) {
                 return@withContext RestoreResult(false, "这不是 XPatch 备份文件", emptyList())
             }
@@ -336,14 +334,6 @@ class BackupArchive(private val context: Context) {
         )
     }
 
-    private fun restoreLegacy(file: File): RestoreResult {
-        val text = runCatching { file.readText() }.getOrElse {
-            return RestoreResult(false, "读取文件失败：" + (it.message ?: "未知错误"), emptyList())
-        }
-        val result = ConfigBackup(context).importLegacy(text)
-        return RestoreResult(result.success, result.message, emptyList())
-    }
-
     private class Extracted(
         val files: Map<String, File>,
         val artifacts: Map<String, File>,
@@ -470,39 +460,12 @@ class BackupArchive(private val context: Context) {
             source.keys().forEach { key -> counts[key] = source.optInt(key) }
         }
         return Preview(
-            legacy = false,
             createdAt = json.optLong("createdAt"),
             versionName = json.optString("appVersion"),
             scopes = Scope.ofKeys(keys).toList(),
             counts = counts,
         )
     }
-
-    private fun legacyPreview(file: File): Preview? {
-        val json = runCatching { JSONObject(file.readText()) }.getOrNull() ?: return null
-        val scopes = buildSet {
-            if (json.optJSONObject("settings") != null) add(Scope.SETTINGS)
-            if (json.optJSONObject("scope") != null || json.optJSONObject("moduleApi") != null) {
-                add(Scope.SCOPE)
-            }
-            if (json.optString("defaultSignature").isNotBlank()) add(Scope.SIGNATURES)
-        }
-        return Preview(
-            legacy = true,
-            createdAt = json.optLong("exportedAt"),
-            versionName = "",
-            scopes = scopes.toList(),
-            counts = emptyMap(),
-        )
-    }
-
-    private fun isZip(file: File): Boolean = runCatching {
-        file.inputStream().use { input ->
-            val head = ByteArray(4)
-            val read = input.read(head)
-            read >= 2 && head[0] == 'P'.code.toByte() && head[1] == 'K'.code.toByte()
-        }
-    }.getOrDefault(false)
 
     private fun manifest(scopes: Set<Scope>, counts: Map<String, Int>): JSONObject =
         JSONObject().apply {
@@ -641,11 +604,7 @@ class BackupArchive(private val context: Context) {
     }
 
     private fun runtimeLogs(): List<RuntimeLog> {
-        val storage = Environment.getExternalStorageDirectory()
-        val roots = listOf(
-            File(storage, "Android/data"),
-            File(storage, "Android/media"),
-        )
+        val roots = listOf(File(Environment.getExternalStorageDirectory(), "Android/data"))
         val out = ArrayList<RuntimeLog>()
         roots.forEach { root ->
             val apps = runCatching { root.listFiles() }.getOrNull() ?: return@forEach

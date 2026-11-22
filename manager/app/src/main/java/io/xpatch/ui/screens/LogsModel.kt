@@ -1,6 +1,8 @@
 package io.xpatch.ui.screens
 
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
@@ -12,6 +14,12 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import io.xpatch.data.RuntimeLogStore
+import io.xpatch.ui.theme.LocalMiuix
+import io.xpatch.ui.theme.LogAll
+import io.xpatch.ui.theme.LogDebug
+import io.xpatch.ui.theme.LogError
+import io.xpatch.ui.theme.LogInfo
+import io.xpatch.ui.theme.LogWarn
 import java.util.Locale
 
 internal enum class LogsTab(val label: String) {
@@ -68,14 +76,25 @@ internal fun levelOf(entry: RuntimeLogStore.Entry): LogLevel {
     }
 }
 
-internal fun levelColors(level: LogLevel): Pair<androidx.compose.ui.graphics.Color, androidx.compose.ui.graphics.Color> =
-    when (level) {
-        LogLevel.Error -> Color(0xFFB3261E) to Color(0xFFFFFFFF)
-        LogLevel.Warn -> Color(0xFFB26A00) to Color(0xFFFFFFFF)
-        LogLevel.Info -> Color(0xFF2F80ED) to Color(0xFFFFFFFF)
-        LogLevel.Debug -> Color(0xFF4F5B66) to Color(0xFFFFFFFF)
-        LogLevel.All -> Color(0xFF6B7280) to Color(0xFFFFFFFF)
+@Composable
+internal fun levelColor(level: LogLevel): Color {
+    if (LocalMiuix.current) {
+        return when (level) {
+            LogLevel.Error -> LogError
+            LogLevel.Warn -> LogWarn
+            LogLevel.Info -> LogInfo
+            LogLevel.Debug -> LogDebug
+            LogLevel.All -> LogAll
+        }
     }
+    return when (level) {
+        LogLevel.Error -> MaterialTheme.colorScheme.error
+        LogLevel.Warn -> MaterialTheme.colorScheme.tertiary
+        LogLevel.Info -> MaterialTheme.colorScheme.primary
+        LogLevel.Debug -> MaterialTheme.colorScheme.onSurfaceVariant
+        LogLevel.All -> MaterialTheme.colorScheme.outline
+    }
+}
 
 internal class LogDetailState {
     var query by mutableStateOf("")
@@ -415,7 +434,11 @@ internal fun summaryTruncated(entry: RuntimeLogStore.Entry): Boolean =
         entry.message.length > LOGS_SUMMARY_MAX_CHARS ||
         entry.message.count { it == '\n' } >= LOGS_SUMMARY_MAX_LINES
 
-internal fun highlightMatches(text: String, needle: String): AnnotatedString {
+internal fun highlightMatches(
+    text: String,
+    needle: String,
+    highlight: Color,
+): AnnotatedString {
     if (needle.isEmpty() || text.isEmpty()) return AnnotatedString(text)
     return buildAnnotatedString {
         var cursor = 0
@@ -426,7 +449,7 @@ internal fun highlightMatches(text: String, needle: String): AnnotatedString {
             append(text.substring(cursor, index))
             withStyle(
                 SpanStyle(
-                    background = Color(0x552F80ED),
+                    background = highlight.copy(alpha = 0.24f),
                     fontWeight = FontWeight.SemiBold,
                 ),
             ) {

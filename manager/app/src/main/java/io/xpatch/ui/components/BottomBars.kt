@@ -1,6 +1,5 @@
 package io.xpatch.ui.components
 
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,7 +22,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.Backdrop
 import com.kyant.backdrop.catalog.components.LiquidBottomTab
 import com.kyant.backdrop.catalog.components.LiquidBottomTabs
@@ -52,7 +50,10 @@ internal fun StandardBottomBar(current: Tab, onSelect: (Tab) -> Unit) {
         }
         return
     }
-    NavigationBar(containerColor = Color.Transparent) {
+    NavigationBar(
+        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+        tonalElevation = 0.dp,
+    ) {
         Tab.entries.forEach { entry ->
             NavigationBarItem(
                 selected = current == entry,
@@ -62,21 +63,8 @@ internal fun StandardBottomBar(current: Tab, onSelect: (Tab) -> Unit) {
                 colors = NavigationBarItemDefaults.colors(
                     selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
                     indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                    selectedTextColor = MaterialTheme.colorScheme.onSurface,
                 ),
-            )
-        }
-    }
-}
-
-@Composable
-internal fun MiuixBottomBar(current: Tab, onSelect: (Tab) -> Unit) {
-    MiuixNavigationBar {
-        Tab.entries.forEach { entry ->
-            MiuixNavigationBarItem(
-                selected = current == entry,
-                onClick = { onSelect(entry) },
-                icon = entry.icon,
-                label = entry.label,
             )
         }
     }
@@ -116,18 +104,33 @@ internal fun LiquidBar(
             Tab.entries.forEach { entry ->
                 val selected = current == entry
                 LiquidBottomTab(onClick = { onSelect(entry) }) {
-                    MiuixIcon(
-                        entry.icon,
-                        contentDescription = entry.label,
-                        modifier = Modifier.size(22.dp),
-                        tint = if (selected) primary else idle,
-                    )
-                    top.yukonga.miuix.kmp.basic.Text(
-                        entry.label,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                        color = if (selected) primary else idle,
-                    )
+                    if (miuix) {
+                        MiuixIcon(
+                            entry.icon,
+                            contentDescription = entry.label,
+                            modifier = Modifier.size(22.dp),
+                            tint = if (selected) primary else idle,
+                        )
+                        top.yukonga.miuix.kmp.basic.Text(
+                            entry.label,
+                            fontSize = MiuixTheme.textStyles.footnote1.fontSize,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (selected) primary else idle,
+                        )
+                    } else {
+                        Icon(
+                            entry.icon,
+                            contentDescription = entry.label,
+                            modifier = Modifier.size(22.dp),
+                            tint = if (selected) primary else idle,
+                        )
+                        Text(
+                            entry.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                            color = if (selected) primary else idle,
+                        )
+                    }
                 }
             }
         }

@@ -941,13 +941,7 @@ class RuntimeLogStore(
 
     private fun logRootFor(target: String): File = File(dataRoot(), target)
 
-    private fun logRoots(): List<File> {
-        val storage = Environment.getExternalStorageDirectory()
-        return listOf(
-            File(storage, "Android/media"),
-            File(storage, "Android/data"),
-        ).filter { it.isDirectory }
-    }
+    private fun logRoots(): List<File> = listOf(dataRoot()).filter { it.isDirectory }
 
     private fun childrenOf(dir: File, failures: MutableCollection<Failure>): Array<File>? =
         runCatching { dir.listFiles() ?: error("无法列出目录") }.getOrElse {
@@ -1002,7 +996,7 @@ class RuntimeLogStore(
         val close = line.indexOf(']')
         if (close < 2) return null
         val stamp = line.substring(1, close)
-        if (stamp.length < LEGACY_STAMP_LENGTH) return null
+        if (stamp.length != STAMP_LENGTH) return null
         stamp.forEachIndexed { index, char ->
             val valid = when (index) {
                 4, 7 -> char == '-'
@@ -1038,7 +1032,6 @@ class RuntimeLogStore(
 
         private const val STAMP_PATTERN = "yyyy-MM-dd'T'HH:mm:ss.SSS"
         private const val STAMP_LENGTH = 23
-        private const val LEGACY_STAMP_LENGTH = 19
         private const val MAX_FAILURES = 20
         private const val REASON_LIMIT = 120
         private const val NEWLINE: Byte = 0x0A

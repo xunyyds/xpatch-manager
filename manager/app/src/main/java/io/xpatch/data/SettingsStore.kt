@@ -19,6 +19,23 @@ enum class UiStyle(val index: Int, val label: String) {
     }
 }
 
+enum class ThemeColor(val key: String, val label: String) {
+    GREEN("green", "默认"),
+    TEAL("teal", "青色"),
+    BLUE("blue", "蓝色"),
+    INDIGO("indigo", "靛蓝色"),
+    VIOLET("violet", "紫罗兰色"),
+    PINK("pink", "粉红色"),
+    YELLOW("yellow", "黄色"),
+    ORANGE("orange", "橙色"),
+    DEEP_ORANGE("deep_orange", "深橙色"),
+    ;
+
+    companion object {
+        fun of(key: String): ThemeColor = entries.firstOrNull { it.key == key } ?: GREEN
+    }
+}
+
 enum class LiquidGlassLevel(val index: Int, val label: String) {
     STANDARD(0, "标准"),
     ENHANCED(1, "增强"),
@@ -44,6 +61,9 @@ enum class SoftwareSource(val key: String, val label: String) {
 
 data class ManagerSettings(
     val themeMode: Int,
+    val themeColor: ThemeColor = ThemeColor.GREEN,
+    val dynamicColor: Boolean = true,
+    val oledDark: Boolean = false,
     val signatureBypassLevel: Int,
     val hookCore: HookCore,
     val showSystemApps: Boolean,
@@ -78,6 +98,9 @@ class SettingsStore(context: Context) {
 
     fun load(): ManagerSettings = ManagerSettings(
         themeMode = prefs.getInt(KEY_THEME, THEME_SYSTEM),
+        themeColor = ThemeColor.of(prefs.getString(KEY_THEME_COLOR, "").orEmpty()),
+        dynamicColor = prefs.getBoolean(KEY_DYNAMIC_COLOR, true),
+        oledDark = prefs.getBoolean(KEY_OLED_DARK, false),
         signatureBypassLevel = prefs.getInt(KEY_BYPASS_LEVEL, 3),
         hookCore = HookCore.entries.firstOrNull { it.index == prefs.getInt(KEY_HOOK_CORE, 0) }
             ?: HookCore.XPLANT,
@@ -111,6 +134,15 @@ class SettingsStore(context: Context) {
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
+
+    fun setThemeColor(color: ThemeColor) =
+        prefs.edit().putString(KEY_THEME_COLOR, color.key).apply()
+
+    fun setDynamicColor(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_DYNAMIC_COLOR, enabled).apply()
+
+    fun setOledDark(enabled: Boolean) =
+        prefs.edit().putBoolean(KEY_OLED_DARK, enabled).apply()
 
     fun setSignatureBypassLevel(level: Int) =
         prefs.edit().putInt(KEY_BYPASS_LEVEL, level).apply()
@@ -219,6 +251,9 @@ class SettingsStore(context: Context) {
         }
 
         private const val KEY_THEME = "theme_mode"
+        private const val KEY_THEME_COLOR = "theme_color"
+        private const val KEY_DYNAMIC_COLOR = "dynamic_color"
+        private const val KEY_OLED_DARK = "oled_dark"
         private const val KEY_BYPASS_LEVEL = "bypass_level"
         private const val KEY_HOOK_CORE = "hook_core"
         private const val KEY_SHOW_SYSTEM = "show_system"
