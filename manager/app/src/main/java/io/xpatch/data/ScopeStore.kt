@@ -2,12 +2,18 @@ package io.xpatch.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.os.Process
 import org.json.JSONArray
 import java.util.UUID
 
-class ScopeStore(context: Context) {
+class ScopeStore(
+    context: Context,
+    val userId: Int = UserDirectory.currentUserId(),
+) {
 
-    private val prefs = context.getSharedPreferences("scope", Context.MODE_PRIVATE)
+    private val prefs = context.getSharedPreferences(prefsName(userId), Context.MODE_PRIVATE)
+
+    val isCurrentUser: Boolean get() = userId == UserDirectory.currentUserId()
 
     fun enabledModules(): Set<String> = synchronized(LOCK) { enabled().toSet() }
 
@@ -25,6 +31,10 @@ class ScopeStore(context: Context) {
         scope().get(modulePackage)?.toSet() ?: emptySet()
     }
 
+    fun appsOfModuleFor(modulePackage: String): Set<String> = synchronized(LOCK) {
+        scope().get(modulePackage)?.toSet() ?: emptySet()
+    }
+
     fun modulesOf(appPackage: String): Set<String> = synchronized(LOCK) {
         reverse()[appPackage] ?: emptySet()
     }
@@ -34,7 +44,7 @@ class ScopeStore(context: Context) {
         val current = all.getOrPut(modulePackage) { mutableSetOf() }
         val changed = if (inScope) current.add(appPackage) else current.remove(appPackage)
         if (changed) {
-            reverseCache = null
+            reverseCache().value = null
             val editor = prefs.edit()
             if (current.isEmpty()) {
                 all.remove(modulePackage)
@@ -108,7 +118,7 @@ class ScopeStore(context: Context) {
             changed = true
         }
         if (changed) {
-            reverseCache = null
+            reverseCache().value = null
             if (enabledChanged) {
                 editor.putString(KEY_ENABLED, JSONArray(enabled.toList()).toString())
             }
@@ -118,20 +128,39 @@ class ScopeStore(context: Context) {
         pendingSync().toSet()
     }
 
-    fun invalidate() = synchronized(LOCK) {
-        enabledCache = null
-        scopeCache = null
-        reverseCache = null
-        moduleStampCache = null
-        pendingSyncCache = null
+    fun copyAppScope(source: ScopeStore, appPackage: String) = synchronized(LOCK) {
+        if (source.userId == userId) return@synchronized
+        val modules = source.modulesOf(appPackage)
+        if (modules.isEmpty()) return@synchronized
+        val all = scope()
+        val editor = prefs.edit()
+        var changed = false
+        modules.forEach { module ->
+            val apps = all.getOrPut(module) { mutableSetOf() }
+            if (apps.add(appPackage)) {
+                editor.putString(prefix(module), JSONArray(apps.toList()).toString())
+                changed = true
+            }
+        }
+        if (changed) {
+            reverseCache().value = null
+            enqueueScopeSync(setOf(appPackage), editor)
+            editor.apply()
+        }
     }
 
-    fun clearAll() = synchronized(LOCK) {
-        val affectedApps = scope().values.flatten().toSet() + pendingSync()
-        val editor = prefs.edit().clear()
-        enqueueScopeSync(affectedApps, editor)
-        runCatching { editor.apply() }
-        invalidate()
+    fun invalidate() {
+        synchronized(LOCK) { caches.remove(userId) }
+    }
+
+    fun clearAll() {
+        synchronized(LOCK) {
+            val affectedApps = scope().values.flatten().toSet() + pendingSync()
+            val editor = prefs.edit().clear()
+            enqueueScopeSync(affectedApps, editor)
+            runCatching { editor.apply() }
+            invalidate()
+        }
     }
 
     private fun enqueueScopeSync(apps: Collection<String>, editor: SharedPreferences.Editor) {
@@ -143,16 +172,20 @@ class ScopeStore(context: Context) {
         editor.putString(KEY_PENDING_SYNC, JSONArray(pending.toList()).toString())
     }
 
+    private fun storage(): Caches = synchronized(LOCK) { caches.getOrPut(userId) { Caches() } }
+
     private fun enabled(): MutableSet<String> {
-        enabledCache?.let { return it }
+        val holder = storage()
+        holder.enabled?.let { return it }
         val raw = runCatching { prefs.getString(KEY_ENABLED, null) }.getOrNull()
         val loaded = parse(raw).toMutableSet()
-        enabledCache = loaded
+        holder.enabled = loaded
         return loaded
     }
 
     private fun scope(): MutableMap<String, MutableSet<String>> {
-        scopeCache?.let { return it }
+        val holder = storage()
+        holder.scope?.let { return it }
         val loaded = HashMap<String, MutableSet<String>>()
         runCatching {
             prefs.all.forEach { (key, value) ->
@@ -162,37 +195,42 @@ class ScopeStore(context: Context) {
                 }
             }
         }
-        scopeCache = loaded
+        holder.scope = loaded
         return loaded
     }
 
     private fun moduleStamps(): MutableMap<String, String> {
-        moduleStampCache?.let { return it }
+        val holder = storage()
+        holder.stamps?.let { return it }
         val loaded = HashMap<String, String>()
         prefs.all.forEach { (key, value) ->
             if (key.startsWith(STAMP_PREFIX) && value is String) {
                 loaded[key.removePrefix(STAMP_PREFIX)] = value
             }
         }
-        moduleStampCache = loaded
+        holder.stamps = loaded
         return loaded
     }
 
     private fun pendingSync(): MutableSet<String> {
-        pendingSyncCache?.let { return it }
+        val holder = storage()
+        holder.pending?.let { return it }
         val loaded = parse(prefs.getString(KEY_PENDING_SYNC, null)).toMutableSet()
-        pendingSyncCache = loaded
+        holder.pending = loaded
         return loaded
     }
 
+    private fun reverseCache(): Holder<Map<String, Set<String>>> = storage().reverse
+
     private fun reverse(): Map<String, Set<String>> {
-        reverseCache?.let { return it }
+        val holder = reverseCache()
+        holder.value?.let { return it }
         val built = HashMap<String, MutableSet<String>>()
         scope().forEach { (module, apps) ->
             apps.forEach { app -> built.getOrPut(app) { mutableSetOf() }.add(module) }
         }
         val frozen = built.mapValues { it.value.toSet() }
-        reverseCache = frozen
+        holder.value = frozen
         return frozen
     }
 
@@ -210,18 +248,28 @@ class ScopeStore(context: Context) {
 
     private fun syncVersionPrefix(appPackage: String) = "$SYNC_VERSION_PREFIX$appPackage"
 
-    private companion object {
-        const val KEY_ENABLED = "enabled_modules"
-        const val KEY_PENDING_SYNC = "pending_sync_apps"
-        const val SCOPE_PREFIX = "scope_"
-        const val STAMP_PREFIX = "module_stamp_"
-        const val SYNC_VERSION_PREFIX = "sync_version_"
+    private class Holder<T>(var value: T?)
 
-        val LOCK = Any()
-        var enabledCache: MutableSet<String>? = null
-        var scopeCache: MutableMap<String, MutableSet<String>>? = null
-        var reverseCache: Map<String, Set<String>>? = null
-        var moduleStampCache: MutableMap<String, String>? = null
-        var pendingSyncCache: MutableSet<String>? = null
+    private class Caches(
+        var enabled: MutableSet<String>? = null,
+        var scope: MutableMap<String, MutableSet<String>>? = null,
+        val reverse: Holder<Map<String, Set<String>>> = Holder(null),
+        var stamps: MutableMap<String, String>? = null,
+        var pending: MutableSet<String>? = null,
+    )
+
+    companion object {
+        private const val KEY_ENABLED = "enabled_modules"
+        private const val KEY_PENDING_SYNC = "pending_sync_apps"
+        private const val SCOPE_PREFIX = "scope_"
+        private const val STAMP_PREFIX = "module_stamp_"
+        private const val SYNC_VERSION_PREFIX = "sync_version_"
+
+        private val LOCK = Any()
+        private val caches = HashMap<Int, Caches>()
+
+        fun prefsName(userId: Int): String = "scope_u$userId"
+
+        fun invalidateAll() = synchronized(LOCK) { caches.clear() }
     }
 }

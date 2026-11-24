@@ -1,5 +1,7 @@
 package io.xpatch.ui.components
 
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.foundation.background
@@ -52,20 +54,23 @@ internal fun SegmentedControl(
     ) {
         options.forEachIndexed { index, label ->
             val selected = index == selectedIndex
-            val fill = when {
+            val targetFill = when {
                 !selected -> Color.Transparent
                 miuix -> MiuixTheme.colorScheme.primary
                 else -> MaterialTheme.colorScheme.primaryContainer
             }
-            val textColor = when {
+            val targetText = when {
                 !selected -> if (miuix) MiuixTheme.colorScheme.onSurfaceVariantSummary
                 else MaterialTheme.colorScheme.onSurfaceVariant
 
                 miuix -> MiuixTheme.colorScheme.onPrimary
                 else -> MaterialTheme.colorScheme.onPrimaryContainer
             }
+            val spec: AnimationSpec<Color> = if (reduced) snap<Color>() else Motion.controlColor
+            val fill by animateColorAsState(targetFill, animationSpec = spec, label = "segmentFill")
+            val textColor by animateColorAsState(targetText, animationSpec = spec, label = "segmentText")
             val selectedScale by animateFloatAsState(
-                targetValue = if (!miuix && !selected) 0.94f else 1f,
+                targetValue = if (selected) 1f else 0.94f,
                 animationSpec = if (reduced) {
                     snap()
                 } else {

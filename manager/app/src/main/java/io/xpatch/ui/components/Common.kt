@@ -301,6 +301,28 @@ fun GroupHeader(text: String) {
 }
 
 @Composable
+fun GroupHeaderRow(text: String, trailing: @Composable () -> Unit) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(start = 24.dp, end = 14.dp, top = 16.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = MaterialTheme.colorScheme.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f, fill = false),
+        )
+        Spacer(Modifier.weight(1f))
+        trailing()
+    }
+}
+
+@Composable
 fun Chip(
     text: String,
     selected: Boolean,

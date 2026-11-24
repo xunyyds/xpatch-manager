@@ -25,6 +25,7 @@ data class PatchOptions(
     val obfuscate: Boolean = false,
     val obfuscateKeepCrashPermission: Boolean = false,
     val logLevel: Int = PatchLog.LEVEL_NORMAL,
+    val installUsers: Set<Int> = emptySet(),
 )
 
 class PatchService(private val context: Context) {
@@ -38,6 +39,7 @@ class PatchService(private val context: Context) {
         val config: String,
 
         val forceOverwrite: Boolean = false,
+        val installUsers: Set<Int> = emptySet(),
     )
 
     data class ExportResult(val path: String, val name: String, val uri: String, val size: Long)
@@ -235,6 +237,7 @@ class PatchService(private val context: Context) {
             originalFactory = result.originalFactory,
             config = result.config,
             forceOverwrite = options.forceOverwrite,
+            installUsers = options.installUsers,
         )
     }
 

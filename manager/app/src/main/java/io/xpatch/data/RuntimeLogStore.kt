@@ -16,7 +16,13 @@ import java.util.Locale
 
 class RuntimeLogStore(
     private var pfdReader: ((String) -> ParcelFileDescriptor?)? = { path -> ShizukuBridge.openRead(path) },
+    val userId: Int = UserDirectory.currentUserId(),
 ) {
+
+    val isCurrentUser: Boolean get() = userId == UserDirectory.currentUserId()
+
+    private val externalRoot: String
+        get() = if (isCurrentUser) DATA_PATH else "/storage/emulated/$userId/Android/data"
 
     enum class LogSourceKind {
         EXTERNAL,
@@ -145,6 +151,7 @@ class RuntimeLogStore(
         files: MutableList<FileCursor>,
         failures: MutableList<Failure>,
     ) {
+        if (!isCurrentUser) return
         if (targets.isEmpty()) {
             childrenOf(dataRoot(), failures)?.forEach { appDir ->
                 collectFiles(File(appDir, LOG_DIR), appDir.name, files, failures)
@@ -708,12 +715,12 @@ class RuntimeLogStore(
         files: MutableList<FileCursor>,
     ) {
         val roots = if (targets.isEmpty()) {
-            shellLines(reader, "ls $DATA_PATH 2>/dev/null")
+            shellLines(reader, "ls $externalRoot 2>/dev/null")
         } else {
             targets.toList()
         }
         for (target in roots) {
-            val appLogs = "$DATA_PATH/$target/$LOG_DIR"
+            val appLogs = "$externalRoot/$target/$LOG_DIR"
             for (module in shellLines(reader, "ls $appLogs 2>/dev/null")) {
                 val moduleDir = "$appLogs/$module"
                 for (name in shellLines(reader, "ls $moduleDir 2>/dev/null")) {
@@ -937,7 +944,9 @@ class RuntimeLogStore(
         return cursor.files.mapTo(HashSet()) { it.source }
     }
 
-    private fun dataRoot(): File = File(Environment.getExternalStorageDirectory(), "Android/data")
+    private fun dataRoot(): File =
+        if (isCurrentUser) File(Environment.getExternalStorageDirectory(), "Android/data")
+        else File("/storage/emulated/$userId/Android/data")
 
     private fun logRootFor(target: String): File = File(dataRoot(), target)
 

@@ -2,7 +2,10 @@ package io.xpatch.data
 
 import android.content.Context
 
-class ModuleApiStore(context: Context) {
+class ModuleApiStore(
+    context: Context,
+    private val userId: Int = UserDirectory.currentUserId(),
+) {
 
     private val prefs = context.getSharedPreferences("module_api", Context.MODE_PRIVATE)
 
@@ -14,7 +17,7 @@ class ModuleApiStore(context: Context) {
     }
 
     fun clear(appPackage: String) {
-        val prefix = "$appPackage:"
+        val prefix = scopedPrefix(appPackage)
         prefs.edit().apply {
             prefs.all.keys.filter { it.startsWith(prefix) }.forEach { remove(it) }
         }.apply()
@@ -29,7 +32,10 @@ class ModuleApiStore(context: Context) {
             .filter { it.value is Int }
             .associate { it.key to it.value as Int }
 
-    private fun key(appPackage: String, modulePackage: String) = "$appPackage:$modulePackage"
+    private fun scopedPrefix(appPackage: String) = "u$userId:$appPackage:"
+
+    private fun key(appPackage: String, modulePackage: String) =
+        scopedPrefix(appPackage) + modulePackage
 
     companion object {
         const val AUTO = 0

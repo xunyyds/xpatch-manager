@@ -27,6 +27,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.RestartCenter
+import io.xpatch.data.UserDirectory
 import io.xpatch.ui.theme.xpShape
 
 @Composable
@@ -143,7 +144,11 @@ internal fun RestartListRows(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        text = request.label,
+                        text = if (request.userId == UserDirectory.currentUserId()) {
+                            request.label
+                        } else {
+                            request.label + " · " + UserDirectory.labelOf(request.userId)
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.Medium,
                     )

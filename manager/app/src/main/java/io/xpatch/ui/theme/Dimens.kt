@@ -1,8 +1,10 @@
 package io.xpatch.ui.theme
 
+import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -94,6 +96,8 @@ object Motion {
     val fadeIn = tween<Float>(durationMillis = normalMs, easing = FastOutSlowInEasing)
     val fadeOut = tween<Float>(durationMillis = quickMs, easing = FastOutSlowInEasing)
     val control = tween<Float>(durationMillis = normalMs, easing = FastOutSlowInEasing)
+    val controlColor: AnimationSpec<Color> =
+        tween(durationMillis = normalMs, easing = FastOutSlowInEasing)
     val spatialEnter = tween<IntOffset>(durationMillis = containerMs, easing = FastOutSlowInEasing)
     val spatialExit = tween<IntOffset>(durationMillis = containerExitMs, easing = FastOutSlowInEasing)
 }

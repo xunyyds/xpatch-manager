@@ -90,6 +90,7 @@ data class ManagerSettings(
     val injectKeepCrashPermission: Boolean = false,
     val patchLogLevel: Int = SettingsStore.LOG_LEVEL_DEFAULT,
     val softwareSource: SoftwareSource = SoftwareSource.AUTO,
+    val installUsers: Set<Int> = emptySet(),
 )
 
 class SettingsStore(context: Context) {
@@ -131,6 +132,7 @@ class SettingsStore(context: Context) {
         injectKeepCrashPermission = prefs.getBoolean(KEY_INJECT_KEEP_CRASH_PERMISSION, false),
         patchLogLevel = PatchLog.normalize(prefs.getInt(KEY_LOG_LEVEL, LOG_LEVEL_DEFAULT)),
         softwareSource = SoftwareSource.of(prefs.getString(KEY_SOFTWARE_SOURCE, "").orEmpty()),
+        installUsers = parseUsers(prefs.getString(KEY_INSTALL_USERS, "").orEmpty()),
     )
 
     fun setThemeMode(mode: Int) = prefs.edit().putInt(KEY_THEME, mode).apply()
@@ -217,6 +219,14 @@ class SettingsStore(context: Context) {
     fun setSoftwareSource(source: SoftwareSource) =
         prefs.edit().putString(KEY_SOFTWARE_SOURCE, source.key).apply()
 
+    fun setInstallUsers(users: Set<Int>) =
+        prefs.edit().putString(KEY_INSTALL_USERS, users.sorted().joinToString(",")).apply()
+
+    private fun parseUsers(raw: String): Set<Int> {
+        if (raw.isBlank()) return emptySet()
+        return raw.split(',').mapNotNull { it.trim().toIntOrNull() }.toSortedSet()
+    }
+
     companion object {
         const val THEME_SYSTEM = 0
         const val THEME_LIGHT = 1
@@ -281,6 +291,7 @@ class SettingsStore(context: Context) {
         private const val KEY_INJECT_KEEP_CRASH_PERMISSION = "inject_keep_crash_permission"
         private const val KEY_LOG_LEVEL = "patch_log_level"
         private const val KEY_SOFTWARE_SOURCE = "software_source"
+        private const val KEY_INSTALL_USERS = "install_users"
         const val LOG_LEVEL_DEFAULT = PatchLog.LEVEL_NORMAL
         const val BOTTOM_BAR_STANDARD = 0
         const val BOTTOM_BAR_LIQUID = 1

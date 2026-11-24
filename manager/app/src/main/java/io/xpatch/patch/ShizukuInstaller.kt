@@ -1,6 +1,8 @@
 package io.xpatch.patch
 
 import android.content.Context
+import android.os.Process
+import io.xpatch.data.UserDirectory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
@@ -15,30 +17,60 @@ object ShizukuInstaller {
         data object Unavailable : Result
     }
 
-    suspend fun install(context: Context, apk: File, packageName: String): Result =
-        withContext(Dispatchers.IO) {
-            if (!ShizukuBridge.isAvailable()) return@withContext Result.Unavailable
-            if (!ShizukuBridge.hasPermission()) {
-                val granted = requestPermission()
-                if (!granted) return@withContext Result.Failure("Shizuku 未授权，将使用系统安装器")
-            }
-            val source = readableByShell(context, apk)
-                ?: return@withContext Result.Failure("Shizuku 无法读取安装包，将使用系统安装器")
-            val output = ShizukuBridge.exec("pm install -r -t -d --user current " + shellQuote(source.absolutePath))
-            cleanupStaged(source)
-            when {
-                output.isNullOrBlank() -> Result.Failure("Shizuku 安装无响应，将使用系统安装器")
-                output.contains("Success") -> Result.Success("已通过 Shizuku 静默安装 $packageName")
-                else ->
-                    Result.Failure(
-                        "Shizuku 安装失败：" + failureDetail(output),
-                    )
+    suspend fun install(
+        context: Context,
+        apk: File,
+        packageName: String,
+        users: Collection<Int> = emptyList(),
+    ): Result = withContext(Dispatchers.IO) {
+        if (!ShizukuBridge.isAvailable()) return@withContext Result.Unavailable
+        if (!ShizukuBridge.hasPermission()) {
+            val granted = requestPermission()
+            if (!granted) return@withContext Result.Failure("Shizuku 未授权，将使用系统安装器")
+        }
+        val targets = resolveTargets(users)
+        val source = readableByShell(context, apk)
+            ?: return@withContext Result.Failure("Shizuku 无法读取安装包，将使用系统安装器")
+        val failures = ArrayList<String>()
+        val installed = ArrayList<Int>()
+        targets.forEach { userId ->
+            val output = ShizukuBridge.exec(
+                "pm install -r -t -d --user $userId " + shellQuote(source.absolutePath),
+            )
+            if (output != null && output.contains("Success")) {
+                installed += userId
+            } else {
+                failures += describeUser(userId) + "：" + failureDetail(output)
             }
         }
+        cleanupStaged(source)
+        when {
+            failures.isEmpty() -> Result.Success(successMessage(packageName, installed))
+            installed.isEmpty() -> Result.Failure(failures.joinToString("\n"))
+            else -> Result.Success(
+                successMessage(packageName, installed) + "\n未安装：" + failures.joinToString("\n"),
+            )
+        }
+    }
 
     private suspend fun requestPermission(): Boolean = suspendCancellableCoroutine { cont ->
         ShizukuBridge.requestPermission { granted -> cont.resume(granted) }
     }
+
+    private fun resolveTargets(users: Collection<Int>): List<Int> {
+        val requested = users.filter { it >= 0 }.toSortedSet()
+        return if (requested.isEmpty()) listOf(UserDirectory.currentUserId()) else requested.toList()
+    }
+
+    private fun describeUser(userId: Int): String = UserDirectory.labelOf(userId)
+
+    private fun successMessage(packageName: String, users: List<Int>): String =
+        if (users.size == 1 && users.first() == UserDirectory.currentUserId()) {
+            "已通过 Shizuku 静默安装 $packageName"
+        } else {
+            "已通过 Shizuku 静默安装 $packageName 到 " +
+                users.joinToString("、") { describeUser(it) }
+        }
 
     private fun readableByShell(context: Context, apk: File): File? {
         if (!apk.isFile) return null
@@ -83,7 +115,7 @@ object ShizukuInstaller {
         )
         cleanupStaged(source)
         when {
-            output.isNullOrBlank() -> Result.Failure("强行覆盖安装无响应")
+            output == null -> Result.Failure("强行覆盖安装无响应")
             output.contains("Success") ->
                 Result.Success("已强行覆盖安装 $packageName，应用数据已保留")
 
@@ -96,6 +128,16 @@ object ShizukuInstaller {
             )
         }
     }
+
+    fun installExisting(packageName: String, userId: Int): Boolean = runCatching {
+        val output = ShizukuBridge.exec(
+            "pm install-existing --user $userId " + shellQuote(packageName),
+        )
+        output != null && (output.contains("installed for user") || output.contains("Success"))
+    }.getOrDefault(false)
+
+    fun ensureExisting(packageName: String, users: Collection<Int>): Set<Int> =
+        users.filterTo(LinkedHashSet()) { installExisting(packageName, it) }
 
     private fun cleanupStaged(source: File) {
         val path = source.absolutePath

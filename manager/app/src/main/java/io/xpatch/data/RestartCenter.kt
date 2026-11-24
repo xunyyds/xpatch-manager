@@ -11,7 +11,12 @@ import java.io.File
 
 object RestartCenter {
 
-    data class Request(val packageName: String, val label: String, val reason: String)
+    data class Request(
+        val packageName: String,
+        val label: String,
+        val reason: String,
+        val userId: Int = UserDirectory.currentUserId(),
+    )
 
     private const val FILE_NAME = "restart_pending.json"
 
@@ -43,18 +48,24 @@ object RestartCenter {
         }
     }
 
-    fun request(context: Context, packageName: String, label: String, reason: String) {
+    fun request(
+        context: Context,
+        packageName: String,
+        label: String,
+        reason: String,
+        userId: Int = UserDirectory.currentUserId(),
+    ) {
         if (packageName.isBlank()) return
         init(context)
-        val request = Request(packageName, label.ifBlank { packageName }, reason)
-        _pending.value = _pending.value.filterNot { it.packageName == packageName } + request
+        val request = Request(packageName, label.ifBlank { packageName }, reason, userId)
+        _pending.value = _pending.value.filterNot { it.packageName == packageName && it.userId == userId } + request
         _dialog.value = request
         _bannerHidden.value = false
         persist()
         AppNotifications.post(
             context,
-            AppNotifications.restartId(packageName),
-            AppNotifications.restart(context, request.packageName, request.label, request.reason),
+            AppNotifications.restartId(packageName, userId),
+            AppNotifications.restart(context, request.packageName, request.label, request.reason, userId),
         )
     }
 
@@ -66,29 +77,33 @@ object RestartCenter {
         _bannerHidden.value = true
     }
 
-    fun ignore(context: Context, packageName: String) {
-        _pending.value = _pending.value.filterNot { it.packageName == packageName }
-        if (_dialog.value?.packageName == packageName) {
+    fun ignore(context: Context, packageName: String, userId: Int = UserDirectory.currentUserId()) {
+        _pending.value = _pending.value.filterNot {
+            it.packageName == packageName && it.userId == userId
+        }
+        if (_dialog.value?.packageName == packageName && _dialog.value?.userId == userId) {
             _dialog.value = null
         }
         if (_pending.value.isEmpty()) {
             _bannerHidden.value = false
         }
         persist()
-        AppNotifications.cancel(context, AppNotifications.restartId(packageName))
+        AppNotifications.cancel(context, AppNotifications.restartId(packageName, userId))
     }
 
     fun ignoreAll(context: Context) {
-        _pending.value.forEach { AppNotifications.cancel(context, AppNotifications.restartId(it.packageName)) }
+        _pending.value.forEach {
+            AppNotifications.cancel(context, AppNotifications.restartId(it.packageName, it.userId))
+        }
         _pending.value = emptyList()
         _dialog.value = null
         _bannerHidden.value = false
         persist()
     }
 
-    fun restartNow(context: Context, packageName: String) {
-        if (restartInternal(context, packageName)) {
-            AppNotifications.cancel(context, AppNotifications.restartId(packageName))
+    fun restartNow(context: Context, packageName: String, userId: Int = UserDirectory.currentUserId()) {
+        if (restartInternal(context, packageName, userId)) {
+            AppNotifications.cancel(context, AppNotifications.restartId(packageName, userId))
         } else {
             toastFailure(context)
         }
@@ -99,8 +114,8 @@ object RestartCenter {
         if (targets.isEmpty()) return
         var failed = 0
         targets.forEach { request ->
-            if (restartInternal(context, request.packageName)) {
-                AppNotifications.cancel(context, AppNotifications.restartId(request.packageName))
+            if (restartInternal(context, request.packageName, request.userId)) {
+                AppNotifications.cancel(context, AppNotifications.restartId(request.packageName, request.userId))
             } else {
                 failed++
             }
@@ -108,11 +123,13 @@ object RestartCenter {
         if (failed > 0) toastFailure(context)
     }
 
-    private fun restartInternal(context: Context, packageName: String): Boolean {
-        val ok = runCatching { ShizukuBridge.restart(context, packageName) }.getOrDefault(false)
+    private fun restartInternal(context: Context, packageName: String, userId: Int): Boolean {
+        val ok = runCatching { ShizukuBridge.restart(context, packageName, userId) }.getOrDefault(false)
         if (ok) {
-            _pending.value = _pending.value.filterNot { it.packageName == packageName }
-            if (_dialog.value?.packageName == packageName) {
+            _pending.value = _pending.value.filterNot {
+                it.packageName == packageName && it.userId == userId
+            }
+            if (_dialog.value?.packageName == packageName && _dialog.value?.userId == userId) {
                 _dialog.value = null
             }
             if (_pending.value.isEmpty()) {
@@ -145,6 +162,7 @@ object RestartCenter {
                 packageName = packageName,
                 label = item.optString("label").ifBlank { packageName },
                 reason = item.optString("reason"),
+                userId = item.optInt("userId", UserDirectory.currentUserId()),
             )
         }
         list
@@ -160,6 +178,7 @@ object RestartCenter {
                         put("packageName", request.packageName)
                         put("label", request.label)
                         put("reason", request.reason)
+                        put("userId", request.userId)
                     },
                 )
             }

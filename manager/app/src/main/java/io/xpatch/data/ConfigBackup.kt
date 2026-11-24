@@ -179,11 +179,13 @@ class ConfigBackup(private val context: Context) {
                 }
             }
         }
-        val apis = ArrayList<Triple<String, String, Int>>()
+        val apis = ArrayList<Pair<String, Int>>()
         json.optJSONObject("moduleApi")?.let { api ->
             api.keys().forEach { key ->
                 val parts = key.split(":")
-                if (parts.size == 2) apis += Triple(parts[0], parts[1], api.optInt(key, 0))
+                if (parts.size == 3 && parts[0].startsWith("u")) {
+                    apis += (parts[1] + ":" + parts[2]) to api.optInt(key, 0)
+                }
             }
         }
         scopeStore.clearAll()
@@ -191,7 +193,10 @@ class ConfigBackup(private val context: Context) {
         try {
             enabled.forEach { scopeStore.setModuleEnabled(it, true) }
             scopePairs.forEach { (module, app) -> scopeStore.setInScope(module, app, true) }
-            apis.forEach { (app, module, level) -> apiStore.setApi(app, module, level) }
+            apis.forEach { (pair, level) ->
+                val parts = pair.split(":")
+                if (parts.size == 2) apiStore.setApi(parts[0], parts[1], level)
+            }
             json.optJSONArray("guard")?.let { ModuleGuardStore.restoreJson(context, it) }
         } finally {
             scopeStore.invalidate()

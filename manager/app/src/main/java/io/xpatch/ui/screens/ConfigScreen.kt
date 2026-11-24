@@ -40,14 +40,17 @@ import io.xpatch.data.HookCore
 import io.xpatch.data.PatchRecord
 import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
+import io.xpatch.data.XpUser
 import io.xpatch.patch.BypassTier
 import io.xpatch.patch.PatchOptions
 import io.xpatch.patch.ShizukuInstaller
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.SettingGroup
+import io.xpatch.ui.components.UserTargetDialog
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.components.appTextFieldColors
+import io.xpatch.ui.components.userTargetText
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
@@ -164,6 +167,7 @@ internal fun ConfigScreen(
     onlineCapsule: OnlineCapsuleState? = null,
     onlineCapsulePercent: Int? = null,
     onOnlineCapsuleClick: () -> Unit = {},
+    users: List<XpUser> = emptyList(),
 ) {
     var hookCore by remember { mutableStateOf(defaults.hookCore) }
     var bypass by remember { mutableStateOf(defaults.signatureBypassLevel) }
@@ -176,7 +180,16 @@ internal fun ConfigScreen(
     var forceOverwriteError by remember { mutableStateOf<String?>(null) }
     var showHookDialog by remember { mutableStateOf(false) }
     var showBypassDialog by remember { mutableStateOf(false) }
+    var showUserDialog by remember { mutableStateOf(false) }
     var moreExpanded by remember { mutableStateOf(false) }
+    var targetUsers by remember(defaults.installUsers) {
+        mutableStateOf(
+            defaults.installUsers.ifEmpty { setOf(io.xpatch.data.UserDirectory.currentUserId()) }
+                .filter { id -> users.isEmpty() || users.any { it.id == id } }
+                .toSet()
+                .ifEmpty { setOf(io.xpatch.data.UserDirectory.currentUserId()) },
+        )
+    }
     val bypassKey = bypassModeKey(sigMode, bypass)
     val bypassMode = BYPASS_MODES.firstOrNull { it.key == bypassKey }
     val bypassTitle = bypassMode?.name ?: "自定义"
@@ -254,6 +267,7 @@ internal fun ConfigScreen(
         sigMode = sigMode,
         obfuscate = injectObfuscate,
         obfuscateKeepCrashPermission = injectKeepCrashPermission,
+        installUsers = targetUsers,
     )
     val reusable = findReusable(options)
     var reuseConfirm by remember { mutableStateOf<PatchRecord?>(null) }
@@ -274,10 +288,28 @@ internal fun ConfigScreen(
             }
         }
         AppHeaderCard(icon, name, packageName)
+        if (showUserDialog) {
+            UserTargetDialog(
+                users = users,
+                selected = targetUsers,
+                onConfirm = { picked ->
+                    showUserDialog = false
+                    targetUsers = picked
+                },
+                onDismiss = { showUserDialog = false },
+            )
+        }
         LazyColumn(
             Modifier.weight(1f),
             contentPadding = PaddingValues(bottom = 12.dp),
         ) {
+            if (users.size > 1) {
+                item {
+                    SettingGroup("安装到") {
+                        ChoiceRow(userTargetText(targetUsers)) { showUserDialog = true }
+                    }
+                }
+            }
             item {
                 SettingGroup("Hook 核心") {
                     ChoiceRow(hookCore.label) { showHookDialog = true }

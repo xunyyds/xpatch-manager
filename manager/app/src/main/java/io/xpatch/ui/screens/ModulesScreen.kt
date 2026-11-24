@@ -16,12 +16,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import io.xpatch.model.ModuleInfo
+import io.xpatch.data.XpUser
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
 import io.xpatch.ui.components.GroupHeader
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SearchField
+import io.xpatch.ui.components.UserTabs
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
 import top.yukonga.miuix.kmp.basic.HorizontalDivider as MiuixDivider
@@ -38,6 +40,9 @@ internal fun ModulesScreen(
     onOpenRepo: () -> Unit,
     refreshing: Boolean,
     onRefresh: () -> Unit,
+    users: List<XpUser> = emptyList(),
+    viewUser: Int = 0,
+    onViewUserChange: (Int) -> Unit = {},
 ) {
     val miuix = LocalMiuix.current
     val filtered = remember(modules, query) {

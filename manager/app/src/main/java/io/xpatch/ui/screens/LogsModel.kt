@@ -129,6 +129,7 @@ internal data class RuntimeLogsState(
     val loadingMore: Boolean = false,
     val error: String? = null,
     val hasAccess: Boolean = true,
+    val userId: Int = -1,
 ) {
     val entries: List<RuntimeLogStore.Entry> get() = snapshot?.entries.orEmpty()
 

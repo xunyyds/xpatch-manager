@@ -103,6 +103,10 @@ import io.xpatch.data.SettingsStore
 import io.xpatch.data.SignatureStore
 import io.xpatch.data.SoftwareSource
 import io.xpatch.data.UpdateChecker
+import io.xpatch.data.UserDirectory
+import io.xpatch.data.UserPackages
+import io.xpatch.data.UserSelectionStore
+import io.xpatch.data.XpUser
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.InstallHelper
@@ -116,7 +120,10 @@ import io.xpatch.ui.components.LiquidBar
 import io.xpatch.ui.components.PatchProgress
 import io.xpatch.ui.components.PatchProgressDialog
 import io.xpatch.ui.components.StandardBottomBar
+import io.xpatch.ui.components.UserTargetDialog
+import io.xpatch.ui.components.UserTargetRows
 import io.xpatch.ui.components.XPatchDialog
+import io.xpatch.ui.components.userTargetText
 import io.xpatch.ui.format.formatDateTime
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.AnimationQuality
@@ -161,13 +168,11 @@ fun MainScaffold(
     val repository = remember { ManagerRepository(context) }
     val settingsStore = remember { SettingsStore(context) }
     val eventLog = remember { EventLog(context) }
-    val logStore = remember { RuntimeLogStore() }
     val repoStore = remember { RepoStore(context) }
     val backupArchive = remember { BackupArchive(context) }
     val exportStore = remember { ExportStore(context) }
     val patchService = remember { PatchService(context) }
     val signatureStore = remember { SignatureStore(context) }
-    val moduleApiStore = remember { ModuleApiStore(context) }
     val historyStore = remember { PatchHistoryStore(context) }
     var signatures by remember { mutableStateOf(emptyList<SignatureStore.Profile>()) }
     var defaultSignatureId by remember { mutableStateOf(SignatureStore.BUILTIN_XPATCH) }
@@ -238,6 +243,32 @@ fun MainScaffold(
     var failure by remember { mutableStateOf<String?>(null) }
     var pendingInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var pendingInstallProfileName by remember { mutableStateOf("") }
+    var pendingInstallUsers by remember { mutableStateOf<Set<Int>>(emptySet()) }
+    var showPendingUserDialog by remember { mutableStateOf(false) }
+    var confirmInstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
+    var pendingUserInstall by remember { mutableStateOf<AppInfo?>(null) }
+    val users by produceState(initialValue = UserDirectory.cached(), shizukuReady) {
+        value = withContext(Dispatchers.IO) {
+            runCatching { UserDirectory.refresh(context) }.getOrDefault(UserDirectory.cached())
+        }
+    }
+    var usersInstalledIn by remember { mutableStateOf(emptySet<Int>()) }
+    LaunchedEffect(users, shizukuReady) {
+        usersInstalledIn = withContext(Dispatchers.IO) { probeManagerUsers(users) }
+    }
+    val selectionStore = remember { UserSelectionStore(context) }
+    var homeUser by remember { mutableIntStateOf(selectionStore.of(UserSelectionStore.HOME)) }
+    var moduleUser by remember { mutableIntStateOf(selectionStore.of(UserSelectionStore.MODULES)) }
+    var logsUser by remember { mutableIntStateOf(selectionStore.of(UserSelectionStore.LOGS)) }
+    LaunchedEffect(users) {
+        val fallback = users.firstOrNull { it.id == UserDirectory.currentUserId() }?.id
+            ?: users.firstOrNull()?.id
+        if (fallback != null && users.none { it.id == homeUser }) homeUser = fallback
+        if (fallback != null && users.none { it.id == moduleUser }) moduleUser = fallback
+        if (fallback != null && users.none { it.id == logsUser }) logsUser = fallback
+    }
+    val activeLogStore = remember(logsUser) { RuntimeLogStore(userId = logsUser) }
+    val logStateCache = remember { HashMap<Int, RuntimeLogsState>() }
     var pendingUninstall by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var uninstallingTarget by remember { mutableStateOf<PatchService.Outcome?>(null) }
     var installBlocked by remember { mutableStateOf<InstallBlock?>(null) }
@@ -245,6 +276,7 @@ fun MainScaffold(
     var patchedApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var patchableApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var modules by remember { mutableStateOf<List<ModuleInfo>>(emptyList()) }
+    var userRefreshTick by remember { mutableIntStateOf(0) }
     var catalogApps by remember { mutableStateOf<List<AppInfo>>(emptyList()) }
     var catalogReady by remember { mutableStateOf(false) }
     val catalogRequests = remember { Channel<Unit>(Channel.CONFLATED) }
@@ -310,6 +342,54 @@ fun MainScaffold(
         value = withContext(Dispatchers.IO) { onlineStore.downloads() }
     }
     var token by remember { mutableIntStateOf(0) }
+    val homeSplit by produceState(
+        initialValue = HomeSplit(emptyList(), emptyList()),
+        patchedApps,
+        homeUser,
+        userRefreshTick,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val visible = UserPackages.visibleIn(homeUser, patchedApps.map { it.packageName })
+            HomeSplit(
+                visible = patchedApps.filter { it.packageName in visible },
+                hidden = patchedApps.filter { it.packageName !in visible },
+            )
+        }
+    }
+    val homeScopeCounts by produceState(
+        initialValue = emptyMap<String, Int>(),
+        patchedApps,
+        homeUser,
+        userRefreshTick,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            if (homeUser == UserDirectory.currentUserId()) {
+                emptyMap()
+            } else {
+                val store = ScopeStore(context, homeUser)
+                patchedApps.associate { it.packageName to store.countModules(it.packageName) }
+            }
+        }
+    }
+    val modulesForUser by produceState(
+        initialValue = emptyList<ModuleInfo>(),
+        modules,
+        moduleUser,
+        patchedApps,
+        userRefreshTick,
+    ) {
+        value = withContext(Dispatchers.IO) {
+            val store = if (moduleUser == UserDirectory.currentUserId()) null else ScopeStore(context, moduleUser)
+            if (store == null) {
+                modules
+            } else {
+                val patched = patchedApps.mapTo(HashSet()) { it.packageName }
+                modules.map { module ->
+                    module.copy(enabledApps = store.appsOf(module.packageName).count { it in patched })
+                }
+            }
+        }
+    }
     var exportTarget by remember { mutableStateOf<ExportStore.Target?>(null) }
     var exportChecked by remember { mutableStateOf(false) }
     LaunchedEffect(settings.exportTreeUri, token) {
@@ -319,24 +399,39 @@ fun MainScaffold(
         exportChecked = true
     }
     val scopeSyncLocks = remember { HashMap<String, Mutex>() }
-    val syncScopeFile: (String) -> Unit = { appPackage ->
-        repository.requestScopeSync(listOf(appPackage))
+    val syncScopeFile: (String, Int) -> Unit = sync@{ appPackage, userId ->
         val lock = synchronized(scopeSyncLocks) {
-            scopeSyncLocks.getOrPut(appPackage) { Mutex() }
+            scopeSyncLocks.getOrPut("$userId:$appPackage") { Mutex() }
         }
         scope.launch(Dispatchers.IO) {
             lock.withLock {
-                val version = repository.scopeSyncVersion(appPackage)
-                val result = ScopeFileWriter(context).sync(appPackage)
+                val result = ScopeFileWriter(context).sync(appPackage, userId)
                 if (!result.ok) {
                     eventLog.add("作用域同步失败 " + (result.failureText ?: appPackage))
                     val entries = eventLog.entries()
                     withContext(Dispatchers.Main) { logs = entries }
-                } else {
+                } else if (userId == UserDirectory.currentUserId()) {
+                    val version = repository.scopeSyncVersion(appPackage)
                     repository.acknowledgeScopeSync(appPackage, version)
                 }
             }
         }
+    }
+    val setScopeFor: (String, String, Boolean, Int) -> Unit = { modulePackage, appPackage, inScope, userId ->
+        val store = ScopeStore(context, userId)
+        store.setInScope(modulePackage, appPackage, inScope)
+        syncScopeFile(appPackage, userId)
+        if (userId == UserDirectory.currentUserId()) {
+            repository.invalidate()
+        }
+        userRefreshTick++
+        val suffix = if (userId == UserDirectory.currentUserId()) "" else
+            " → " + UserDirectory.labelOf(userId)
+        eventLog.add(
+            (if (inScope) "作用域 + " else "作用域 - ") + modulePackage + " → " + appPackage + suffix,
+        )
+        logs = eventLog.entries()
+        token++
     }
 
     val startPatch: suspend (PatchTarget, PatchOptions) -> Unit = startPatch@{ target, options ->
@@ -778,51 +873,73 @@ fun MainScaffold(
         }
     }
 
-    val loadRuntimeLogs: suspend () -> Unit = {
-        if (!logsRefreshing) {
-            logsRefreshing = true
-            logsRuntime = logsRuntime.copy(loading = true, error = null)
-            try {
-                val loaded = withContext(Dispatchers.IO) {
-                    val targets = repository.patchedPackageNames()
-                    val merged = if (ShizukuBridge.hasPermission()) {
-                        runCatching {
-                            logStore.loadFirstPageMerged(
-                                reader = { command -> ShizukuBridge.exec(command) },
-                                targets = targets,
-                                fileReader = { path, maxBytes -> ShizukuBridge.readText(path, maxBytes) },
-                            )
-                        }.getOrNull()
-                    } else {
-                        null
+    val loadRuntimeLogs: (Int) -> Unit = { requestUser ->
+        val store = RuntimeLogStore(userId = requestUser)
+        scope.launch {
+            if (!logsRefreshing) {
+                logsRefreshing = true
+                logsRuntime = RuntimeLogsState(loading = true, hasAccess = store.hasAccess(), userId = requestUser)
+                try {
+                    val loaded = withContext(Dispatchers.IO) {
+                        val targets = repository.patchedPackageNames()
+                        val merged = if (ShizukuBridge.hasPermission()) {
+                            runCatching {
+                                store.loadFirstPageMerged(
+                                    reader = { command -> ShizukuBridge.exec(command) },
+                                    targets = targets,
+                                    fileReader = { path, maxBytes -> ShizukuBridge.readText(path, maxBytes) },
+                                )
+                            }.getOrNull()
+                        } else {
+                            null
+                        }
+                        val firstPage = merged ?: runCatching { store.loadFirstPage(targets) }.getOrNull()
+                        firstPage?.let { capLogSnapshot(it) }
                     }
-                    val firstPage = merged ?: runCatching { logStore.loadFirstPage(targets) }.getOrNull()
-                    firstPage?.let { capLogSnapshot(it) }
-                }
-                val snapshot = loaded?.first
-                logsRuntime = if (snapshot != null) {
-                    RuntimeLogsState(
-                        snapshot = snapshot,
-                        loading = false,
-                        error = null,
-                        hasAccess = true,
-                    )
-                } else {
-                    logsRuntime.copy(loading = false, error = "日志读取失败")
-                }
+                    if (requestUser != logsUser) return@launch
+                    val snapshot = loaded?.first
+                    logsRuntime = if (snapshot != null) {
+                        RuntimeLogsState(
+                            snapshot = snapshot,
+                            loading = false,
+                            error = null,
+                            hasAccess = true,
+                            userId = requestUser,
+                        )
+                    } else {
+                        logsRuntime.copy(loading = false, error = "日志读取失败", userId = requestUser)
+                    }
                 if (loaded?.second == true) {
                     eventLog.add("运行日志已达单次载入上限（$MAX_LOG_ENTRIES 条 / 约 32 MB），更早的日志未载入")
                     logs = eventLog.entries()
                 }
             } catch (error: Throwable) {
-                logsRuntime = logsRuntime.copy(
-                    loading = false,
-                    error = "日志读取失败：" + (error.message ?: "未知错误"),
-                )
+                if (requestUser == logsUser) {
+                    logsRuntime = logsRuntime.copy(
+                        loading = false,
+                        error = "日志读取失败：" + (error.message ?: "未知错误"),
+                        userId = requestUser,
+                    )
+                }
             } finally {
                 logsRefreshing = false
             }
         }
+    }
+    }
+
+    LaunchedEffect(logsUser) {
+        val cachedState = logStateCache[logsUser]
+        if (cachedState != null) {
+            logsRuntime = cachedState
+        } else {
+            logsRuntime = RuntimeLogsState(hasAccess = activeLogStore.hasAccess(), userId = logsUser)
+            loadRuntimeLogs(logsUser)
+        }
+    }
+
+    LaunchedEffect(logsUser, logsRuntime) {
+        if (logsRuntime.userId == logsUser) logStateCache[logsUser] = logsRuntime
     }
 
     val loadMoreRuntimeLogs: suspend () -> Unit = {
@@ -832,7 +949,7 @@ fun MainScaffold(
             logsRuntime = logsRuntime.copy(loadingMore = true)
             try {
                 val next = withContext(Dispatchers.IO) {
-                    runCatching { logStore.loadMore(current) }.getOrNull()
+                    runCatching { activeLogStore.loadMore(current) }.getOrNull()
                 }
                 if (next != null) {
                     val (capped, truncated) = capLogSnapshot(next)
@@ -865,7 +982,7 @@ fun MainScaffold(
         }
         signatures = loadedProfiles
         defaultSignatureId = loadedDefaultId
-        logsRuntime = logsRuntime.copy(hasAccess = logStore.hasAccess())
+        logsRuntime = logsRuntime.copy(hasAccess = activeLogStore.hasAccess())
     }
 
     LaunchedEffect(repository) {
@@ -875,6 +992,9 @@ fun MainScaffold(
             catalogNeedsScan = false
             catalogForceScan = false
             try {
+                if (scan) {
+                    withContext(Dispatchers.IO) { UserPackages.refreshAll(users.map { it.id }) }
+                }
                 val loaded = if (scan) repository.refresh(force) else repository.loadOverview()
                 if (!catalogNeedsScan && !catalogForceScan) {
                     val initialSync = !catalogReady && loaded.packageScanComplete
@@ -888,7 +1008,8 @@ fun MainScaffold(
                         withContext(Dispatchers.IO) { repository.requestScopeSync(initialTargets) }
                         syncTargets.addAll(initialTargets)
                     }
-                    syncTargets.forEach(syncScopeFile)
+                    val owner = UserDirectory.currentUserId()
+                    syncTargets.forEach { target -> syncScopeFile(target, owner) }
                 }
             } catch (error: CancellationException) {
                 throw error
@@ -938,11 +1059,11 @@ fun MainScaffold(
             if (event == Lifecycle.Event.ON_RESUME) {
                 shizukuAvailable = ShizukuBridge.isAvailable()
                 shizukuReady = shizukuAvailable && ShizukuBridge.hasPermission()
-                val access = logStore.hasAccess()
+                val access = activeLogStore.hasAccess()
                 val hadAccess = logsRuntime.hasAccess
                 logsRuntime = logsRuntime.copy(hasAccess = access)
                 if (access && (logsRuntime.snapshot == null || !hadAccess) && !logsRefreshing) {
-                    scope.launch { loadRuntimeLogs() }
+                    loadRuntimeLogs(logsUser)
                 }
                 requestCatalogRefresh(true, false)
             }
@@ -986,7 +1107,7 @@ fun MainScaffold(
         if (nav.tab == Tab.Logs) {
             logsState.tab = LogsTab.Runtime
             if (logsRuntime.snapshot == null && !logsRefreshing) {
-                loadRuntimeLogs()
+                loadRuntimeLogs(logsUser)
             }
         }
     }
@@ -1004,6 +1125,7 @@ fun MainScaffold(
         is Page.Picker -> "选择应用"
         is Page.Signatures -> "签名管理"
         is Page.AppearanceSettings -> "外观"
+        is Page.Users -> "用户"
         is Page.Releases -> "更新日志"
         is Page.Config -> "Patch 配置"
         is Page.ModuleScope -> current.module.label
@@ -1095,21 +1217,53 @@ fun MainScaffold(
         logs = eventLog.entries()
     }
 
+    val syncInstalledScope: (String, Collection<Int>) -> Unit = { appPackage, userIds ->
+        val currentUser = UserDirectory.currentUserId()
+        val source = ScopeStore(context, currentUser)
+        val sourceModules = source.modulesOf(appPackage)
+        userIds.distinct().forEach { userId ->
+            if (userId != currentUser && sourceModules.isNotEmpty()) {
+                runCatching { ScopeStore(context, userId).copyAppScope(source, appPackage) }
+            }
+            val result = runCatching { ScopeFileWriter(context).sync(appPackage, userId) }.getOrNull()
+            if (result != null && !result.ok) {
+                eventLog.add("作用域同步失败 " + (result.failureText ?: appPackage))
+            }
+        }
+        UserPackages.invalidate()
+    }
+
     val installOutcome: (PatchService.Outcome) -> Unit = { outcome ->
         scope.launch {
+            val currentUser = io.xpatch.data.UserDirectory.currentUserId()
+            val targets = outcome.installUsers.ifEmpty { setOf(currentUser) }.toSortedSet()
+            val others = targets.filter { it != currentUser }
             val viaShizuku = ShizukuBridge.isAvailable()
             busyText = if (viaShizuku) "正在通过 Shizuku 安装…" else null
             try {
                 val step = if (outcome.forceOverwrite) {
                     busyText = "正在强行覆盖安装…"
-                    ShizukuInstaller.installForceOverwrite(context, outcome.apk, outcome.packageName)
+                    val forced = ShizukuInstaller.installForceOverwrite(context, outcome.apk, outcome.packageName)
+                    if (forced is ShizukuInstaller.Result.Success && others.isNotEmpty()) {
+                        val missing = others.toSet() - ShizukuInstaller.ensureExisting(outcome.packageName, others)
+                        if (missing.isNotEmpty()) {
+                            eventLog.add(
+                                "以下用户未能启用 " + outcome.packageName + "：" +
+                                    missing.joinToString("、") { UserDirectory.labelOf(it) },
+                            )
+                        }
+                    }
+                    forced
                 } else {
-                    ShizukuInstaller.install(context, outcome.apk, outcome.packageName)
+                    ShizukuInstaller.install(context, outcome.apk, outcome.packageName, targets)
                 }
                 when (step) {
                     is ShizukuInstaller.Result.Success -> {
                         eventLog.add(step.message)
                         showToast(step.message)
+                        withContext(Dispatchers.IO) { syncInstalledScope(outcome.packageName, targets) }
+                        userRefreshTick++
+                        requestCatalogRefresh(true, true)
                     }
                     is ShizukuInstaller.Result.Failure -> {
                         eventLog.add(step.message)
@@ -1121,9 +1275,9 @@ fun MainScaffold(
                         }
                     }
                     ShizukuInstaller.Result.Unavailable -> {
-                        if (outcome.forceOverwrite) {
-                            eventLog.add("强行覆盖安装缺少 Shizuku，已停止 " + outcome.packageName)
-                            failure = "强行覆盖安装需要 Shizuku，当前不可用。\n\n请先安装并授权 Shizuku，然后重新安装；该产物始终按强行覆盖安装处理。"
+                        if (outcome.forceOverwrite || others.isNotEmpty()) {
+                            eventLog.add("跨用户安装缺少 Shizuku，已停止 " + outcome.packageName)
+                            failure = "安装到其他用户需要 Shizuku，当前不可用。\n\n请先安装并授权 Shizuku 后重试，或只选择当前用户。"
                         } else {
                             eventLog.add("Shizuku 不可用，改用系统安装器 " + outcome.packageName)
                             fallbackInstall(outcome)
@@ -1135,6 +1289,27 @@ fun MainScaffold(
             }
             logs = eventLog.entries()
             token++
+        }
+    }
+
+    val beginInstall: (PatchService.Outcome, Set<Int>) -> Unit = beginInstall@{ outcome, picked ->
+        val users2 = picked.ifEmpty { setOf(UserDirectory.currentUserId()) }
+        val profile = signatureStore.defaultProfile()
+        val matched = InstallHelper.signatureMatches(
+            context,
+            outcome.packageName,
+            signatureStore.certificateBytes(profile),
+        )
+        val target = outcome.copy(installUsers = users2)
+        result = null
+        patchLog.clear()
+        token++
+        if (matched == false) {
+            pendingInstall = target
+            pendingInstallProfileName = profile.name
+            pendingInstallUsers = users2
+        } else {
+            installOutcome(target)
         }
     }
 
@@ -1440,6 +1615,11 @@ fun MainScaffold(
     val renderSettings: @Composable (Boolean) -> Unit = { appearancePage ->
         SettingsScreen(
             settings = settings,
+            users = users,
+            onInstallUsersChange = { picked ->
+                settingsStore.setInstallUsers(picked)
+                settings = settings.copy(installUsers = picked)
+            },
             defaultSignatureName = signatures.firstOrNull { it.id == defaultSignatureId }?.name ?: "XPatch",
             exportLabel = exportTarget?.label ?: settings.exportTreeLabel,
             exportLost = exportChecked && settings.exportTreeUri.isNotBlank() && exportTarget == null,
@@ -1479,6 +1659,7 @@ fun MainScaffold(
                 token++
             },
             onOpenSignatures = { nav.navigate(Page.Signatures) },
+            onOpenUsers = { nav.navigate(Page.Users) },
             onLogLevelChange = {
                 settingsStore.setPatchLogLevel(it)
                 settings = settings.copy(patchLogLevel = it)
@@ -1735,7 +1916,7 @@ fun MainScaffold(
             when (current) {
                 is Page.Home -> when (nav.tab) {
                     Tab.Home -> HomeScreen(
-                        apps = patchedApps,
+                        apps = homeSplit.visible,
                         refreshing = homeRefreshing,
                         onRefresh = {
                             if (!homeRefreshing) {
@@ -1751,14 +1932,35 @@ fun MainScaffold(
                             logsState.query = module
                             nav.openLogs()
                         },
+                        users = users,
+                        viewUser = homeUser,
+                        onViewUserChange = { userId ->
+                            selectionStore.set(UserSelectionStore.HOME, userId)
+                            homeUser = userId
+                        },
+                        hidden = homeSplit.hidden,
+                        moduleCountOf = { packageName ->
+                            if (homeUser == UserDirectory.currentUserId()) {
+                                patchedApps.firstOrNull { it.packageName == packageName }?.enabledModules ?: 0
+                            } else {
+                                homeScopeCounts[packageName] ?: 0
+                            }
+                        },
+                        onInstallHidden = { app -> pendingUserInstall = app },
                     )
 
                     Tab.Modules -> ModulesScreen(
-                        modules = modules,
+                        modules = modulesForUser,
                         query = query,
                         onQueryChange = { query = it },
                         onOpen = { nav.navigate(Page.ModuleScope(it)) },
                         refreshing = modulesRefreshing,
+                        users = users,
+                        viewUser = moduleUser,
+                        onViewUserChange = { userId ->
+                            selectionStore.set(UserSelectionStore.MODULES, userId)
+                            moduleUser = userId
+                        },
                         onRefresh = {
                             if (!modulesRefreshing) {
                                 modulesRefreshing = true
@@ -1786,12 +1988,18 @@ fun MainScaffold(
                         operations = logs,
                         state = logsState,
                         labelOf = labelOf,
-                        onRefreshRuntime = { scope.launch { loadRuntimeLogs() } },
+                        users = users,
+                        viewUser = logsUser,
+                        onViewUserChange = { userId ->
+                            selectionStore.set(UserSelectionStore.LOGS, userId)
+                            logsUser = userId
+                        },
+                        onRefreshRuntime = { loadRuntimeLogs(logsUser) },
                         onRequestStorage = { openAllFilesSettings(context) },
                         onLoadMoreRuntime = { scope.launch { loadMoreRuntimeLogs() } },
                         onClearRuntime = {
                             val result = runCatching {
-                                withContext(Dispatchers.IO) { logStore.clear() }
+                                withContext(Dispatchers.IO) { activeLogStore.clear() }
                             }
                             val cleared = result.getOrElse { error ->
                                 RuntimeLogStore.ClearResult(
@@ -1805,7 +2013,7 @@ fun MainScaffold(
                                     ),
                                 )
                             }
-                            loadRuntimeLogs()
+                            loadRuntimeLogs(logsUser)
                             eventLog.add(
                                 if (cleared.ok) "已清空运行日志 " + cleared.deletedFiles + " 个文件"
                                 else "清空运行日志部分失败 " + cleared.failed.size + " 处",
@@ -1841,27 +2049,27 @@ fun MainScaffold(
                             withContext(Dispatchers.IO) {
                                 if (ShizukuBridge.hasPermission()) {
                                     val shell = runCatching {
-                                        logStore.listShellFiles(
+                                        activeLogStore.listShellFiles(
                                             reader = { command -> ShizukuBridge.exec(command) },
                                             targets = targets,
                                         )
                                     }.getOrDefault(emptyList())
                                     if (shell.isNotEmpty()) shell
-                                    else runCatching { logStore.listLocalFiles(targets) }.getOrNull()?.first ?: emptyList()
+                                    else runCatching { activeLogStore.listLocalFiles(targets) }.getOrNull()?.first ?: emptyList()
                                 } else {
-                                    runCatching { logStore.listLocalFiles(targets) }.getOrNull()?.first ?: emptyList()
+                                    runCatching { activeLogStore.listLocalFiles(targets) }.getOrNull()?.first ?: emptyList()
                                 }
                             }
                         },
                         deleteLogFiles = { paths ->
                             withContext(Dispatchers.IO) {
                                 if (ShizukuBridge.hasPermission()) {
-                                    logStore.deleteViaShell(
+                                    activeLogStore.deleteViaShell(
                                         reader = { command -> ShizukuBridge.exec(command) },
                                         paths = paths,
                                     )
                                 } else {
-                                    logStore.clearFiles(paths)
+                                    activeLogStore.clearFiles(paths)
                                 }
                             }
                         },
@@ -2088,6 +2296,7 @@ fun MainScaffold(
 
                 is Page.Config -> ConfigScreen(
                     target = current.target,
+                    users = users,
                     defaults = settings,
                     signatures = signatures,
                     defaultSignatureId = defaultSignatureId,
@@ -2302,6 +2511,30 @@ fun MainScaffold(
                 )
 
                 is Page.AppearanceSettings -> renderSettings(true)
+                is Page.Users -> UsersScreen(
+                    users = users,
+                    installedIn = usersInstalledIn,
+                    onInstallManager = { userId ->
+                        scope.launch {
+                            busyText = "正在安装管理器…"
+                            val installed = withContext(Dispatchers.IO) {
+                                ShizukuInstaller.installExisting(context.packageName, userId)
+                            }
+                            busyText = null
+                            if (installed) {
+                                UserPackages.invalidate()
+                                eventLog.add("已把管理器安装到 " + UserDirectory.labelOf(userId))
+                            } else {
+                                eventLog.add(
+                                    "安装管理器到 " + UserDirectory.labelOf(userId) + " 失败，请确认 Shizuku 已授权",
+                                )
+                            }
+                            usersInstalledIn = withContext(Dispatchers.IO) { probeManagerUsers(users) }
+                            logs = eventLog.entries()
+                            token++
+                        }
+                    },
+                )
                 is Page.Releases -> ReleasesScreen()
                 is Page.About -> AboutScreen(
                     onOpenDisclaimer = { nav.navigate(Page.Disclaimer) },
@@ -2311,61 +2544,75 @@ fun MainScaffold(
                 is Page.Disclaimer -> DisclaimerScreen()
                 is Page.Acknowledgements -> AcknowledgementsScreen()
 
-                is Page.ModuleScope -> ModuleScopeScreen(
-                    module = modules.firstOrNull { it.packageName == current.module.packageName } ?: current.module,
-                    apps = patchedApps,
-                    scopeOf = { repository.appsOfModule(current.module.packageName) },
-                    onToggle = { app, inScope ->
-                        repository.setInScope(current.module.packageName, app.packageName, inScope)
-                        eventLog.add(
-                            if (inScope) {
-                                "作用域 + ${current.module.packageName} → ${app.packageName}"
-                            } else {
-                                "作用域 - ${current.module.packageName} → ${app.packageName}"
-                            },
-                        )
-                        token++
-                        syncScopeFile(app.packageName)
-                        RestartCenter.request(
-                            context,
-                            app.packageName,
-                            app.label,
-                            "模块作用域已更新，重启 " + app.label + " 后生效",
-                        )
-                    },
-                )
+                is Page.ModuleScope -> {
+                    val scopeUser = moduleUser
+                    ModuleScopeScreen(
+                        module = modules.firstOrNull { it.packageName == current.module.packageName } ?: current.module,
+                        apps = patchedApps,
+                        users = users,
+                        viewUser = scopeUser,
+                        onViewUserChange = { userId ->
+                            selectionStore.set(UserSelectionStore.MODULES, userId)
+                            moduleUser = userId
+                        },
+                        scopeOf = {
+                            ScopeStore(context, scopeUser).appsOfModuleFor(current.module.packageName)
+                        },
+                        onToggle = { app, inScope ->
+                            setScopeFor(current.module.packageName, app.packageName, inScope, scopeUser)
+                            RestartCenter.request(
+                                context,
+                                app.packageName,
+                                app.label,
+                                "模块作用域已更新，重启 " + app.label + " 后生效",
+                                scopeUser,
+                            )
+                        },
+                    )
+                }
 
-                is Page.AppScope -> AppScopeScreen(
+                is Page.AppScope -> {
+                    val scopeUser = homeUser
+                    AppScopeScreen(
                     app = patchedApps.firstOrNull { it.packageName == current.app.packageName }
                         ?: current.app.copy(enabledModules = repository.countModules(current.app.packageName)),
                     modules = modules,
-                    apiOf = remember(token, current.app.packageName) {
-                        { module: ModuleInfo -> moduleApiStore.apiOf(current.app.packageName, module.packageName) }
+                    users = users,
+                    viewUser = scopeUser,
+                    apiOf = remember(token, current.app.packageName, scopeUser) {
+                        val store = ModuleApiStore(context, scopeUser)
+                        val lookup: (ModuleInfo) -> Int = { module ->
+                            store.apiOf(current.app.packageName, module.packageName)
+                        }
+                        lookup
                     },
                     onApiChange = { module, api ->
-                        moduleApiStore.setApi(current.app.packageName, module.packageName, api)
+                        ModuleApiStore(context, scopeUser)
+                            .setApi(current.app.packageName, module.packageName, api)
                         eventLog.add("API ${module.packageName} → ${ModuleApiStore.label(api)}，重启目标应用后生效")
                         token++
-                        syncScopeFile(current.app.packageName)
+                        syncScopeFile(current.app.packageName, scopeUser)
                         RestartCenter.request(
                             context,
                             current.app.packageName,
                             current.app.label,
                             "模块 " + module.label + " 的 API 级别已改为 " + ModuleApiStore.label(api) + "，重启后生效",
+                            scopeUser,
                         )
                     },
                     onLaunch = {
                         scope.launch {
-                            val hasEntry = runCatching {
+                            val hasEntry = scopeUser == UserDirectory.currentUserId() && runCatching {
                                 context.packageManager.getLaunchIntentForPackage(current.app.packageName) != null
                             }.getOrDefault(false)
                             val ok = withContext(Dispatchers.IO) {
-                                runCatching { ShizukuBridge.launch(context, current.app.packageName) }
+                                runCatching { ShizukuBridge.launch(context, current.app.packageName, scopeUser) }
                                     .getOrDefault(false)
                             }
                             eventLog.add(
                                 when {
-                                    ok -> "已启动 ${current.app.packageName}"
+                                    ok -> "已启动 ${current.app.packageName} · " + UserDirectory.labelOf(scopeUser)
+                                    scopeUser != UserDirectory.currentUserId() -> "启动失败：跨用户启动需要 Shizuku"
                                     !hasEntry -> "启动失败：${current.app.packageName} 没有可启动的入口"
                                     else -> "启动失败：无法调起 ${current.app.packageName}"
                                 },
@@ -2376,26 +2623,30 @@ fun MainScaffold(
                     onForceStop = {
                         scope.launch {
                             val ok = withContext(Dispatchers.IO) {
-                                runCatching { ShizukuBridge.forceStop(current.app.packageName) }
+                                runCatching { ShizukuBridge.forceStop(current.app.packageName, scopeUser) }
                                     .getOrDefault(false)
                             }
                             eventLog.add(
-                                if (ok) "已强制停止 ${current.app.packageName}"
-                                else "停止失败：请先安装并授权 Shizuku",
+                                if (ok) {
+                                    "已强制停止 ${current.app.packageName} · " + UserDirectory.labelOf(scopeUser)
+                                } else {
+                                    "停止失败：请先安装并授权 Shizuku"
+                                },
                             )
                             token++
                         }
                     },
                     onRestart = {
                         scope.launch {
-                            eventLog.add("正在重启 ${current.app.packageName}")
+                            eventLog.add(
+                                "正在重启 ${current.app.packageName} · " + UserDirectory.labelOf(scopeUser),
+                            )
                             val ok = withContext(Dispatchers.IO) {
-                                runCatching { ShizukuBridge.restart(context, current.app.packageName) }
+                                runCatching { ShizukuBridge.restart(context, current.app.packageName, scopeUser) }
                                     .getOrDefault(false)
                             }
                             eventLog.add(
-                                if (ok) "已重启 ${current.app.packageName}"
-                                else "重启失败：请先安装并授权 Shizuku",
+                                if (ok) "已重启 ${current.app.packageName}" else "重启失败：请先安装并授权 Shizuku",
                             )
                             token++
                         }
@@ -2437,7 +2688,10 @@ fun MainScaffold(
                             AppScopeMeta(time, size)
                         }.getOrNull()
                     },
-                    inScope = { module -> repository.isInScopeFor(module.packageName, current.app.packageName) },
+                    inScope = { module ->
+                        ScopeStore(context, scopeUser).modulesOf(current.app.packageName)
+                            .contains(module.packageName)
+                    },
                     onOpenModule = { module ->
                         nav.navigate(Page.ModuleDetail(module, current.app))
                     },
@@ -2449,40 +2703,32 @@ fun MainScaffold(
                     reversed = scopeReversed,
                     onReversedChange = { scopeReversed = it },
                     onToggle = { module, inScope ->
-                        repository.setInScope(module.packageName, current.app.packageName, inScope)
-                        eventLog.add(
-                            if (inScope) "作用域 + ${module.packageName} → ${current.app.packageName}"
-                            else "作用域 - ${module.packageName} → ${current.app.packageName}",
-                        )
-                        token++
-                        syncScopeFile(current.app.packageName)
+                        setScopeFor(module.packageName, current.app.packageName, inScope, scopeUser)
                         RestartCenter.request(
                             context,
                             current.app.packageName,
                             current.app.label,
                             "模块作用域已更新，重启 " + current.app.label + " 后生效",
+                            scopeUser,
                         )
                     },
                 )
+                }
 
                 is Page.ModuleDetail -> ModuleDetailScreen(
                     module = current.module,
                     appLabel = current.app.label,
-                    checked = repository.isInScopeFor(current.module.packageName, current.app.packageName),
-                    scopeCount = repository.countApps(current.module.packageName),
+                    checked = ScopeStore(context, homeUser).modulesOf(current.app.packageName)
+                        .contains(current.module.packageName),
+                    scopeCount = ScopeStore(context, homeUser).countApps(current.module.packageName),
                     onToggle = { inScope ->
-                        repository.setInScope(current.module.packageName, current.app.packageName, inScope)
-                        eventLog.add(
-                            if (inScope) "作用域 + ${current.module.packageName} → ${current.app.packageName}"
-                            else "作用域 - ${current.module.packageName} → ${current.app.packageName}",
-                        )
-                        token++
-                        syncScopeFile(current.app.packageName)
+                        setScopeFor(current.module.packageName, current.app.packageName, inScope, homeUser)
                         RestartCenter.request(
                             context,
                             current.app.packageName,
                             current.app.label,
                             "模块作用域已更新，重启 " + current.app.label + " 后生效",
+                            homeUser,
                         )
                     },
                 )
@@ -2700,20 +2946,16 @@ fun MainScaffold(
             },
             onInstall = {
                 val outcome = result ?: return@PatchProgressDialog
-                val profile = signatureStore.defaultProfile()
-                val matched = InstallHelper.signatureMatches(
-                    context,
-                    outcome.packageName,
-                    signatureStore.certificateBytes(profile),
-                )
-                result = null
-                patchLog.clear()
-                token++
-                if (matched == false) {
-                    pendingInstall = outcome
-                    pendingInstallProfileName = profile.name
+                if (users.size > 1) {
+                    pendingInstallUsers = outcome.installUsers.ifEmpty {
+                        setOf(UserDirectory.currentUserId())
+                    }
+                    result = null
+                    patchLog.clear()
+                    token++
+                    confirmInstall = outcome
                 } else {
-                    installOutcome(outcome)
+                    beginInstall(outcome, outcome.installUsers)
                 }
             },
             onDismiss = {
@@ -2724,7 +2966,103 @@ fun MainScaffold(
         )
     }
 
+    pendingUserInstall?.let { app ->
+        val target = homeUser
+        XPatchDialog(
+            miuix = miuix,
+            onDismiss = { pendingUserInstall = null },
+            title = "安装到 " + UserDirectory.labelOf(target),
+            actions = listOf(
+                DialogAction("取消") { pendingUserInstall = null },
+                DialogAction("安装") {
+                    pendingUserInstall = null
+                    scope.launch {
+                        busyText = "正在安装…"
+                        val ok = withContext(Dispatchers.IO) {
+                            ShizukuInstaller.installExisting(app.packageName, target)
+                        }
+                        busyText = null
+                        UserPackages.invalidate(target)
+                        userRefreshTick++
+                        requestCatalogRefresh(true, true)
+                        eventLog.add(
+                            if (ok) {
+                                "已安装 " + app.label + " 到 " + UserDirectory.labelOf(target)
+                            } else {
+                                "安装失败 " + app.label + "：" + UserDirectory.labelOf(target)
+                            },
+                        )
+                        logs = eventLog.entries()
+                        token++
+                    }
+                },
+            ),
+        ) {
+            Column {
+                Text(app.label, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    app.packageName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(10.dp))
+                Text(
+                    "系统不会弹出确认框，确认后立即安装。应用数据不受影响，已打包的补丁保持生效。",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+
+    confirmInstall?.let { outcome ->
+        XPatchDialog(
+            miuix = miuix,
+            onDismiss = { confirmInstall = null },
+            title = "安装到",
+            actions = listOf(
+                DialogAction("取消") { confirmInstall = null },
+                DialogAction("开始安装") {
+                    val target = confirmInstall
+                    val picked = pendingInstallUsers
+                    confirmInstall = null
+                    if (target != null) beginInstall(target, picked)
+                },
+            ),
+        ) {
+            Column {
+                Text(outcome.label, style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    outcome.packageName,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                Spacer(Modifier.height(6.dp))
+                UserTargetRows(users, pendingInstallUsers) { id ->
+                    pendingInstallUsers = if (id in pendingInstallUsers && pendingInstallUsers.size > 1) {
+                        pendingInstallUsers - id
+                    } else {
+                        pendingInstallUsers + id
+                    }
+                }
+            }
+        }
+    }
+
     pendingInstall?.let { outcome ->
+        if (showPendingUserDialog) {
+            UserTargetDialog(
+                users = users,
+                selected = pendingInstallUsers,
+                onConfirm = { picked ->
+                    showPendingUserDialog = false
+                    pendingInstallUsers = picked
+                },
+                onDismiss = { showPendingUserDialog = false },
+            )
+        }
         XPatchDialog(
             miuix = miuix,
             onDismiss = { pendingInstall = null },
@@ -2739,7 +3077,9 @@ fun MainScaffold(
                 DialogAction("继续安装") {
                     val target = pendingInstall
                     pendingInstall = null
-                    if (target != null) installOutcome(target)
+                    if (target != null) {
+                        installOutcome(target.copy(installUsers = pendingInstallUsers))
+                    }
                 },
             ),
         ) {
@@ -2757,6 +3097,22 @@ fun MainScaffold(
                 })
                 if (outcome.forceOverwrite) {
                     InstallFact(label = "条件", value = "需要 Shizuku")
+                }
+                if (users.size > 1) {
+                    InstallFact(label = "安装到", value = userTargetText(pendingInstallUsers))
+                    Spacer(Modifier.height(8.dp))
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable { showPendingUserDialog = true },
+                        verticalAlignment = androidx.compose.ui.Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "更改安装用户",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                    }
                 }
             }
         }
@@ -2820,7 +3176,9 @@ fun MainScaffold(
             title = "需要重启 " + request.label,
             actions = listOf(
                 DialogAction("稍后处理") { RestartCenter.dismissDialog() },
-                DialogAction("立即重启") { RestartCenter.restartNow(context, request.packageName) },
+                DialogAction("立即重启") {
+                    RestartCenter.restartNow(context, request.packageName, request.userId)
+                },
             ),
         ) {
             Text(request.reason, style = MaterialTheme.typography.bodySmall)
@@ -2865,6 +3223,20 @@ private fun failureTitleOf(message: String): String = when {
     "日志" in message -> "日志读取失败"
     "导入" in message || "配置" in message -> "配置导入失败"
     else -> "操作失败"
+}
+
+private fun probeManagerUsers(users: List<io.xpatch.data.XpUser>): Set<Int> {
+    val current = UserDirectory.currentUserId()
+    val result = LinkedHashSet<Int>()
+    users.forEach { user ->
+        if (user.id == current) {
+            result.add(user.id)
+            return@forEach
+        }
+        val listed = UserPackages.packagesOf(user.id) ?: return@forEach
+        if (ManagerPackage in listed) result.add(user.id)
+    }
+    return result
 }
 
 @Suppress("DEPRECATION")
@@ -3026,3 +3398,10 @@ private const val MAX_LOG_ENTRIES = 20_000
 private const val MAX_LOG_CHARS = 16L * 1024 * 1024
 
 private const val LOG_ENTRY_OVERHEAD_CHARS = 160
+
+private const val ManagerPackage = "io.xpatch"
+
+private data class HomeSplit(
+    val visible: List<AppInfo>,
+    val hidden: List<AppInfo>,
+)

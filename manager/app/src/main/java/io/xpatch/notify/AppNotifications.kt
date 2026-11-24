@@ -30,6 +30,7 @@ object AppNotifications {
     const val EXTRA_LABEL = "label"
     const val EXTRA_REASON = "reason"
     const val EXTRA_ONLINE_TASK = "online_task"
+    const val EXTRA_USER_ID = "user_id"
 
     object NotificationIds {
         const val RESTART_BASE = 2001
@@ -80,12 +81,19 @@ object AppNotifications {
     fun enabled(context: Context): Boolean =
         runCatching { NotificationManagerCompat.from(context).areNotificationsEnabled() }.getOrDefault(false)
 
-    fun restart(context: Context, packageName: String, label: String, reason: String): Notification {
-        val restartIntent = actionIntent(context, ACTION_RESTART_APP, packageName, label, reason)
-        val ignoreIntent = actionIntent(context, ACTION_IGNORE_RESTART, packageName, label, reason)
+    fun restart(
+        context: Context,
+        packageName: String,
+        label: String,
+        reason: String,
+        userId: Int = 0,
+    ): Notification {
+        val restartIntent = actionIntent(context, ACTION_RESTART_APP, packageName, label, reason, userId)
+        val ignoreIntent = actionIntent(context, ACTION_IGNORE_RESTART, packageName, label, reason, userId)
+        val suffix = if (userId == 0) "" else "（" + label + "）"
         return NotificationCompat.Builder(context, CHANNEL_RESTART)
             .setSmallIcon(android.R.drawable.stat_notify_sync)
-            .setContentTitle("需要重启 $label")
+            .setContentTitle("需要重启 " + label + suffix)
             .setContentText(reason)
             .setStyle(NotificationCompat.BigTextStyle().bigText("$reason\n重启后生效；也可以先忽略，之后在应用详情页手动重启。"))
             .setContentIntent(openAppIntent(context))
@@ -232,8 +240,12 @@ object AppNotifications {
     fun downloadId(taskId: Long): Int =
         NotificationIds.DOWNLOAD_BASE + (taskId % NotificationIds.DOWNLOAD_SPAN).toInt()
 
-    fun restartId(packageName: String): Int =
-        NotificationIds.of(NotificationIds.RESTART_BASE, NotificationIds.RESTART_SPAN, packageName)
+    fun restartId(packageName: String, userId: Int = 0): Int =
+        NotificationIds.of(
+            NotificationIds.RESTART_BASE,
+            NotificationIds.RESTART_SPAN,
+            "$userId:$packageName",
+        )
 
     private fun taskAction(context: Context, action: String, taskId: Long): PendingIntent {
         val intent = Intent(context, NotificationActionReceiver::class.java).apply {
@@ -254,16 +266,18 @@ object AppNotifications {
         packageName: String,
         label: String,
         reason: String,
+        userId: Int = 0,
     ): PendingIntent {
         val intent = Intent(context, NotificationActionReceiver::class.java).apply {
             setAction(action)
             putExtra(EXTRA_PACKAGE, packageName)
             putExtra(EXTRA_LABEL, label)
             putExtra(EXTRA_REASON, reason)
+            putExtra(EXTRA_USER_ID, userId)
         }
         return PendingIntent.getBroadcast(
             context,
-            (action.hashCode() * 31 + packageName.hashCode()),
+            (action.hashCode() * 31 + packageName.hashCode() + userId * 8191),
             intent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )

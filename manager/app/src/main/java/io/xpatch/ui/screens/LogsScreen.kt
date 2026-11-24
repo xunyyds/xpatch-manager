@@ -61,8 +61,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.RuntimeLogStore
+import io.xpatch.data.UserDirectory
+import io.xpatch.data.XpUser
 import io.xpatch.ui.components.PullRefreshBox
 import io.xpatch.ui.components.SearchField
+import io.xpatch.ui.components.UserTabs
 import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.xpShape
 import java.io.File
@@ -88,6 +91,9 @@ internal fun LogsScreen(
     listLogFiles: suspend () -> List<RuntimeLogStore.LogFileInfo> = { emptyList() },
     deleteLogFiles: suspend (List<String>) -> RuntimeLogStore.ClearResult =
         { RuntimeLogStore.ClearResult(0, 0, emptyList()) },
+    users: List<XpUser> = emptyList(),
+    viewUser: Int = 0,
+    onViewUserChange: (Int) -> Unit = {},
 ) {
     val clipboard = LocalClipboardManager.current
     val scope = rememberCoroutineScope()
@@ -307,6 +313,9 @@ internal fun LogsScreen(
                 else operations.isNotEmpty(),
                 onTabChange = { state.tab = it },
                 onOpenFilter = { filterOpen = true },
+                users = users,
+                viewUser = viewUser,
+                onViewUserChange = onViewUserChange,
                 onExport = { option ->
                     menuOpen = false
                     scope.launch {
@@ -346,6 +355,15 @@ internal fun LogsScreen(
                 },
             )
 
+            if (users.size > 1 && state.tab == LogsTab.Runtime) {
+                UserTabs(
+                    users = users,
+                    selected = viewUser,
+                    onSelect = onViewUserChange,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
+                )
+            }
+
             if (state.tab == LogsTab.Runtime) {
                 SearchField(
                     value = queryText,
@@ -366,7 +384,7 @@ internal fun LogsScreen(
                 val readFailed = snapshot?.failures?.isNotEmpty() == true
                 val privateDir = snapshot?.hasPrivateDir == true
                 val showStatus = base != null &&
-                    (base.filtered || truncated || readFailed || privateDir)
+                    (base.filtered || truncated || readFailed || privateDir || users.size > 1)
                 if (showStatus) {
                     SlimStatusLine(
                         matched = matched,
@@ -381,6 +399,7 @@ internal fun LogsScreen(
                             state.resetFilters()
                             queryText = ""
                         },
+                        userLabel = if (users.size > 1) UserDirectory.labelOf(viewUser) else "",
                     )
                 }
                 RuntimeLogList(
@@ -547,6 +566,9 @@ private fun LogsTopBar(
     onExport: (LogExportOption) -> Unit,
     onClear: () -> Unit,
     onDoubleTap: () -> Unit = {},
+    users: List<XpUser> = emptyList(),
+    viewUser: Int = 0,
+    onViewUserChange: (Int) -> Unit = {},
 ) {
     Row(
         Modifier
@@ -710,6 +732,7 @@ private fun SlimStatusLine(
     fullSearchHits: Int? = null,
     privateDirHint: Boolean = false,
     onReset: () -> Unit,
+    userLabel: String = "",
 ) {
     Row(
         Modifier
@@ -719,6 +742,10 @@ private fun SlimStatusLine(
     ) {
         Text(
             buildString {
+                if (userLabel.isNotBlank()) {
+                    append(userLabel)
+                    append(" · ")
+                }
                 val hits = fullSearchHits
                 if (hits != null) {
                     append("已在全部日志中搜索：命中 ")

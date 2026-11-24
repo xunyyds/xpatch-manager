@@ -15,8 +15,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +35,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import io.xpatch.data.ModuleGuardStore
 import io.xpatch.data.RestartCenter
+import io.xpatch.data.UserDirectory
+import io.xpatch.data.XpUser
 import io.xpatch.model.AppInfo
 import io.xpatch.ui.components.DialogAction
 import io.xpatch.ui.components.EmptyState
@@ -44,6 +48,7 @@ import io.xpatch.ui.components.RestartHintBanner
 import io.xpatch.ui.components.RestartListRows
 import io.xpatch.ui.components.RowDivider
 import io.xpatch.ui.components.SettingItem
+import io.xpatch.ui.components.UserTabs
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.theme.LocalMiuix
 import top.yukonga.miuix.kmp.basic.Card as MiuixCard
@@ -58,6 +63,12 @@ internal fun HomeScreen(
     onAdd: () -> Unit,
     onOpen: (AppInfo) -> Unit,
     onOpenGuardLogs: (String, String) -> Unit,
+    users: List<XpUser> = emptyList(),
+    viewUser: Int = 0,
+    onViewUserChange: (Int) -> Unit = {},
+    hidden: List<AppInfo> = emptyList(),
+    onInstallHidden: (AppInfo) -> Unit = {},
+    moduleCountOf: (String) -> Int = { _ -> 0 },
 ) {
     val miuix = LocalMiuix.current
     val context = LocalContext.current
@@ -83,7 +94,7 @@ internal fun HomeScreen(
                             requests = pendingRestarts,
                             onRestart = {
                                 if (pendingRestarts.size == 1) {
-                                    RestartCenter.restartNow(context, pendingRestarts.first().packageName)
+                                    RestartCenter.restartNow(context, pendingRestarts.first().packageName, pendingRestarts.first().userId)
                                 } else {
                                     RestartCenter.restartAll(context)
                                 }
@@ -102,15 +113,27 @@ internal fun HomeScreen(
                         )
                     }
                 }
-                if (apps.isEmpty()) {
+                if (apps.isEmpty() && hidden.isEmpty()) {
                     item {
                         EmptyState("还没有已打包的应用") {
                             HomeAddButton(onAdd)
                         }
                     }
                 } else {
-                    item { GroupHeader("已打包 ${apps.size} 个应用") }
-                    if (miuix) {
+                    if (users.size > 1) {
+                        item {
+                            UserTabs(
+                                users = users,
+                                selected = viewUser,
+                                onSelect = onViewUserChange,
+                                modifier = Modifier.padding(horizontal = 20.dp, vertical = 8.dp),
+                            )
+                        }
+                    }
+                    item {
+                        GroupHeader("已打包 ${apps.size} 个应用 · ${UserDirectory.labelOf(viewUser)}")
+                    }
+                    if (apps.isNotEmpty() && miuix) {
                         item {
                             MiuixCard(
                                 modifier = Modifier
@@ -118,15 +141,37 @@ internal fun HomeScreen(
                                     .padding(bottom = 12.dp),
                             ) {
                                 apps.forEachIndexed { index, app ->
-                                    AppEntry(app, onOpen)
+                                    AppEntry(app, moduleCountOf(app.packageName), onOpen)
                                     if (index != apps.lastIndex) MiuixDivider()
                                 }
                             }
                         }
-                    } else {
+                    } else if (apps.isNotEmpty()) {
                         items(apps, key = { it.packageName }) { app ->
-                            AppEntry(app, onOpen)
+                            AppEntry(app, moduleCountOf(app.packageName), onOpen)
                             RowDivider()
+                        }
+                    }
+                    if (hidden.isNotEmpty()) {
+                        item { GroupHeader("未在此用户安装 ${hidden.size} 个") }
+                        if (miuix) {
+                            item {
+                                MiuixCard(
+                                    modifier = Modifier
+                                        .padding(horizontal = 12.dp)
+                                        .padding(bottom = 12.dp),
+                                ) {
+                                    hidden.forEachIndexed { index, app ->
+                                        HiddenAppEntry(app, onInstallHidden)
+                                        if (index != hidden.lastIndex) MiuixDivider()
+                                    }
+                                }
+                            }
+                        } else {
+                            items(hidden, key = { "hidden:" + it.packageName }) { app ->
+                                HiddenAppEntry(app, onInstallHidden)
+                                RowDivider()
+                            }
                         }
                     }
                 }
@@ -146,7 +191,7 @@ internal fun HomeScreen(
                 ),
             ) {
                 RestartListRows(pendingRestarts) { request ->
-                    RestartCenter.restartNow(context, request.packageName)
+                    RestartCenter.restartNow(context, request.packageName, request.userId)
                 }
             }
         }
@@ -174,6 +219,30 @@ private fun HomeAddButton(onClick: () -> Unit) {
 }
 
 @Composable
+private fun HiddenAppEntry(app: AppInfo, onInstall: (AppInfo) -> Unit) {
+    EntryRow(
+        icon = app.icon,
+        title = app.label,
+        subtitle = app.packageName,
+        trailing = {
+            Surface(
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                contentColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                tonalElevation = 0.dp,
+                onClick = { onInstall(app) },
+            ) {
+                Text(
+                    "安装",
+                    style = MaterialTheme.typography.labelLarge,
+                    modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp),
+                )
+            }
+        },
+    )
+}
+
+@Composable
 internal fun ShizukuSettingsRows(
     ready: Boolean,
     available: Boolean,
@@ -193,7 +262,7 @@ internal fun ShizukuSettingsRows(
 }
 
 @Composable
-private fun AppEntry(app: AppInfo, onOpen: (AppInfo) -> Unit) {
+private fun AppEntry(app: AppInfo, moduleCount: Int, onOpen: (AppInfo) -> Unit) {
     EntryRow(
         icon = app.icon,
         title = "${app.label}(${app.hookCore ?: "未知"},${app.runtimeVersion})",
@@ -202,7 +271,7 @@ private fun AppEntry(app: AppInfo, onOpen: (AppInfo) -> Unit) {
         onClick = { onOpen(app) },
         trailing = {
             Text(
-                "${app.enabledModules} 个模块",
+                "${moduleCount} 个模块",
                 style = MaterialTheme.typography.labelMedium,
                 color = if (LocalMiuix.current) MiuixTheme.colorScheme.primary
                 else MaterialTheme.colorScheme.primary,

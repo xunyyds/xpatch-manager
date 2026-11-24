@@ -38,6 +38,7 @@ internal sealed interface Page {
     data object Picker : Page
     data object Signatures : Page
     data object AppearanceSettings : Page
+    data object Users : Page
     data object Releases : Page
     data class Config(val target: PatchTarget) : Page
     data class ModuleScope(val module: ModuleInfo) : Page
@@ -151,6 +152,7 @@ internal fun navKeyOf(page: Page, tab: Tab): String = when (page) {
     is Page.Picker -> "picker"
     is Page.Signatures -> "signatures"
     is Page.AppearanceSettings -> "appearanceSettings"
+    is Page.Users -> "users"
     is Page.Releases -> "releases"
     is Page.PatchHistory -> "history"
     is Page.Repo -> "repo"

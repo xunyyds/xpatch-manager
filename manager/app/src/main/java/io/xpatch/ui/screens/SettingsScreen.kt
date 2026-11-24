@@ -55,6 +55,7 @@ import io.xpatch.data.SettingsStore
 import io.xpatch.data.SoftwareSource
 import io.xpatch.data.ThemeColor
 import io.xpatch.data.UiStyle
+import io.xpatch.data.XpUser
 import io.xpatch.model.ModuleInfo
 import io.xpatch.patch.PatchLog
 import io.xpatch.patch.ShizukuBridge
@@ -64,8 +65,10 @@ import io.xpatch.ui.components.SettingGroup
 import io.xpatch.ui.components.SettingItem
 import io.xpatch.ui.components.SettingSelectRow
 import io.xpatch.ui.components.SettingSwitchItem
+import io.xpatch.ui.components.UserTargetDialog
 import io.xpatch.ui.components.XPatchDialog
 import io.xpatch.ui.components.appTextFieldColors
+import io.xpatch.ui.components.userTargetText
 import io.xpatch.ui.format.readableSize
 import io.xpatch.ui.theme.LocalMiuix
 import io.xpatch.ui.theme.ShapeTokens
@@ -110,12 +113,18 @@ internal fun SettingsScreen(
     onOpenAbout: () -> Unit,
     appearancePage: Boolean = false,
     onOpenAppearance: () -> Unit = {},
+    users: List<XpUser> = emptyList(),
+    onInstallUsersChange: (Set<Int>) -> Unit = {},
+    onOpenUsers: () -> Unit = {},
 ) {
     val miuix = LocalMiuix.current
     var showLimitDialog by remember { mutableStateOf(false) }
     var showPermissionDialog by remember { mutableStateOf(false) }
     var showBackupDialog by remember { mutableStateOf(false) }
     var showThemeColorDialog by remember { mutableStateOf(false) }
+    var showInstallUserDialog by remember { mutableStateOf(false) }
+    val multiUser = users.size > 1
+    val defaultInstallUsers = settings.installUsers.ifEmpty { setOf(io.xpatch.data.UserDirectory.currentUserId()) }
     val dynamicSupported = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
     val dynamicActive = dynamicSupported && settings.dynamicColor
 
@@ -149,6 +158,17 @@ internal fun SettingsScreen(
                 showBackupDialog = false
                 onBackup(scopes)
             },
+        )
+    }
+    if (showInstallUserDialog) {
+        UserTargetDialog(
+            users = users,
+            selected = defaultInstallUsers,
+            onConfirm = { picked ->
+                showInstallUserDialog = false
+                onInstallUsersChange(picked)
+            },
+            onDismiss = { showInstallUserDialog = false },
         )
     }
 
@@ -282,6 +302,22 @@ internal fun SettingsScreen(
                         selectedIndex = settings.patchLogLevel,
                         onSelect = onLogLevelChange,
                     )
+                    if (multiUser) {
+                        SettingsRowDivider()
+                        SettingItem(
+                            title = "默认安装到",
+                            value = userTargetText(defaultInstallUsers),
+                            arrow = true,
+                            onClick = { showInstallUserDialog = true },
+                        )
+                        SettingsRowDivider()
+                        SettingItem(
+                            title = "用户",
+                            subtitle = users.joinToString("、") { it.label },
+                            arrow = true,
+                            onClick = onOpenUsers,
+                        )
+                    }
                 }
             }
             item {

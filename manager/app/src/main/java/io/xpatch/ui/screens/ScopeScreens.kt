@@ -44,6 +44,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import io.xpatch.model.AppInfo
 import io.xpatch.model.ModuleInfo
+import io.xpatch.data.UserDirectory
+import io.xpatch.data.XpUser
+import io.xpatch.patch.ShizukuBridge
 import io.xpatch.ui.components.AppIcon
 import io.xpatch.ui.components.EmptyState
 import io.xpatch.ui.components.EntryRow
@@ -53,6 +56,7 @@ import io.xpatch.ui.components.SearchField
 import io.xpatch.ui.components.SortMenu
 import io.xpatch.ui.components.SortOption
 import io.xpatch.ui.components.SwitchableEntryRow
+import io.xpatch.ui.components.UserTabs
 import io.xpatch.ui.theme.AnimationQuality
 import io.xpatch.ui.theme.LocalAnimationQuality
 import io.xpatch.ui.theme.LocalMiuix
@@ -71,6 +75,9 @@ internal fun ModuleScopeScreen(
     apps: List<AppInfo>,
     scopeOf: () -> Set<String>,
     onToggle: (AppInfo, Boolean) -> Unit,
+    users: List<XpUser> = emptyList(),
+    viewUser: Int = 0,
+    onViewUserChange: (Int) -> Unit = {},
 ) {
     val scope = scopeOf()
     val selectedCount = apps.count { it.packageName in scope }
@@ -93,6 +100,16 @@ internal fun ModuleScopeScreen(
             )
         }
         item { GroupHeader("应用") }
+        if (users.size > 1) {
+            item {
+                UserTabs(
+                    users = users,
+                    selected = viewUser,
+                    onSelect = onViewUserChange,
+                    modifier = Modifier.padding(horizontal = 20.dp, vertical = 6.dp),
+                )
+            }
+        }
         if (apps.isEmpty()) {
             item { EmptyState("还没有已打包的应用\n先到首页「添加应用」完成一次打包\n模块只能作用于已打包应用") }
         } else if (miuix) {
@@ -181,6 +198,10 @@ internal fun AppScopeScreen(
     onSortChange: (Int) -> Unit,
     reversed: Boolean,
     onReversedChange: (Boolean) -> Unit,
+    users: List<XpUser> = emptyList(),
+    viewUser: Int = 0,
+    onViewUserChange: (Int) -> Unit = {},
+    scopeReady: Boolean = true,
 ) {
     val miuix = LocalMiuix.current
     val background = if (miuix) MiuixTheme.colorScheme.background else MaterialTheme.colorScheme.background
@@ -196,7 +217,7 @@ internal fun AppScopeScreen(
     val recommendedFlags = modules.associate { it.packageName to (app.packageName in it.recommendedApps) }
 
     val modulePackages = remember(modules) { modules.map { it.packageName }.toSet() }
-    val settledState = remember(app.packageName, modulePackages) { mutableStateOf(enabledFlags) }
+    val settledState = remember(app.packageName, viewUser, modulePackages) { mutableStateOf(enabledFlags) }
     val settlingPackages = remember(app.packageName, modulePackages) { androidx.compose.runtime.mutableStateMapOf<String, Boolean>() }
     var highlightPackage by remember { mutableStateOf<String?>(null) }
     var pendingPackage by remember { mutableStateOf<String?>(null) }
@@ -230,10 +251,12 @@ internal fun AppScopeScreen(
         ActionRunState.Done -> "已停止"
         ActionRunState.Idle -> null
     }
-    val dexoptSubtitle = when (dexoptState) {
-        ActionRunState.Running -> "正在优化…"
-        ActionRunState.Done -> "已完成"
-        ActionRunState.Idle -> "重新编译应用（Dexopt）"
+    val dexoptBlocked = ShizukuBridge.dexoptBlockReason(viewUser)
+    val dexoptSubtitle = when {
+        dexoptBlocked != null -> dexoptBlocked
+        dexoptState == ActionRunState.Running -> "正在优化…"
+        dexoptState == ActionRunState.Done -> "已完成"
+        else -> "重新编译应用（Dexopt）"
     }
 
     val onModuleToggle: (ModuleInfo, Boolean) -> Unit = { module, enabled ->
@@ -302,6 +325,13 @@ internal fun AppScopeScreen(
                     DetailRow("大小", meta?.apkSize ?: "未设置", Modifier.padding(horizontal = 16.dp))
                     DetailRow("内核", runtimeLabel(app), Modifier.padding(horizontal = 16.dp))
                     DetailRow("模块", "${app.enabledModules} 个生效", Modifier.padding(horizontal = 16.dp))
+                    if (users.size > 1) {
+                        DetailRow(
+                            "用户",
+                            UserDirectory.labelOf(viewUser),
+                            Modifier.padding(horizontal = 16.dp),
+                        )
+                    }
                     Spacer(Modifier.height(12.dp))
                     MiuixDivider()
                     ActionRow("启动应用", onLaunch)
@@ -310,7 +340,7 @@ internal fun AppScopeScreen(
                     MiuixDivider()
                     ActionRow("重启应用", onRestart, "强制停止后重新拉起")
                     MiuixDivider()
-                    ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle)
+                    ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle, enabled = dexoptBlocked == null)
                     MiuixDivider()
                     ActionRow("应用信息", onAppInfo)
                     MiuixDivider()
@@ -325,11 +355,14 @@ internal fun AppScopeScreen(
                     DetailRow("大小", meta?.apkSize ?: "未设置")
                     DetailRow("内核", runtimeLabel(app))
                     DetailRow("模块", "${app.enabledModules} 个生效")
+                    if (users.size > 1) {
+                        DetailRow("用户", UserDirectory.labelOf(viewUser))
+                    }
                 }
                 ActionRow("启动应用", onLaunch)
                 ActionRow("强制停止", onForceStopRun, forceStopSubtitle)
                 ActionRow("重启应用", onRestart, "强制停止后重新拉起")
-                ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle)
+                ActionRow("优化启动速度", onDexoptRun, dexoptSubtitle, enabled = dexoptBlocked == null)
                 ActionRow("应用信息", onAppInfo)
                 ActionRow("查看日志", onViewLogs)
                 ActionRow("更新内核", onUpdateCore, "使用当前安装包重新打包")
@@ -395,7 +428,7 @@ internal fun AppScopeScreen(
                 ScopeFilterRow(
                     selected = scopeFilter,
                     total = modules.size,
-                    enabled = settledEnabled.count { it.value },
+                    enabled = if (scopeReady) settledEnabled.count { it.value } else 0,
                     recommended = recommendedFlags.count { it.value },
                     miuix = miuix,
                     onSelect = { scopeFilter = it },
@@ -586,24 +619,35 @@ internal fun DetailRow(label: String, value: String, modifier: Modifier = Modifi
 }
 
 @Composable
-internal fun ActionRow(title: String, onClick: () -> Unit, subtitle: String? = null) {
+internal fun ActionRow(
+    title: String,
+    onClick: () -> Unit,
+    subtitle: String? = null,
+    enabled: Boolean = true,
+) {
     if (LocalMiuix.current) {
         ArrowPreference(
             title = title,
             summary = subtitle,
-            onClick = onClick,
+            onClick = if (enabled) onClick else null,
+            enabled = enabled,
         )
         return
     }
     Row(
         Modifier
             .fillMaxWidth()
-            .clickable { onClick() }
+            .then(if (enabled) Modifier.clickable { onClick() } else Modifier)
             .padding(horizontal = 20.dp, vertical = 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(
+                title,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (enabled) MaterialTheme.colorScheme.onSurface
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+            )
             if (!subtitle.isNullOrBlank()) {
                 Text(
                     subtitle,
@@ -612,7 +656,12 @@ internal fun ActionRow(title: String, onClick: () -> Unit, subtitle: String? = n
                 )
             }
         }
-        Text("›", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(
+            "›",
+            style = MaterialTheme.typography.titleMedium,
+            color = if (enabled) MaterialTheme.colorScheme.onSurfaceVariant
+            else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.4f),
+        )
     }
     HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f))
 }

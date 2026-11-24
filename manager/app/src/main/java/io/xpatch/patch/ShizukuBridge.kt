@@ -11,6 +11,7 @@ import android.os.ParcelFileDescriptor
 import android.provider.Settings
 import io.xpatch.BuildConfig
 import io.xpatch.IXPatchService
+import io.xpatch.data.UserDirectory
 import rikka.shizuku.Shizuku
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
@@ -115,27 +116,34 @@ object ShizukuBridge {
     fun openRead(path: String): ParcelFileDescriptor? =
         runCatching { service()?.openRead(path) }.getOrNull()
 
-    fun forceStop(packageName: String): Boolean = runCatching {
-        service()?.forceStop(packageName)
-        true
+    fun forceStop(packageName: String, userId: Int): Boolean = runCatching {
+        val output = exec("am force-stop --user $userId " + shellQuote(packageName))
+        output == null || !output.contains("Error")
     }.getOrDefault(false)
 
-    fun restart(context: Context, packageName: String): Boolean {
-        val stopped = forceStop(packageName)
-        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
-        if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-            runCatching { context.startActivity(intent) }
-        }
+    fun restart(context: Context, packageName: String, userId: Int): Boolean {
+        val stopped = forceStop(packageName, userId)
+        launch(context, packageName, userId)
         return stopped
     }
 
-    fun launch(context: Context, packageName: String): Boolean {
-        val intent = context.packageManager.getLaunchIntentForPackage(packageName)
-            ?: return false
-        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
-        return runCatching { context.startActivity(intent) }.isSuccess
-    }
+    fun launch(context: Context, packageName: String, userId: Int): Boolean = runCatching {
+        val local = userId == UserDirectory.currentUserId()
+        if (local) {
+            val intent = context.packageManager.getLaunchIntentForPackage(packageName)
+                ?: return@runCatching false
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED)
+            context.startActivity(intent)
+            true
+        } else {
+            if (!ShizukuBridge.hasPermission()) return@runCatching false
+            val output = exec(
+                "monkey -p " + shellQuote(packageName) +
+                    " --user $userId -c android.intent.category.LAUNCHER 1",
+            )
+            output != null && !output.contains("No activities found")
+        }
+    }.getOrDefault(false)
 
     fun openAppDetails(context: Context, packageName: String) {
         val intent = Intent(
@@ -149,6 +157,15 @@ object ShizukuBridge {
         service()?.dexopt(packageName)
         true
     }.getOrDefault(false)
+
+    fun dexoptSupportsUser(): Boolean = false
+
+    fun dexoptBlockReason(userId: Int): String? =
+        if (userId == UserDirectory.currentUserId()) null
+        else "Dexopt 只能作用于全部用户，分身视图下不可用"
+
+    private fun shellQuote(value: String): String =
+        "'" + value.replace("'", "'\\''") + "'"
 
     fun unbind() {
         if (!bound) return

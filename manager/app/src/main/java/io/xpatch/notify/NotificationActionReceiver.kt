@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import io.xpatch.data.DownloadCenter
 import io.xpatch.data.RestartCenter
+import io.xpatch.data.UserDirectory
 
 class NotificationActionReceiver : BroadcastReceiver() {
 
@@ -13,15 +14,25 @@ class NotificationActionReceiver : BroadcastReceiver() {
         when (intent.action) {
             AppNotifications.ACTION_RESTART_APP -> {
                 val packageName = intent.getStringExtra(AppNotifications.EXTRA_PACKAGE).orEmpty()
+                val userId = intent.getIntExtra(AppNotifications.EXTRA_USER_ID, -1)
                 if (packageName.isNotBlank()) {
-                    RestartCenter.restartNow(app, packageName)
+                    RestartCenter.restartNow(
+                        app,
+                        packageName,
+                        if (userId >= 0) userId else UserDirectory.currentUserId(),
+                    )
                 }
             }
 
             AppNotifications.ACTION_IGNORE_RESTART -> {
                 val packageName = intent.getStringExtra(AppNotifications.EXTRA_PACKAGE).orEmpty()
+                val userId = intent.getIntExtra(AppNotifications.EXTRA_USER_ID, -1)
                 if (packageName.isNotBlank()) {
-                    RestartCenter.ignore(app, packageName)
+                    RestartCenter.ignore(
+                        app,
+                        packageName,
+                        if (userId >= 0) userId else UserDirectory.currentUserId(),
+                    )
                 } else {
                     RestartCenter.ignoreAll(app)
                 }
